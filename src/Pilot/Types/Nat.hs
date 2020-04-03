@@ -10,7 +10,9 @@ Portability : non-portable (GHC only)
 
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE GADTSyntax #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Pilot.Types.Nat where
 
@@ -31,3 +33,10 @@ type family Min (n :: Nat) (m :: Nat) :: Nat where
   Min n      Z    = Z 
   Min Z      n    = Z
   Min (S n) (S m) = S (Min n m)
+
+type family Minimum (ns :: [Nat]) :: Nat where
+  Minimum (n ': ns) = Min n (Minimum ns)
+
+data Index (n :: Nat) where
+  Here  :: Index (S n)
+  There :: Index n -> Index (S n)
