@@ -17,6 +17,8 @@ Portability : non-portable (GHC only)
 module Pilot.Types.Stream
   ( Stream (..)
 
+  , map
+
   , repeat
   , consPrefix
   , unconsPrefix
@@ -30,7 +32,7 @@ module Pilot.Types.Stream
   , takeAt
   ) where
 
-import Prelude hiding (repeat, zip)
+import Prelude hiding (map, repeat, zip)
 import Data.Kind (Type)
 import Pilot.Types.Nat
 
@@ -38,6 +40,10 @@ import Pilot.Types.Nat
 data Stream (n :: Nat) (t :: Type) where
   Prefix :: t -> Stream n t -> Stream (S n) t
   Suffix :: t -> Stream Z t -> Stream Z t
+
+map :: (s -> t) -> Stream n s -> Stream n t
+map f (Prefix t ts) = Prefix (f t) (map f ts)
+map f (Suffix t ts) = Suffix (f t) (map f ts)
 
 repeat :: t -> Stream Z t
 repeat t = Suffix t (repeat t)
