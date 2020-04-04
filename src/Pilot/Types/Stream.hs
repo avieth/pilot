@@ -21,9 +21,13 @@ module Pilot.Types.Stream
   , consPrefix
   , unconsPrefix
   , shift
+  , index
   , ap
   , zip
   , toList
+
+  , Prefix (..)
+  , takeAt
   ) where
 
 import Prelude hiding (repeat, zip)
@@ -51,6 +55,19 @@ unconsPrefix (Prefix t rest) = (t, rest)
 shift :: Stream (S n) t -> Stream n t
 shift (Prefix t s@(Suffix _ _)) = Suffix t s
 shift (Prefix t p@(Prefix _ _)) = Prefix t (shift p)
+
+index :: Index n -> Stream n t -> t
+index  Here       (Prefix t _)    = t
+index (There idx) (Prefix _ next) = index idx next
+
+data Prefix (n :: Nat) where
+  Earliest :: Prefix n
+  Later :: Prefix n -> Prefix (S n)
+
+takeAt :: Prefix n -> Stream n t -> t
+takeAt Earliest  (Suffix t _)  = t
+takeAt Earliest  (Prefix t _)  = t
+takeAt (Later p) (Prefix _ ts) = takeAt p ts
 
 toList :: Stream n t -> [t]
 toList (Prefix t rest) = t : toList rest
