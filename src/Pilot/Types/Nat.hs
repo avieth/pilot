@@ -13,12 +13,27 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Pilot.Types.Nat where
+
+import Numeric.Natural
+import Data.Kind (Type)
+import Data.Proxy (Proxy (..))
+import Data.List.NonEmpty (NonEmpty ((:|)))
 
 data Nat where
   S :: Nat -> Nat
   Z :: Nat
+
+class KnownNat (n :: Nat) where
+  natVal :: proxy n -> Natural
+
+instance KnownNat Z where
+  natVal _ = 0
+
+instance KnownNat n => KnownNat (S n) where
+  natVal _ = 1 + natVal (Proxy :: Proxy n)
 
 type family Plus (n :: Nat) (m :: Nat) :: Nat where
   Plus n Z = n
@@ -40,3 +55,23 @@ type family Minimum (ns :: [Nat]) :: Nat where
 data Index (n :: Nat) where
   Here  :: Index (S n)
   There :: Index n -> Index (S n)
+
+data Vec (n :: Nat) (t :: Type) where
+  VNil  :: Vec Z t
+  VCons :: t -> Vec n t -> Vec (S n) t
+
+vecToList :: Vec n t -> [t]
+vecToList VNil = []
+vecToList (VCons t vs) = t : vecToList vs
+
+vecToNonEmpty :: Vec (S n) t -> NonEmpty t
+vecToNonEmpty (VCons t vs) = t :| vecToList vs
+
+index :: Index n -> Vec n t -> t
+index Here (VCons t _) = t
+index (There idx) (VCons _ vs) = index idx vs
+
+-- | Get an index into a 0-indexed array.
+indexToNat :: Index n -> Natural
+indexToNat Here = 0
+indexToNat (There here) = 1 + indexToNat here
