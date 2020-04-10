@@ -67,6 +67,14 @@ vecToList (VCons t vs) = t : vecToList vs
 vecToNonEmpty :: Vec (S n) t -> NonEmpty t
 vecToNonEmpty (VCons t vs) = t :| vecToList vs
 
+vecMap :: (s -> t) -> Vec n s -> Vec n t
+vecMap _ VNil = VNil
+vecMap f (VCons t vs) = VCons (f t) (vecMap f vs)
+
+vecLength :: Vec n t -> Natural
+vecLength VNil = 0
+vecLength (VCons _ vs) = 1 + vecLength vs
+
 index :: Index n -> Vec n t -> t
 index Here (VCons t _) = t
 index (There idx) (VCons _ vs) = index idx vs
