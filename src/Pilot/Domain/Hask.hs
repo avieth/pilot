@@ -33,8 +33,7 @@ module Pilot.Domain.Hask
   , evalStreamDrop
   , evalStreamPure
   , evalStreamAp
-
-  , example_stream_1
+  , evalStreamLet
   ) where
 
 import qualified Data.Kind as Kind (Type)
@@ -72,8 +71,10 @@ val (Val t) = t
 evalPoint :: Point t -> Target (T t)
 evalPoint (Identity t) = Val t
 
+-- | This is trivial because Haskell already gives sharing.
+-- Other targets might have to do something special here.
 evalLet :: Target (T s) -> (Target (T s) -> Target t) -> Target t
-evalLet (Val s) k = let x = k (Val s) in x
+evalLet (Val s) k = k (Val s)
 
 evalOp :: Op Target args r -> Args Target args -> Target (T r)
 evalOp (Op f) ArgNone                = Val f
@@ -129,8 +130,36 @@ streamZip f (Suffix a as) (Suffix b bs) = Suffix (f a b) (streamZip f as bs)
 streamZip f (Prefix a as) (Suffix b bs) = Suffix (f a b) (streamZip f as bs)
 streamZip f (Suffix a as) (Prefix b bs) = Suffix (f a b) (streamZip f as bs)
 
-evalStreamHold :: target r -> Stream target n r -> Stream target (S n) r
-evalStreamHold x xs = Prefix x xs
+evalStreamHold
+  :: Vec (S n) (target (T t))
+  -> (Stream target n (T t) -> Stream target Z (T t))
+  -> Stream target (S n) (T t)
+evalStreamHold vs k =
+  -- Must be sufficiently lazy in computing the `prefix`: it cannot force
+  -- anything to do with the suffix of `result`. So instead of taking
+  -- `result` and moving the final prefix into the suffix, which would require
+  -- matching on the suffix, we do a similar "from vector" computation but
+  -- which leaves out the last vector element.
+  let result = streamFromVec vs suffix
+      prefix = prefixFromVec vs suffix
+      suffix = k prefix
+  in  result
+
+  where
+
+  streamFromVec
+    :: Vec n (target t)
+    -> Stream target Z t
+    -> Stream target n t
+  streamFromVec VNil         suffix = suffix
+  streamFromVec (VCons v vs) suffix = Prefix v (streamFromVec vs suffix)
+
+  prefixFromVec
+    :: Vec (S n) (target t)
+    -> Stream target Z t
+    -> Stream target n t
+  prefixFromVec (VCons t VNil)           stream = Suffix t stream
+  prefixFromVec (VCons t vs@(VCons _ _)) stream = Prefix t (prefixFromVec vs stream)
 
 evalStreamDrop :: Stream target (S n) r -> Stream target n r
 evalStreamDrop (Prefix _ xs) = xs
@@ -141,9 +170,18 @@ evalStreamPure = streamRepeat
 evalStreamAp :: Stream Target m (s :-> t) -> Stream Target n s -> Stream Target (Min m n) t
 evalStreamAp = streamZip evalAp
 
+-- | This is trivial because Haskell already gives sharing.
+-- Other targets might have to do something special here.
+evalStreamLet
+  :: Stream target m (T q)
+  -> (Stream target m (T q) -> Stream target n s)
+  -> Stream target n s
+evalStreamLet q k = k q
+
 -- | This integral expression is just as fast as the pure list variant
 --
 --   let sums = 0 : zipWith (+) (repeat 42) sums in drop 1 sums
+--
 example_stream_1 :: Stream Target Z (T Int)
 example_stream_1 = next
   where

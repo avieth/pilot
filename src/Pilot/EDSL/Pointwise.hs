@@ -49,6 +49,10 @@ newtype Pointwise (point :: ty -> Kind.Type) (op :: (Pilot.Kind ty -> Kind.Type)
 point :: point t -> Pointwise point op target (T t)
 point pt = Pointwise $ \evalPoint _ _ _ _ -> evalPoint pt
 
+-- NB: `fun` and `at` give a correspondance between Haskell functions and
+-- pointwise functions. The Haskell arrow between `Pointwise` expressions
+-- becomes a `Pointwise` arrow expression.
+
 -- | Lambda abstraction.
 fun :: (Pointwise point op target s -> Pointwise point op target t)
     -> Pointwise point op target (s :-> t)
@@ -74,14 +78,9 @@ op o args = Pointwise $ \evalPoint evalOp evalLet evalFun evalAp -> evalOp o
   (mapArgs (\arg -> runPointwise arg evalPoint evalOp evalLet evalFun evalAp) args)
 
 -- | Let binding. Allows expression of sharing.
-plet :: Pointwise point op target s
-     -> (Pointwise point op target s -> Pointwise point op target t)
-     -> Pointwise point op target t
-plet p k = Pointwise $ \evalPoint evalOp evalLet evalFun evalAp ->
-  -- We run `p` and then put its result (a `target s`) back into a `Pointwise`
-  -- which simply returns it; it's that term which goes to the function `k`.
-  -- Thus all of the work is done here at `local`, rather than when the sub-term
-  -- given by `k` demands it.
-  let p1 = runPointwise p evalPoint evalOp evalLet evalFun evalAp
-      p2 = Pointwise $ \_ _ _ _ _ -> p1
-  in  runPointwise (k p2) evalPoint evalOp evalLet evalFun evalAp
+plet :: Pointwise point op target (T q)
+     -> (Pointwise point op target (T q) -> Pointwise point op target r)
+     -> Pointwise point op target r
+plet q k = Pointwise $ \evalPoint evalOp evalLet evalFun evalAp ->
+  evalLet (runPointwise q evalPoint evalOp evalLet evalFun evalAp) $ \q' ->
+    runPointwise (k (Pointwise $ \_ _ _ _ _ -> q')) evalPoint evalOp evalLet evalFun evalAp
