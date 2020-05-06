@@ -13,15 +13,22 @@ maintainer:          aovieth@gmail.com
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Pilot.Domain.Hask,
+  exposed-modules:     Pilot.Domain.C99,
+                       Pilot.Domain.Hask,
                        Pilot.Types.Args,
                        Pilot.Types.Nat,
                        Pilot.Types.Point,
 
                        Pilot.EDSL.Pointwise,
                        Pilot.EDSL.Streamwise
+                       
 
-  build-depends:       base
+  build-depends:       base,
+                       containers,
+                       language-c99,
+                       language-c99-simple,
+                       pretty,
+                       transformers
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -fwarn-incomplete-patterns

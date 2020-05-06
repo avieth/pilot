@@ -31,12 +31,21 @@ import qualified Pilot.Types.Point as Pilot
 -- - let bindigns
 -- - lambda abstraction
 -- - lambda application
+--
+-- TODO if we had a generic Point type
+--
+--   Fun :: (Point target a -> Point target b) -> Point target (a :-> b)
+--   Val :: target a -> Point target (T a)
+--
+-- and we used that as the result of runPointwise, then we would have a generic
+-- abstraction and application implementation and would only need 3 continuations
+-- here.
 newtype Pointwise (point :: ty -> Kind.Type) (op :: (Pilot.Kind ty -> Kind.Type) -> [ty] -> ty -> Kind.Type) target t = Pointwise
   { runPointwise :: (forall r . point r -> target (T r))
                  -- ^ Domain-specific literals
                  -> (forall args r . op target args r -> Args target args -> target (T r))
                  -- ^ Domain-specific operators
-                 -> (forall q r . target (T q) -> (target (T q) -> target r) -> target r)
+                 -> (forall q r . target (T q) -> (target (T q) -> target (T r)) -> target (T r))
                  -- ^ Let bindings
                  -> (forall q r . (target q -> target r) -> target (q :-> r))
                  -- ^ Abstraction
@@ -79,8 +88,8 @@ op o args = Pointwise $ \evalPoint evalOp evalLet evalFun evalAp -> evalOp o
 
 -- | Let binding. Allows expression of sharing.
 plet :: Pointwise point op target (T q)
-     -> (Pointwise point op target (T q) -> Pointwise point op target r)
-     -> Pointwise point op target r
+     -> (Pointwise point op target (T q) -> Pointwise point op target (T r))
+     -> Pointwise point op target (T r)
 plet q k = Pointwise $ \evalPoint evalOp evalLet evalFun evalAp ->
   evalLet (runPointwise q evalPoint evalOp evalLet evalFun evalAp) $ \q' ->
     runPointwise (k (Pointwise $ \_ _ _ _ _ -> q')) evalPoint evalOp evalLet evalFun evalAp

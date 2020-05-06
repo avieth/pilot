@@ -21,6 +21,7 @@ module Pilot.Domain.Hask
   , Op (..)
   , Target (..)
   , val
+  , unval
   , evalPoint
   , evalLet
   , evalOp
@@ -65,8 +66,11 @@ data Target (t :: Pilot.Kind Type) where
   Fun :: (Target s -> Target t) -> Target (s :-> t)
   Val :: t -> Target (T t)
 
-val :: Target (T t) -> t
-val (Val t) = t
+val :: t -> Target (T t)
+val = Val
+
+unval :: Target (T t) -> t
+unval (Val t) = t
 
 evalPoint :: Point t -> Target (T t)
 evalPoint (Identity t) = Val t

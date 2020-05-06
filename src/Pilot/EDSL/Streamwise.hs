@@ -33,7 +33,7 @@ import Pilot.EDSL.Pointwise
 -- - ap (applicative <*>)
 newtype Streamwise point op target stream n t = Streamwise
   { runStreamwise :: ( forall n r .
-                          Vec (S n) (Pointwise point op target (T r))
+                          Vec (S n) (point r)
                        -> (stream target n (T r) -> stream target Z (T r))
                        -> stream target (S n) (T r)
                      )
@@ -44,7 +44,8 @@ newtype Streamwise point op target stream n t = Streamwise
                   -- rest of the stream is determined by the result of the
                   -- continuation, which may lazily use that very stream but
                   -- with one fewer prefix (so you can drop all but the last
-                  -- known value if you wish).
+                  -- known value if you wish). The points given must be literals
+                  -- rather than any pointwise computation.
                   -> (forall n r . stream target (S n) r -> stream target n r)
                   -- ^ Drop a point from a stream which has a known point held
                   -- in front of it. This is the way in which a stream created
@@ -60,7 +61,7 @@ newtype Streamwise point op target stream n t = Streamwise
                   -> stream target n t
   }
 
-hold :: Vec (S n) (Pointwise  point op target (T t))
+hold :: Vec (S n) (point t)
      -> (Streamwise point op target stream n (T t) -> Streamwise point op target stream Z (T t))
      -> Streamwise point op target stream (S n) (T t)
 hold ps k = Streamwise $ \ehold edrop epure eap elet -> ehold ps $ \stream ->
