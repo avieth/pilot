@@ -75,6 +75,14 @@ vecLength :: Vec n t -> Natural
 vecLength VNil = 0
 vecLength (VCons _ vs) = 1 + vecLength vs
 
+vecReverse :: Vec n t -> Vec n t
+vecReverse VNil = VNil
+vecReverse (VCons t ts) = vecSnoc (vecReverse ts) t
+
+vecSnoc :: Vec n t -> t -> Vec (S n) t
+vecSnoc VNil t = VCons t VNil
+vecSnoc (VCons t ts) t' = VCons t (vecSnoc ts t')
+
 index :: Index n -> Vec n t -> t
 index Here (VCons t _) = t
 index (There idx) (VCons _ vs) = index idx vs

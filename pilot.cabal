@@ -13,15 +13,11 @@ maintainer:          aovieth@gmail.com
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Pilot.Domain.C99,
-                       Pilot.Domain.Hask,
-                       Pilot.Types.Args,
-                       Pilot.Types.Nat,
-                       Pilot.Types.Point,
+  exposed-modules:     
+                       Pilot.EDSL.Point
+                       Pilot.C
 
-                       Pilot.EDSL.Pointwise,
-                       Pilot.EDSL.Streamwise
-                       
+                       Pilot.Types.Nat
 
   build-depends:       base,
                        containers,
