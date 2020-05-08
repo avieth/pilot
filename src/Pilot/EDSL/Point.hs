@@ -16,10 +16,15 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Pilot.EDSL.Point
   ( Type (..)
   , TypeRep (..)
+  , KnownType (..)
+
   , ExprF (..)
   , All (..)
   , Any (..)
@@ -29,9 +34,11 @@ module Pilot.EDSL.Point
   , IntegerLiteral (..)
 
   , Signedness (..)
-  , Width (..)
   , SignednessRep (..)
+  , KnownSignedness (..)
+  , Width (..)
   , WidthRep (..)
+  , KnownWidth (..)
 
   , UInt8
   , uint8_t
@@ -64,6 +71,7 @@ module Pilot.EDSL.Point
 import Prelude hiding (Maybe, Either)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
+import Data.Proxy (Proxy (..))
 import Data.Typeable (Typeable)
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
@@ -84,6 +92,15 @@ data SignednessRep (s :: Signedness) where
   Signed_t :: SignednessRep 'Signed
   Unsigned_t :: SignednessRep 'Unsigned
 
+class KnownSignedness (s :: Signedness) where
+  signednessRep :: proxy s -> SignednessRep s
+
+instance KnownSignedness 'Signed where
+  signednessRep _ = Signed_t
+
+instance KnownSignedness 'Unsigned where
+  signednessRep _ = Unsigned_t
+
 -- | Width in bits.
 data Width where
   Eight     :: Width
@@ -96,6 +113,21 @@ data WidthRep (t :: Width) where
   Sixteen_t   :: WidthRep 'Sixteen
   ThirtyTwo_t :: WidthRep 'ThirtyTwo
   SixtyFour_t :: WidthRep 'SixtyFour
+
+class KnownWidth (w :: Width) where
+  widthRep :: proxy w -> WidthRep w
+
+instance KnownWidth 'Eight where
+  widthRep _ = Eight_t
+
+instance KnownWidth 'Sixteen where
+  widthRep _ = Sixteen_t
+
+instance KnownWidth 'ThirtyTwo where
+  widthRep _ = ThirtyTwo_t
+
+instance KnownWidth 'SixtyFour where
+  widthRep _ = SixtyFour_t
 
 data IntegerLiteral (signedness :: Signedness) (width :: Width) where
 
@@ -120,15 +152,45 @@ data TypeRep (t :: Type) where
   Product_t :: Typeable tys => All TypeRep tys -> TypeRep ('Product tys)
   Sum_t     :: Typeable tys => All TypeRep tys -> TypeRep ('Sum tys)
 
+class KnownType (t :: Type) where
+  typeRep :: proxy t -> TypeRep t
+
+instance (KnownSignedness signedness, KnownWidth width) => KnownType ('Integer signedness width) where
+  typeRep _ = Integer_t (signednessRep (Proxy :: Proxy signedness))
+                        (widthRep (Proxy :: Proxy width))
+
+instance KnownType ('Product '[]) where
+  typeRep _ = Product_t AllF
+
+instance (Typeable t, Typeable ts, KnownType t, KnownType ('Product ts))
+  => KnownType ('Product (t ': ts)) where
+  typeRep _ =
+    let Product_t theRest = typeRep (Proxy :: Proxy ('Product ts))
+    in  Product_t (AndF (typeRep (Proxy :: Proxy t)) theRest)
+
+instance KnownType ('Sum '[]) where
+  typeRep _ = Sum_t AllF
+
+instance (Typeable t, Typeable ts, KnownType t, KnownType ('Sum ts))
+  => KnownType ('Sum (t ': ts)) where
+  typeRep _ =
+    let Sum_t theRest = typeRep (Proxy :: Proxy ('Sum ts))
+    in  Sum_t (AndF (typeRep (Proxy :: Proxy t)) theRest)
+
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
 -- representation.
 --
 data ExprF (f :: Type -> Haskell.Type) (t :: Type) where
 
+  -- Atomic data
+  -- TODO arithmetic stuff
+
   IntroInteger :: TypeRep ('Integer signedness width)
                -> IntegerLiteral signedness width
                -> ExprF f ('Integer signedness width)
+
+  -- Compound data: algebraic datatypes
 
   IntroProduct :: TypeRep ('Product types)
                -> All f types
