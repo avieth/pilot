@@ -25,7 +25,7 @@ module Pilot.C where
 
 import qualified Control.Monad.Trans.Class as Trans (lift)
 import Control.Monad.Trans.Except
-import Control.Monad.Trans.State
+import Control.Monad.Trans.State.Strict
 import Data.Functor.Identity
 
 import qualified Data.Int as Haskell
@@ -49,31 +49,6 @@ import qualified Pilot.EDSL.Point as Point
 import Pilot.Types.Nat
 
 -- TODO NEXT STEPS
---
--- - eval_local: how to?
---   So the code gen always produces an expression yeah, and it comes with
---   - global things (type declarations, externals, etc.)
---   - local things (binders)
---   but also, a list of blocks/statements I think...
---
---
--- - The CodeGen monad maintains bindings, so use the ST trick? So new type
---   parameter stands in for "binding context" and if it's free that means
---   "no assumptions about bindings".
--- - ^ related to what the user-facing language will be. How about we include
---   the binding parameter in the EDSL functor thing itself?
---
---     f s Int8 -> f s Int8 -> ExprF f s Int8
---
---   ?? Ultimately what we want is an expression construction monad reminiscent
---   of ST.
---
---     Expr f s t = Expr { runExpr :: (forall x y . ExprF f x y -> f x y) -> f s t }
---
---   the idea is that you write things which are free in f and s
---     f : code gen backend
---     s : binding proxy
---   and that means you can't do anything too stupid.
 --
 -- - C backend specific externs:
 --   - values of any EDSL type
@@ -405,45 +380,53 @@ example_5 = do
   p <- example_1
   Point.fst uint8_t int8_t p
 
-{-
-example_1_1 :: Expr
-example_1_1 = eval_intro_product
-  (pair_t uint16_t (pair_t int8_t uint64_t))
-  ( AndF (eval_intro_integer uint16_t (UInt16 43))
-  $ AndF (eval_intro_product (pair_t int8_t uint64_t)
-      (AndF (eval_intro_integer int8_t (Int8 (-1))) $ AndF (eval_intro_integer uint64_t (UInt64 65536)) $ AllF))
-  $ AllF)
+example_6 :: Expr f val s (val s UInt8)
+example_6 = do
+  x <- uint8 2
+  y <- uint8 2
+  plus uint8_t x y
 
-example_1_2 = eval_elim_product
-  (pair_t uint8_t uint16_t)
-  (OrC (AnyC (\it -> it)))
-  (eval_intro_product (pair_t uint8_t uint16_t)
-    (AndF (eval_intro_integer uint8_t (UInt8 1)) $ AndF (eval_intro_integer uint16_t (UInt16 2)) $ AllF)
-  )
+example_7 :: Expr f val s (val s UInt8)
+example_7 = do
+  p <- example_1
+  y <- example_6
+  x <- Point.fst uint8_t int8_t p
+  plus uint8_t y x
 
-example_2_1 = eval_intro_sum
-  (maybe_t (pair_t uint8_t int8_t))
-  (AnyF (eval_intro_product unit_t AllF))
+example_8 :: Expr f val s (val s UInt8)
+example_8 = do
+  p <- example_1
+  local (pair_t uint8_t int8_t) uint8_t p $ \p' -> do
+    x <- Point.fst uint8_t int8_t p'
+    y <- example_6
+    plus uint8_t x y
 
-example_2_2 = eval_intro_sum
-  (maybe_t (pair_t uint8_t int8_t))
-  (OrF (AnyF (eval_intro_product (pair_t uint8_t int8_t)
-    (AndF (eval_intro_integer uint8_t (UInt8 42)) $ AndF (eval_intro_integer int8_t (Int8 (-42))) $ AllF))))
-
-example_3_1 = eval_elim_sum
-  (maybe_t (pair_t uint8_t int8_t))
-  int8_t
-  (AndC (\_ -> eval_intro_integer int8_t (Int8 (-1))) $ AndC (\x -> eval_elim_product (pair_t uint8_t int8_t) (OrC (AnyC (\it -> it))) x) $ AllC)
-  example_2_2
--}
-
+-- | Generate a C value representation for an expression, assuming any/all of
+-- its sub-expressions are already generated.
+--
+-- For many `ExprF`s, this will be a simple C expression. For some, C statements
+-- and declarations are required (forming a compound statement). In all cases,
+-- a C expression is ultimately given, but the state carried in the `CodeGen`
+-- monad will contain the information necessary to construct the compound
+-- statement which gives meaning to that expression.
+--
+-- A `Local` binding, for instance, needs a C declaration in the same scope.
+-- The most complicated aspect is `ElimSum`, which must elaborate to an if/else
+-- or switch construct, because the cases eliminators may reuqire scope of their
+-- own (and so a conditional _expression_ cannot be used). Ultimately, the
+-- `ElimSum` yields a C identifier which is updated at the end of every case
+-- branch.
+--
+-- The `s` type parameter serves to represent the fact that the Val, which must
+-- be a C expression, makes sense only in context.
 eval_expr :: ExprF CodeGen Val s t -> CodeGen s (Val s t)
-eval_expr (IntroInteger tr il) = eval_intro_integer tr il
-eval_expr (IntroProduct tr fields) = eval_intro_product tr fields
-eval_expr (IntroSum tr variant) = eval_intro_sum tr variant
+eval_expr (IntroInteger tr il)       = eval_intro_integer tr il
+eval_expr (AddInteger tr x y)        = eval_add_integer tr x y
+eval_expr (IntroProduct tr fields)   = eval_intro_product tr fields
+eval_expr (IntroSum tr variant)      = eval_intro_sum tr variant
 eval_expr (ElimProduct tr rr sel it) = eval_elim_product tr sel it
-eval_expr (ElimSum tr rr cases it) = eval_elim_sum tr rr cases it
-eval_expr (Local tt tr it k) = eval_local tt tr it k
+eval_expr (ElimSum tr rr cases it)   = eval_elim_sum tr rr cases it
+eval_expr (Local tt tr it k)         = eval_local tt tr it k
 
 -- | Take a fresh name, bind the expression to it, and use the _name_ rather
 -- than the expression to elaborate the code here in the meta-language.
@@ -453,24 +436,21 @@ eval_expr (Local tt tr it k) = eval_local tt tr it k
 -- scope, so we're forced to use if/else blocks or switch statements with block
 -- scopes.
 --
--- 
+-- TODO an improvement for later: if the value being bound is just an identifier,
+-- then we don't need a new binding. Can be done easily if we change the Val
+-- representation to be a sum.
 eval_local
-  :: TypeRep t
+  :: forall t r s .
+     TypeRep t
   -> TypeRep r
   -> Val s t
-  -> (Val s t -> CodeGen s (Val s r))
+  -> (Val s t -> Expr CodeGen Val s (Val s r))
   -> CodeGen s (Val s r)
 eval_local tt tr it k = do
   typeSpec <- type_spec tt
-  ident <- freshBinder
-  undefined
-  {-
-  -- NB: we must run this with the fresh binder in there.
-  -- Then we have to put the rest of the binding decln details somewhere...
-  aexpr <- pure (identIsCondExpr ident)
-  -- What we're making here is the ingredients of a C _declaration_, not an
-  -- assignment. An assignment has, on the left-hand-side of the equal sign,
-  -- things which are already declared.
+  ident <- fresh_binder "local"
+  -- Now we must make a block item which assigns the value `it` to the
+  -- identifier `ident`.
   --
   -- Every binding is const. TBD should we use volatile? register? No idea.
   --
@@ -481,21 +461,34 @@ eval_local tt tr it k = do
   let declnSpecs :: C.DeclnSpecs
       declnSpecs = C.DeclnSpecsQual C.QConst $
         Just (C.DeclnSpecsType typeSpec Nothing)
+      -- Should the binding be a pointer or not? Depends upon the type of
+      -- the value we're binding.
+      --
+      -- TODO make this not so ad hoc; sort out all that type spec vs. type qual
+      -- vs. type name etc. and make it abundantly clear, in one place, what
+      -- the rules are for C types.
+      mPtr :: Maybe C.Ptr
+      mPtr = case tt of
+        Product_t _ -> Just $ C.PtrBase Nothing
+        Sum_t _     -> Just $ C.PtrBase Nothing
+        _           -> Nothing
       declr :: C.Declr
-      declr = C.Declr Nothing (C.DirectDeclrIdent ident)
+      declr = C.Declr mPtr (C.DirectDeclrIdent ident)
+      cexpr :: C.CondExpr
+      cexpr = getVal it
       init :: C.Init
-      init = C.InitExpr (condExprIsAssignExpr aexpr);
+      init = C.InitExpr (condExprIsAssignExpr cexpr);
       initDeclr :: C.InitDeclr
       initDeclr = C.InitDeclrInitr declr init
       initDeclrList :: C.InitDeclrList
       initDeclrList = C.InitDeclrBase initDeclr
-      decln :: C.Decln
-      decln = C.Decln declnSpecs (Just initDeclrList)
-  undefined
-  -}
-
-freshBinder :: CodeGen s C.Ident
-freshBinder = undefined
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
+  addBlockItem blockItem
+  -- And now, carry on with the identifier standing in for the value
+  let val :: Val s t
+      val = Val (identIsCondExpr ident)
+  eval_expr' (k val)
 
 eval_intro_integer
   :: TypeRep ('Integer signedness width)
@@ -516,6 +509,17 @@ absolute_value (Int8 i8)    = fromIntegral (abs i8)
 absolute_value (Int16 i16)  = fromIntegral (abs i16)
 absolute_value (Int32 i32)  = fromIntegral (abs i32)
 absolute_value (Int64 i64)  = fromIntegral (abs i64)
+
+-- | The `signedness` and `width` meta-language types ensure that the two
+-- integers are of the same type.
+eval_add_integer
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer sigedness width))
+eval_add_integer _ vx vy = pure $ Val $ addExprIsCondExpr $ C.AddPlus
+  (condExprIsAddExpr (getVal vx))
+  (condExprIsMultExpr (getVal vy))
 
 -- | Product intro: give all conjuncts and get the product. Since products are
 -- structs, this corresponds to a struct initializer with a field for each
@@ -709,6 +713,17 @@ eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = do
 eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
 eval_expr' expr = evalInMonad expr eval_expr
 
+condExprIsAddExpr :: C.CondExpr -> C.AddExpr
+condExprIsAddExpr = C.AddMult . condExprIsMultExpr
+
+condExprIsMultExpr :: C.CondExpr -> C.MultExpr
+condExprIsMultExpr = C.MultCast . C.CastUnary . C.UnaryPostfix . C.PostfixPrim .
+  C.PrimExpr . C.ExprAssign . C.AssignCond
+
+addExprIsCondExpr :: C.AddExpr -> C.CondExpr
+addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
+
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
 
@@ -783,17 +798,62 @@ data CodeGenError where
 
 deriving instance Show CodeGenError
 
--- | Code generation modifies a CodeGenState from an initial empty state.
+-- | Scope information: one number for the "major" scope, indicating how many
+-- nested scopes we have taken, and one "minor" indicating how many bindings
+-- have been created in the major scope.
+--
+-- This is used to come up with C variable identifiers
+--
+--   uint8_t prefix_major_minor = 42;
+--
+data Scope = Scope
+  { scopeMajor :: !Natural
+  , scopeMinor :: !Natural
+  }
+
+scope_init :: Scope
+scope_init = Scope { scopeMajor = 0, scopeMinor = 0 }
+
+scope_new :: Scope -> Scope
+scope_new s = s { scopeMajor = scopeMajor s + 1, scopeMinor = 0 }
+
+scope_next :: Scope -> ((Natural, Natural), Scope)
+scope_next s = ((scopeMajor s, scopeMinor s), s { scopeMinor = scopeMinor s + 1 })
+
+fresh_binder :: String -> CodeGen s C.Ident
+fresh_binder prefix = do
+  st <- CodeGen $ Trans.lift get
+  let scope NE.:| scopes = cgsScope st
+      ((major, minor), scope') = scope_next scope
+      st' = st { cgsScope = scope' NE.:| scopes }
+      bindName = prefix ++ "_" ++ show major ++ "_" ++ show minor
+  ident <- maybeError
+    (CodeGenInternalError $ "fresh_binder invalid " ++ show bindName)
+    (stringIdentifier bindName)
+  CodeGen $ Trans.lift $ put st'
+  pure ident
+
+-- | Code generation modifies a `CodeGenState` from an initial empty state.
+--
 -- This state is relative to some C expression which is being built-up (see
--- the `CodeGen` and `CodeGen` types).
+-- the `CodeGen` and `CodeGen` types). That expression may make reference to
+-- C compound types (structs, unions, enums) and also to variable declarations.
+-- In order to give those declarations meaning, it may be necessary to carry
+-- out a compound statement _before_ this expression is evaluated. All of this
+-- information is contained here in the code generation state.
+--
 data CodeGenState = CodeGenState
-  { -- | Bindings used in the expression.
-    -- TODO FIXME we'll have to be very careful about this: bindings made
-    -- under a sum elimination must get their own scopes, i.e. they need to
-    -- go into function calls.
-    cgsBindings :: !(Map VarIdentifier C.CondExpr)
-  , cgsProducts :: !(Map TypeIdentifier ProductDeclr)
-  , cgsSums     :: !(Map TypeIdentifier SumDeclr)
+  { -- | C block items composing a compound statement which must be evaluated
+    -- before the expression. It's in reverse order: head of list is the last
+    -- to be evaluated.
+    --
+    -- In good faith this should be in a writer monad. CodeGen terms will never
+    -- remove anything from this list.
+    cgsBlockItems :: ![C.BlockItem]
+    -- | Scope information for making variable names.
+  , cgsScope      :: !(NonEmpty Scope)
+  , cgsProducts   :: !(Map TypeIdentifier ProductDeclr)
+  , cgsSums       :: !(Map TypeIdentifier SumDeclr)
   }
 
 -- | Get all of the C enum, struct, and union declarations.
@@ -836,6 +896,16 @@ codeGenCompoundTypes cgs =
     , C.StructOrUnionForwDecln C.Union (sdUnionIdent sdeclr)
     ]
 
+codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
+codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
+
+blockItemList :: [C.BlockItem] -> Maybe C.BlockItemList
+blockItemList []             = Nothing
+blockItemList (item : items) = Just $ go item items
+  where
+  go item []              = C.BlockItemBase item
+  go item (item' : items) = C.BlockItemCons (go item' items) item
+
 -- | A nonempty product is represented by a struct.
 data ProductDeclr = ProductDeclr
   { pdStructDeclnList :: !C.StructDeclnList
@@ -856,6 +926,19 @@ data SumDeclr = SumDeclr
 type TypeIdentifier = Haskell.TypeRep
 type VarIdentifier = String
 
+-- | Represents an object-language value within a 'CodeGen' context (the `s`
+-- type parameter, the ST/STRef trick).
+--
+-- TODO it may be useful to make this a sum
+--
+--     Name C.Ident
+--   | Expression C.Expr
+--   | Unreachable
+--
+-- this way we could easily "eta-reduce" when binding a name to another name,
+-- and we'd also get some code reduction for impossible cases, i.e. elimination
+-- of an empty sum.
+--
 newtype Val (s :: Haskell.Type) (t :: Type) = Val { getVal :: C.CondExpr }
 
 -- | A monad to ease the expression of code generation, which carries some
@@ -867,13 +950,38 @@ deriving instance Functor (CodeGen s)
 deriving instance Applicative (CodeGen s)
 deriving instance Monad (CodeGen s)
 
+-- | Run a CodeGen in a fresh scope. A new C scope block will be placed around
+-- any generated block items.
+withNewScope :: CodeGen s t -> CodeGen s t
+withNewScope cg = CodeGen $ do
+  st <- Trans.lift get
+  let scopes = cgsScope st
+      scope' = scope_new (NE.head scopes)
+      blockItems = cgsBlockItems st
+      blockItems' = []
+      st' = st { cgsBlockItems = blockItems', cgsScope = NE.cons scope' scopes }
+      Identity (outcome, st'') = runStateT (runExceptT (runCodeGen cg)) st'
+      newBlockItem = C.BlockItemStmt $ C.StmtCompound $ C.Compound $
+        blockItemList (cgsBlockItems st'')
+      blockItems'' = newBlockItem : blockItems
+  Trans.lift $ put $ st'' { cgsBlockItems = blockItems'', cgsScope = scopes }
+  except outcome
+
+addBlockItem :: C.BlockItem -> CodeGen s ()
+addBlockItem !bitem = CodeGen $ do
+  st <- Trans.lift get
+  let bitems = cgsBlockItems st
+      !st' = st { cgsBlockItems = bitem : bitems }
+  Trans.lift $ put st'
+
 evalCodeGen :: CodeGen s t -> (Either CodeGenError t, CodeGenState)
 evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
   initialState = CodeGenState
-    { cgsBindings = mempty
-    , cgsProducts = mempty
-    , cgsSums     = mempty
+    { cgsBlockItems = []
+    , cgsScope      = scope_init NE.:| []
+    , cgsProducts   = mempty
+    , cgsSums       = mempty
     }
 
 codeGenError :: CodeGenError -> CodeGen s x

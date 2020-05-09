@@ -71,6 +71,10 @@ module Pilot.EDSL.Point
   , int64_t
   , int64
 
+  , plus
+
+  , local
+
   , Unit
   , unit_t
   , unit
@@ -301,11 +305,20 @@ data ExprF
   where
 
   -- Atomic data
-  -- TODO arithmetic stuff
 
   IntroInteger :: TypeRep ('Integer signedness width)
                -> IntegerLiteral signedness width
                -> ExprF f val s ('Integer signedness width)
+
+  -- TODO more arithmetic and logic stuff
+
+  AddInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ExprF f val s ('Integer signedness width)
+
+  -- TODO safe upcasts
+  -- TODO checked downcasts
 
   -- Compound data: algebraic datatypes
 
@@ -333,7 +346,7 @@ data ExprF
   Local :: TypeRep t
         -> TypeRep r
         -> val s t
-        -> (val s t -> f s (val s r))
+        -> (val s t -> Expr f val s (val s r))
         -> ExprF f val s r
 
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
@@ -526,3 +539,17 @@ int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
 
 int64 :: Haskell.Int64 -> Expr f val s (val s ('Integer Signed SixtyFour))
 int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
+
+plus :: TypeRep ('Integer signedness width)
+     -> val s ('Integer signedness width)
+     -> val s ('Integer signedness width)
+     -> Expr f val s (val s ('Integer signedness width))
+plus tr x y = exprF $ AddInteger tr x y
+
+local
+  :: TypeRep t
+  -> TypeRep r
+  -> val s t
+  -> (val s t -> Expr f val s (val s r))
+  -> Expr f val s (val s r)
+local trt trr val k = exprF (Local trt trr val k)
