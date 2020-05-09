@@ -364,7 +364,7 @@ data Selector
   (ts  :: [k])
   (r   :: k)
   where
-  AnyC :: (val s t -> Expr f val s (val s r)) -> Selector f val s (t ': ts) r
+  AnyC :: TypeRep t -> (val s t -> Expr f val s (val s r)) -> Selector f val s (t ': ts) r
   OrC  :: Selector f val s ts r -> Selector f val s (t ': ts) r
 
 data Cases
@@ -452,7 +452,7 @@ fst :: (Typeable a, Typeable b)
     -> val s (Pair a b)
     -> Expr f val s (val s a)
 fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta
-  (AnyC (\it -> pure it))
+  (AnyC ta (\it -> pure it))
   vp
 
 snd :: (Typeable a, Typeable b)
@@ -461,7 +461,7 @@ snd :: (Typeable a, Typeable b)
     -> val s (Pair a b)
     -> Expr f val s (val s b)
 snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb
-  (OrC $ AnyC (\it -> pure it))
+  (OrC $ AnyC tb (\it -> pure it))
   vp
 
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
