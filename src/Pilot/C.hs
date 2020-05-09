@@ -48,6 +48,10 @@ import Pilot.EDSL.Point hiding (Val (..), Either, Maybe)
 import qualified Pilot.EDSL.Point as Point
 import Pilot.Types.Nat
 
+import System.IO (writeFile)
+import System.IO.Error (userError)
+import Control.Exception (throwIO)
+
 -- TODO NEXT STEPS
 --
 -- - C backend specific externs:
@@ -349,6 +353,9 @@ field_declns name n t (AndF t' ts) = do
 
 run_example :: Expr CodeGen Val s t -> (Prelude.Either CodeGenError t, CodeGenState)
 run_example x = evalCodeGen (evalInMonad x eval_expr)
+
+write_example :: String -> Expr CodeGen Val s (Val s t) -> IO ()
+write_example fp expr = codeGenToFile fp (evalInMonad expr eval_expr)
 
 example_1 :: Expr f val s (val s (Pair UInt8 Int8))
 example_1 = do
@@ -896,6 +903,46 @@ codeGenCompoundTypes cgs =
     , C.StructOrUnionForwDecln C.Union (sdUnionIdent sdeclr)
     ]
 
+-- | Top-level declarations (types, externs, etc.)
+--
+-- TODO fix up when we have externs included
+--
+-- NB: we reverse the list because the C AST types are ordered as snoc lists.
+codeGenDeclns :: CodeGenState -> [C.Decln]
+codeGenDeclns = fmap mkDecln . reverse . codeGenCompoundTypes
+  where
+  mkDecln :: C.TypeSpec -> C.Decln
+  mkDecln ts = C.Decln (C.DeclnSpecsType ts Nothing) Nothing
+
+-- | Top-level function definitions. Since we don't have an expression in
+-- scope here, this obviously does not include the function which evaluates the
+-- expression built by a CodeGen.
+-- TODO will there be anything here ever? i.e. do we want/need to allow for
+-- defining auxiliary functions?
+codeGenFunDefs :: CodeGenState -> [C.FunDef]
+codeGenFunDefs _ = []
+
+-- | The C translation unit for a CodeGenState. This is the type declarations,
+-- TODO extern declarations, followed by function definitions.
+-- Of course, the unit could be empty, if there are no declarations.
+codeGenTransUnit :: CodeGenState -> Maybe C.TransUnit
+codeGenTransUnit cgs = mkTransUnit extDeclns
+  where
+
+  mkTransUnit :: [C.ExtDecln] -> Maybe C.TransUnit
+  mkTransUnit []     = Nothing
+  mkTransUnit (t:ts) = Just $ mkTransUnit' t ts
+
+  mkTransUnit' :: C.ExtDecln -> [C.ExtDecln] -> C.TransUnit
+  mkTransUnit' t []        = C.TransUnitBase t
+  mkTransUnit' t (t' : ts) = C.TransUnitCons (mkTransUnit' t' ts) t
+
+  extDeclns :: [C.ExtDecln]
+  extDeclns = fmap C.ExtDecln (codeGenDeclns cgs)
+
+  funDefs :: [C.ExtDecln]
+  funDefs = fmap C.ExtFun (codeGenFunDefs cgs)
+
 codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
 codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
 
@@ -983,6 +1030,50 @@ evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialSt
     , cgsProducts   = mempty
     , cgsSums       = mempty
     }
+
+codeGen :: CodeGen s (Val s t) -> Either CodeGenError C.TransUnit
+codeGen cg = fmap mkTransUnit outcome
+  where
+  (outcome, cgs) = evalCodeGen cg
+  mkTransUnit :: Val s t -> C.TransUnit
+  mkTransUnit val = case codeGenTransUnit cgs of
+    Nothing -> C.TransUnitBase (C.ExtFun (mainFun val cgs))
+    Just tu -> C.TransUnitCons tu (C.ExtFun (mainFun val cgs))
+  mainFun :: Val s t -> CodeGenState -> C.FunDef
+  mainFun val cgs =
+    let declnSpecs :: C.DeclnSpecs
+        -- TODO Val should contain its type spec?
+        declnSpecs = C.DeclnSpecsType C.TVoid Nothing
+        declr :: C.Declr
+        declr = C.Declr Nothing $ C.DirectDeclrFun2
+          (C.DirectDeclrIdent ident_eval)
+          Nothing
+        args :: Maybe C.DeclnList
+        args = Nothing
+        exprBlockItem :: C.BlockItem
+        exprBlockItem = C.BlockItemStmt $ C.StmtJump $ C.JumpReturn $ Just $
+          condExprIsExpr (getVal val)
+        compoundStmt :: C.CompoundStmt
+        compoundStmt = C.Compound $ Just $ case blockItemList (cgsBlockItems cgs) of
+          Nothing  -> C.BlockItemBase exprBlockItem
+          Just bil -> C.BlockItemCons bil exprBlockItem
+    in  C.FunDef declnSpecs declr args compoundStmt
+
+codeGenToFile :: String -> CodeGen s (Val s t) -> IO ()
+codeGenToFile fp cg = case codeGen cg of
+  Left  err       -> throwIO (userError (show err))
+  Right transUnit -> writeFile fp (prettyPrint transUnit)
+
+-- | Make a C translation unit.
+-- It always has a function declaration which returns the expression given by
+-- the Val here.
+genTransUnit :: CodeGen s (Val s t) -> C.TransUnit
+genTransUnit _ = undefined
+
+-- | All of the C top-level declarations besides the function which evaluates
+-- the expression. This includes the type declarations and definitions
+genExtDeclns :: CodeGen s x -> [C.ExtDecln]
+genExtDeclns _ = undefined
 
 codeGenError :: CodeGenError -> CodeGen s x
 codeGenError err = CodeGen (throwE err)
@@ -1392,11 +1483,28 @@ cVOID typeName = C.UnaryOp C.UODeref (C.Cast typeName' (condExprIsCastExpr cNULL
     C.TypeName sql (Just (C.AbstractDeclrDirect (Just ptr) dad)) ->
       C.TypeName sql (Just (C.AbstractDeclrDirect (Just (C.PtrCons Nothing ptr)) dad))
 
+-- | "eval", the name of the main function we generate. We don't use main
+-- because that would give warnings for any expression type not int.
+ident_eval :: C.Ident
+ident_eval =
+  C.IdentConsNonDigit
+    (C.IdentConsNonDigit
+      (C.IdentConsNonDigit
+        (C.IdentBase (C.IdentNonDigit C.NDe))
+        (C.IdentNonDigit C.NDv)
+      )
+      (C.IdentNonDigit C.NDa)
+    )
+    (C.IdentNonDigit C.NDl)
+
 -- | "tag"
 ident_tag :: C.Ident
 ident_tag =
   C.IdentConsNonDigit
-    (C.IdentConsNonDigit (C.IdentBase (C.IdentNonDigit C.NDt)) (C.IdentNonDigit C.NDa))
+    (C.IdentConsNonDigit
+      (C.IdentBase (C.IdentNonDigit C.NDt))
+      (C.IdentNonDigit C.NDa)
+    )
     (C.IdentNonDigit C.NDg)
 
 -- | "variant"
