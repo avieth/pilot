@@ -400,6 +400,11 @@ example_4 = do
   -- Can do that by using pure, right?
   elim_maybe int8_t int8_t it (\_ -> int8 (-1)) (\t -> pure t)
 
+example_5 :: Expr f val s (val s UInt8)
+example_5 = do
+  p <- example_1
+  Point.fst uint8_t int8_t p
+
 {-
 example_1_1 :: Expr
 example_1_1 = eval_intro_product
@@ -548,7 +553,7 @@ eval_intro_product trep (AndF t ts) = do
 -- NB: this cannot be an empty product, the 'Selector' GADT does not allow it.
 eval_elim_product
   :: TypeRep ('Product types)
-  -> Selector (CodeGen s) (Val s) types r
+  -> Selector CodeGen Val s types r
   -> Val s ('Product types)
   -> CodeGen s (Val s r)
 eval_elim_product trep selector cgt = do
@@ -567,7 +572,7 @@ eval_elim_product trep selector cgt = do
 eval_elim_product_with_selector
   :: Natural
   -> C.PostfixExpr -- ^ The C expression giving the product struct.
-  -> Selector (CodeGen s) (Val s) types r
+  -> Selector CodeGen Val s types r
   -> CodeGen s (Val s r)
 eval_elim_product_with_selector n pexpr (OrC sel) =
   eval_elim_product_with_selector (n+1) pexpr sel
@@ -576,7 +581,7 @@ eval_elim_product_with_selector n pexpr (AnyC k) = do
     (CodeGenInternalError $ "eval_elim_product_with_selector bad field " ++ show n)
     (stringIdentifier ("field_" ++ show n))
   let expr = postfixExprIsCondExpr $ C.PostfixArrow pexpr fieldIdent
-  k (Val expr)
+  eval_expr' $ k (Val expr)
 
 -- |
 --
@@ -659,7 +664,7 @@ sum_variant_init_list n (AnyF cgt) = do
 eval_elim_sum
   :: TypeRep ('Sum types)
   -> TypeRep r
-  -> Cases (CodeGen s) (Val s) types r
+  -> Cases CodeGen Val s types r
   -> Val s ('Sum types)
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
@@ -677,7 +682,7 @@ eval_elim_sum_with_cases
   -> TypeRep r
   -> C.EqExpr -- ^ The tag of the sum
   -> C.PostfixExpr -- ^ The variant of the sum
-  -> Cases (CodeGen s) (Val s) types r
+  -> Cases CodeGen Val s types r
   -> CodeGen s (Val s r)
 -- TODO what should we put for eliminating an empty product? The idea is that
 -- this code should never be reached in the C executable.
@@ -692,11 +697,17 @@ eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = do
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
     (stringIdentifier ("variant_" ++ show n))
   let valueSelector = C.PostfixDot variantExpr variantIdent
-  Val trueExpr <- k (Val (postfixExprIsCondExpr valueSelector))
+  -- What we need is
+  --   Expr CodeGen val s (val s r1) -> CodeGen s (val s r1)
+  -- but that we can define here for CodeGen in particular, yeah?
+  Val trueExpr <- eval_expr' $ k (Val (postfixExprIsCondExpr valueSelector))
   Val falseExpr <- eval_elim_sum_with_cases (n+1) rrep tagExpr variantExpr cases
   let conditionExpr = eqExprIsLOrExpr $ C.EqEq tagExpr (identIsRelExpr tagIdent)
       condExpr = C.Cond conditionExpr (condExprIsExpr trueExpr) falseExpr
   pure $ Val condExpr
+
+eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
+eval_expr' expr = evalInMonad expr eval_expr
 
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq

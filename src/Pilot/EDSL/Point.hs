@@ -26,7 +26,6 @@ module Pilot.EDSL.Point
   ( Expr (..)
   , evalInMonad
   , lift
-  , lower
 
   , Type (..)
   , TypeRep (..)
@@ -82,6 +81,8 @@ module Pilot.EDSL.Point
   , Pair
   , pair_t
   , pair
+  , fst
+  , snd
   , Maybe
   , maybe_t
   , just
@@ -94,7 +95,7 @@ module Pilot.EDSL.Point
 
   ) where
 
-import Prelude hiding (Maybe, Either)
+import Prelude hiding (Maybe, Either, fst, snd)
 import Control.Monad (ap, join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
@@ -164,6 +165,9 @@ instance Monad (Expr f val s) where
   return = pure
   expr >>= f = Expr $ \interp map pure join ->
     join (map (\x -> getExpr (f x) interp map pure join) (getExpr expr interp map pure join))
+
+lift :: f s t -> Expr f val s t
+lift ft = Expr $ \_ _ _ _ -> ft
 
 evalInMonad
   :: forall f val s t.
@@ -315,13 +319,13 @@ data ExprF
 
   ElimProduct :: TypeRep ('Product types)
               -> TypeRep r
-              -> Selector (f s) (val s) types r
+              -> Selector f val s types r
               -> val s ('Product types)
               -> ExprF f val s r
 
   ElimSum     :: TypeRep ('Sum types)
               -> TypeRep r
-              -> Cases (f s) (val s) types r
+              -> Cases f val s types r
               -> val s ('Sum types)
               -> ExprF f val s r
 
@@ -340,15 +344,27 @@ data Any (f :: k -> Haskell.Type) (ts :: [k]) where
   AnyF :: f t -> Any f (t ': ts)
   OrF  :: Any f ts -> Any f (t ': ts)
 
-data Selector (f :: Haskell.Type -> Haskell.Type) (val :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
-  AnyC :: (val t -> f (val r)) -> Selector f val (t ': ts) r
-  OrC  :: Selector f val ts r -> Selector f val (t ': ts) r
+data Selector
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> k -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (ts  :: [k])
+  (r   :: k)
+  where
+  AnyC :: (val s t -> Expr f val s (val s r)) -> Selector f val s (t ': ts) r
+  OrC  :: Selector f val s ts r -> Selector f val s (t ': ts) r
 
-data Cases (f :: Haskell.Type -> Haskell.Type) (val :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
-  AllC :: Cases f val '[] r
-  AndC :: (val t -> f (val r))
-       -> Cases f val ts r
-       -> Cases f val (t ': ts) r
+data Cases
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> k -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (ts  :: [k])
+  (r   :: k)
+  where
+  AllC :: Cases f val s '[] r
+  AndC :: (val s t -> Expr f val s (val s r))
+       -> Cases f val s ts r
+       -> Cases f val s (t ': ts) r
 
 -- Some examples of 'Type's and 'TypeRep's
 
@@ -417,6 +433,24 @@ pair :: (Typeable a, Typeable b)
      -> Expr f val s (val s (Pair a b))
 pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb) (AndF va $ AndF vb $ AllF)
 
+fst :: (Typeable a, Typeable b)
+    => TypeRep a
+    -> TypeRep b
+    -> val s (Pair a b)
+    -> Expr f val s (val s a)
+fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta
+  (AnyC (\it -> pure it))
+  vp
+
+snd :: (Typeable a, Typeable b)
+    => TypeRep a
+    -> TypeRep b
+    -> val s (Pair a b)
+    -> Expr f val s (val s b)
+snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb
+  (OrC $ AnyC (\it -> pure it))
+  vp
+
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
 
 maybe_t :: Typeable t => TypeRep t -> TypeRep (Maybe t)
@@ -430,54 +464,18 @@ nothing tt = do
   u <- unit
   exprF $ IntroSum (maybe_t tt) (AnyF u)
 
--- TODO some product and sum eliminations.
-
-lift :: f s t -> Expr f val s t
-lift ft = Expr $ \_ _ _ _ -> ft
-
--- | This type necessary because we don't have impredicative polymorphism
-newtype Lower f val s = Lower { runLower :: forall t . Expr f val s t -> f s t }
-
-lower :: Expr f val s (Lower f val s)
-lower = Expr $ \interp map pure join -> pure $ Lower $ \expr ->
-  getExpr expr interp map pure join
-
 elim_maybe
   :: forall val f s t r .
      ( Typeable t )
   => TypeRep t
   -> TypeRep r
-  -- TODO should be `Expr f val s (val s r)` on the RHS
-  -- But we'll have to juggle a bit to make that viable. Do we change the
-  -- ExprF representation? I Don't think so... I think instead we take the
-  -- interp function from the monadic context and use it through the
-  -- case eliminators.
-  -- What we need here is 
-  --
-  --   Expr f val s (val s r) -> f s (val s r)
-  --
-  -- NB: we have
-  --
-  --   val s r -> Expr f val s (val s r)
-  --
-  -- it's called `pure`.
-  -- We also want
-  --
-  --   f s (val s r) -> Expr f val s (val s r)
-  --
-  -- right?
-  --
-  -- TODO should we have lower, though? Why not just put Expr f in the ExprF
-  -- constructors? What do we lose?
   -> val s (Maybe t)
   -> (val s Unit -> Expr f val s (val s r))
   -> (val s t -> Expr f val s (val s r))
   -> Expr f val s (val s r)
-elim_maybe trt trr v cNothing cJust = do
-  lexpr <- lower
-  exprF $ ElimSum trs trr
-    (AndC (\it -> runLower lexpr (cNothing it)) $ AndC (\it -> runLower lexpr (cJust it)) $ AllC)
-    v
+elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
+  (AndC cNothing $ AndC cJust $ AllC)
+  v
   where
   trs = maybe_t trt
 
@@ -505,31 +503,6 @@ right ta tb vb = exprF $ IntroSum (either_t ta tb) (OrF (AnyF vb))
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
 
--- If we want to use a uint8 in, say, a product, we need to get a
---
---   Val f val s ('Integer Unsigned Eight)
---
--- i.e.
---
---   f s (val s ('Integer Unsigned Eight))
---
--- possible to define this????
---
---   val s t -> Val f val s t
---
---
--- The GOAL is that the thing that you monadically bind can be dropped into a
--- composite type, i.e.
---
---
---    ...
---    x <- uint8 42
---    y <- uint16 43
---    pair x y
---
--- I think the solution may be that the compound terms do not take f in them,
--- only val. That does make sense...
-
 uint8 :: Haskell.Word8 -> Expr f val s (val s ('Integer Unsigned Eight))
 uint8 w8 = exprF $ IntroInteger uint8_t (UInt8 w8)
 
@@ -553,5 +526,3 @@ int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
 
 int64 :: Haskell.Int64 -> Expr f val s (val s ('Integer Signed SixtyFour))
 int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
-
-
