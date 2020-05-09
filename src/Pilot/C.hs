@@ -23,7 +23,7 @@ Portability : non-portable (GHC only)
 
 module Pilot.C where
 
-import Control.Monad.Trans.Class (lift)
+import qualified Control.Monad.Trans.Class as Trans (lift)
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State
 import Data.Functor.Identity
@@ -44,14 +44,57 @@ import qualified Language.C99.AST as C
 import Language.C99.Pretty (Pretty, pretty)
 import Text.PrettyPrint (render)
 
-import Pilot.EDSL.Point as Point
+import Pilot.EDSL.Point hiding (Val (..), Either, Maybe)
+import qualified Pilot.EDSL.Point as Point
 import Pilot.Types.Nat
 
 -- TODO NEXT STEPS
--- - Define intro/elim expressions.
+--
+-- - eval_local: how to?
+--   So the code gen always produces an expression yeah, and it comes with
+--   - global things (type declarations, externals, etc.)
+--   - local things (binders)
+--   but also, a list of blocks/statements I think...
+--
+--
 -- - The CodeGen monad maintains bindings, so use the ST trick? So new type
 --   parameter stands in for "binding context" and if it's free that means
 --   "no assumptions about bindings".
+-- - ^ related to what the user-facing language will be. How about we include
+--   the binding parameter in the EDSL functor thing itself?
+--
+--     f s Int8 -> f s Int8 -> ExprF f s Int8
+--
+--   ?? Ultimately what we want is an expression construction monad reminiscent
+--   of ST.
+--
+--     Expr f s t = Expr { runExpr :: (forall x y . ExprF f x y -> f x y) -> f s t }
+--
+--   the idea is that you write things which are free in f and s
+--     f : code gen backend
+--     s : binding proxy
+--   and that means you can't do anything too stupid.
+--
+-- - C backend specific externs:
+--   - values of any EDSL type
+--   - Also, functions? Yeah, that's probably the way forward. This can express
+--     effectful things like triggers, but also pure things like introducing a
+--     mathematical function that you'd like to implement later, directly in C.
+--
+-- - For sum elimination, _always_ bind the thing first, so we don't repeat
+--   it in each branch.
+--   How about this: whenever we have a sum elimination, we always create a new
+--   block scope, bind the sum to a fresh name, then bind the elimination
+--   expression to another fresh name that was declared in a _higher_ scope ?
+--   Or, hm, can't we let the programmer decide that? Yeah let's not make the
+--   decision here, but at one level up.
+--
+--     it <- bind sum_term
+--     match it (\a -> ...) (\b -> ...) ...
+--
+--   ah but you know what, sum elimination shouldn't even be a conditional
+--   expression, we should just go and write an if/else block, so that each
+--   atlernative gets its own block scope.
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -62,7 +105,7 @@ prettyPrint = render . pretty
 
 -- | For integral types we use the C standard explicit types like uint8_t.
 --
--- TODO may want this to be in CodeGenM and update state to say which headers
+-- TODO may want this to be in CodeGen and update state to say which headers
 -- we need to include?
 integer_ident :: SignednessRep signedness -> WidthRep width -> C.Ident
 integer_ident Unsigned_t Eight_t     = ident_uint8_t
@@ -75,13 +118,11 @@ integer_ident Signed_t ThirtyTwo_t   = ident_int32_t
 integer_ident Signed_t SixtyFour_t   = ident_int64_t
 
 -- | The C type name for a type in the EDSL.
-type_name :: TypeRep ty -> CodeGenM C.TypeName
+type_name :: TypeRep ty -> CodeGen s C.TypeName
 
-type_name (Integer_t sr wr) =
-  let ident = integer_ident sr wr
-      tdef = C.TTypedef $ C.TypedefName ident
-      specQualList = C.SpecQualType tdef Nothing
-  in  pure $ C.TypeName specQualList Nothing
+type_name t@(Integer_t _ _) = do
+  typeSpec <- type_spec t
+  pure $ C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
 
 -- TODO support float and double?
 type_name Rational_t = codeGenError $
@@ -97,9 +138,25 @@ type_name p@(Sum_t _) = do
   sum_declare p
   sum_type_name p
 
+type_spec :: TypeRep ty -> CodeGen s C.TypeSpec
+
+type_spec (Integer_t sr wr) =
+  pure $ C.TTypedef $ C.TypedefName (integer_ident sr wr)
+
+type_spec Rational_t = codeGenError $
+  CodeGenInternalError "fractional numbers not supported at the moment"
+
+type_spec p@(Product_t _) = do
+  product_declare p
+  product_type_spec p
+
+type_spec s@(Sum_t _) = do
+  sum_declare s
+  sum_type_spec s
+
 -- | Just like 'product_type_name'. Sums and products are both, at the
 -- top-level, represented by structs.
-sum_type_name :: TypeRep ('Sum tys) -> CodeGenM C.TypeName
+sum_type_name :: TypeRep ('Sum tys) -> CodeGen s C.TypeName
 sum_type_name (Sum_t AllF) = pure $ C.TypeName
   (C.SpecQualType C.TVoid Nothing)
   (Just (C.AbstractDeclr (C.PtrBase Nothing)))
@@ -111,55 +168,66 @@ sum_type_name trep@(Sum_t tys@(AndF _ _)) = do
 -- For empty products we use void*.
 -- For non-empty products we use the name of the corresponding struct (found
 -- in the state). The type is a pointer to it.
-product_type_name :: TypeRep ('Product tys) -> CodeGenM C.TypeName
+product_type_name :: TypeRep ('Product tys) -> CodeGen s C.TypeName
 product_type_name (Product_t AllF) = pure $ C.TypeName
   (C.SpecQualType C.TVoid Nothing)
   (Just (C.AbstractDeclr (C.PtrBase Nothing)))
 product_type_name trep@(Product_t (AndF _ _)) = do
   specQual <- product_spec_qual trep
   pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-    
 
--- | The product type for use with initialization of its struct.
-product_spec_qual :: TypeRep ('Product (t ': ts)) -> CodeGenM C.SpecQualList
-product_spec_qual (Product_t tys) = do
+product_type_spec :: TypeRep ('Product ts) -> CodeGen s C.TypeSpec
+product_type_spec (Product_t AllF) = pure C.TVoid
+product_type_spec (Product_t tys@(AndF _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
-  prodMap <- CodeGenM $ lift $ gets cgsProducts
+  prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
   case Map.lookup haskellTypeRep prodMap of
-    Just pdeclr -> pure $ C.SpecQualType
-      (C.TStructOrUnion (C.StructOrUnionForwDecln C.Struct (pdStructIdent pdeclr)))
-      Nothing
+    Just pdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
+      C.Struct
+      (pdStructIdent pdeclr)
     Nothing -> codeGenError $ CodeGenInternalError $
       "product_spec_qual_type not found " ++ show haskellTypeRep
 
--- | The sum type for use with initialization of its struct. The enum and
--- union inside it do not need to be named (the C compiler can infer them).
-sum_spec_qual :: TypeRep ('Sum (t ': ts)) -> CodeGenM C.SpecQualList
-sum_spec_qual (Sum_t tys) = do
+-- | The product type for use with initialization of its struct.
+product_spec_qual :: TypeRep ('Product (t ': ts)) -> CodeGen s C.SpecQualList
+product_spec_qual trep = do
+  typeSpec <- product_type_spec trep
+  pure $ C.SpecQualType typeSpec Nothing
+
+sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
+sum_type_spec (Sum_t AllF) = pure C.TVoid
+sum_type_spec (Sum_t tys@(AndF _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
-  sumMap <- CodeGenM $ lift $ gets cgsSums
+  sumMap <- CodeGen $ Trans.lift $ gets cgsSums
   case Map.lookup haskellTypeRep sumMap of
-    Just sdeclr -> pure $ C.SpecQualType
-      (C.TStructOrUnion (C.StructOrUnionForwDecln C.Struct (sdStructIdent sdeclr)))
-      Nothing
+    Just sdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
+      C.Struct
+      (sdStructIdent sdeclr)
     Nothing -> codeGenError $ CodeGenInternalError $
       "sum_spec_qual_type not found " ++ show haskellTypeRep
+
+-- | The sum type for use with initialization of its struct. The enum and
+-- union inside it do not need to be named (the C compiler can infer them).
+sum_spec_qual :: TypeRep ('Sum (t ': ts)) -> CodeGen s C.SpecQualList
+sum_spec_qual trep = do
+  typeSpec <- sum_type_spec trep
+  pure $ C.SpecQualType typeSpec Nothing
 
 -- | Stateful CodeGen term to declare a product. If it has already been
 -- declared (something with the same 'Haskell.TypeRep' was declared) then
 -- nothing happens. Otherwise, we generate a new identifier, and include its
 -- struct declaration.
-product_declare :: TypeRep ('Product tys) -> CodeGenM ()
+product_declare :: TypeRep ('Product tys) -> CodeGen s ()
 -- Unit type: nothing to do, it's void*
 product_declare (Product_t AllF) = pure ()
 product_declare (Product_t tys@(AndF t ts)) = do
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
-  prodMap <- CodeGenM $ lift $ gets cgsProducts
+  prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
   case Map.lookup haskellTypeRep prodMap of
     -- Already there; good to go.
     Just _pdeclr -> pure ()
@@ -169,7 +237,7 @@ product_declare (Product_t tys@(AndF t ts)) = do
     Nothing -> do
       prodDeclns <- field_declns "field_" 0 t ts
       -- NB: map may have changed as a result of field_declns.
-      st <- CodeGenM $ lift get
+      st <- CodeGen $ Trans.lift get
       prodIdent <- maybeError
         -- We know this can't happen.
         (CodeGenInternalError $ "product_declare bad identifier for " ++ show haskellTypeRep)
@@ -180,7 +248,7 @@ product_declare (Product_t tys@(AndF t ts)) = do
             }
           prodMap' = Map.insert haskellTypeRep pdeclr (cgsProducts st)
           st' = st { cgsProducts = prodMap' }
-      CodeGenM $ lift $ put st'
+      CodeGen $ Trans.lift $ put st'
 
 -- | Create and include in state the declarations required for a sum
 -- representation. Empty sums are void pointers. Non-empty sums are represented
@@ -191,13 +259,13 @@ product_declare (Product_t tys@(AndF t ts)) = do
 -- by a byte. Indeed any disjunct that has no fields can be removed from the
 -- union declaration, and if the resulting union declaration is empty we can
 -- represent the sum directly by the enum.
-sum_declare :: TypeRep ('Sum tys) -> CodeGenM ()
+sum_declare :: TypeRep ('Sum tys) -> CodeGen s ()
 -- No declaration; it's void*
 sum_declare (Sum_t AllF) = pure ()
 sum_declare (Sum_t tys@(AndF t ts)) = do
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
-  sumMap <- CodeGenM $ lift $ gets cgsSums
+  sumMap <- CodeGen $ Trans.lift $ gets cgsSums
   case Map.lookup haskellTypeRep sumMap of
     Just _sdeclr -> pure ()
     Nothing -> do
@@ -206,7 +274,7 @@ sum_declare (Sum_t tys@(AndF t ts)) = do
       enumrList   <- enum_tag_declns 0 t ts
 
       -- NB: sumMap may have changed as a result of field_declns.
-      st <- CodeGenM $ lift get
+      st <- CodeGen $ Trans.lift get
       let sumMap = cgsSums st
 
       sumStructIdent <- maybeError
@@ -247,10 +315,10 @@ sum_declare (Sum_t tys@(AndF t ts)) = do
             }
           sumMap' = Map.insert haskellTypeRep sdeclr (cgsSums st)
           st' = st { cgsSums = sumMap' }
-      CodeGenM $ lift $ put st'
+      CodeGen $ Trans.lift $ put st'
 
 -- | Make enum declarations to serve as the tags for a sum representation.
-enum_tag_declns :: Natural -> TypeRep ty -> All TypeRep tys -> CodeGenM C.EnumrList
+enum_tag_declns :: Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.EnumrList
 enum_tag_declns n _ AllF = do
   ident <- maybeError
     (CodeGenInternalError $ "enum_tag_declns bad identifier")
@@ -265,7 +333,7 @@ enum_tag_declns n t (AndF t' ts) = do
 
 -- | This will put the fields in reverse order, since the C declaration list
 -- type is defines like a snoc-list. Doesn't really matter though.
-field_declns :: String -> Natural -> TypeRep ty -> All TypeRep tys -> CodeGenM C.StructDeclnList
+field_declns :: String -> Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.StructDeclnList
 
 field_declns name n t AllF = do
   -- TODO factor this out so we can re-use in the other case.
@@ -304,6 +372,36 @@ field_declns name n t (AndF t' ts) = do
 -- |
 -- = Evaluation of expressions
 
+run_example :: Expr CodeGen Val s t -> (Prelude.Either CodeGenError t, CodeGenState)
+run_example x = evalCodeGen (evalInMonad x eval_expr)
+
+example_1 :: Expr f val s (val s (Pair UInt8 Int8))
+example_1 = do
+  a <- uint8 42
+  b <- int8 (-42)
+  pair uint8_t int8_t a b
+
+example_2 :: Expr f val s (val s (Point.Either UInt8 Int8))
+example_2 = do
+  b <- int8 (-42)
+  right uint8_t int8_t b
+
+example_3 :: Expr f val s (val s (Point.Maybe Int8))
+example_3 = do
+  a <- int8 (-42)
+  just int8_t a
+
+example_4 :: Expr f val s (val s Int8)
+example_4 = do
+  it <- example_3
+  -- SHOULD be able to drop an Expr in these cases; should be able to write do
+  -- notations in there.
+  -- So, must also be able to lift an already evaluated val back into an expr.
+  -- Can do that by using pure, right?
+  elim_maybe int8_t int8_t it (\_ -> int8 (-1)) (\t -> pure t)
+
+{-
+example_1_1 :: Expr
 example_1_1 = eval_intro_product
   (pair_t uint16_t (pair_t int8_t uint64_t))
   ( AndF (eval_intro_integer uint16_t (UInt16 43))
@@ -332,21 +430,75 @@ example_3_1 = eval_elim_sum
   int8_t
   (AndC (\_ -> eval_intro_integer int8_t (Int8 (-1))) $ AndC (\x -> eval_elim_product (pair_t uint8_t int8_t) (OrC (AnyC (\it -> it))) x) $ AllC)
   example_2_2
+-}
 
-eval_expr :: ExprF CodeGen t -> CodeGen t
+eval_expr :: ExprF CodeGen Val s t -> CodeGen s (Val s t)
 eval_expr (IntroInteger tr il) = eval_intro_integer tr il
 eval_expr (IntroProduct tr fields) = eval_intro_product tr fields
 eval_expr (IntroSum tr variant) = eval_intro_sum tr variant
 eval_expr (ElimProduct tr rr sel it) = eval_elim_product tr sel it
 eval_expr (ElimSum tr rr cases it) = eval_elim_sum tr rr cases it
+eval_expr (Local tt tr it k) = eval_local tt tr it k
+
+-- | Take a fresh name, bind the expression to it, and use the _name_ rather
+-- than the expression to elaborate the code here in the meta-language.
+--
+-- NB: this has implications for the evaluation of sum type elimination. It
+-- cannot be done by way of an expression, because each branch requires its own
+-- scope, so we're forced to use if/else blocks or switch statements with block
+-- scopes.
+--
+-- 
+eval_local
+  :: TypeRep t
+  -> TypeRep r
+  -> Val s t
+  -> (Val s t -> CodeGen s (Val s r))
+  -> CodeGen s (Val s r)
+eval_local tt tr it k = do
+  typeSpec <- type_spec tt
+  ident <- freshBinder
+  undefined
+  {-
+  -- NB: we must run this with the fresh binder in there.
+  -- Then we have to put the rest of the binding decln details somewhere...
+  aexpr <- pure (identIsCondExpr ident)
+  -- What we're making here is the ingredients of a C _declaration_, not an
+  -- assignment. An assignment has, on the left-hand-side of the equal sign,
+  -- things which are already declared.
+  --
+  -- Every binding is const. TBD should we use volatile? register? No idea.
+  --
+  --   const <typeSpec> <ident> = <rexpr>;
+  --   |______________| |_____|   |_____|
+  --      declnSpecs     decln     init
+  --
+  let declnSpecs :: C.DeclnSpecs
+      declnSpecs = C.DeclnSpecsQual C.QConst $
+        Just (C.DeclnSpecsType typeSpec Nothing)
+      declr :: C.Declr
+      declr = C.Declr Nothing (C.DirectDeclrIdent ident)
+      init :: C.Init
+      init = C.InitExpr (condExprIsAssignExpr aexpr);
+      initDeclr :: C.InitDeclr
+      initDeclr = C.InitDeclrInitr declr init
+      initDeclrList :: C.InitDeclrList
+      initDeclrList = C.InitDeclrBase initDeclr
+      decln :: C.Decln
+      decln = C.Decln declnSpecs (Just initDeclrList)
+  undefined
+  -}
+
+freshBinder :: CodeGen s C.Ident
+freshBinder = undefined
 
 eval_intro_integer
   :: TypeRep ('Integer signedness width)
   -> IntegerLiteral signedness width
-  -> CodeGen ('Integer signedness width)
-eval_intro_integer (Integer_t Unsigned_t _width) il = CodeGen $ pure $
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_intro_integer (Integer_t Unsigned_t _width) il = pure $ Val $
   constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-eval_intro_integer (Integer_t Signed_t _width) il = CodeGen $ pure $
+eval_intro_integer (Integer_t Signed_t _width) il = pure $ Val $
   unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
   C.IntHex (hex_const (absolute_value il)) Nothing
 
@@ -374,9 +526,12 @@ absolute_value (Int64 i64)  = fromIntegral (abs i64)
 -- Special case for the empty product introduction, which is simply NULL.
 -- TODO there is no way to eliminate an empty product, so we could probably
 -- get away with simply erasing an intro of an empty product.
-eval_intro_product :: TypeRep ('Product types) -> All CodeGen types -> CodeGen ('Product types)
-eval_intro_product _    AllF = CodeGen $ pure cNULL
-eval_intro_product trep (AndF t ts) = CodeGen $ do
+eval_intro_product
+  :: TypeRep ('Product types)
+  -> All (Val s) types
+  -> CodeGen s (Val s ('Product types))
+eval_intro_product _    AllF = pure $ Val cNULL
+eval_intro_product trep (AndF t ts) = do
   -- This will ensure the composite type is in the code gen state
   () <- product_declare trep
   -- We don't want the product's type name, because that's a pointer. Instead
@@ -386,20 +541,21 @@ eval_intro_product trep (AndF t ts) = CodeGen $ do
   initList <- product_field_inits 0 t ts
   let pexpr = C.PostfixInits typeName initList
       uexpr = C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
-  pure $ unaryExprIsCondExpr uexpr
+  pure $ Val $ unaryExprIsCondExpr uexpr
 
 -- | Product elimination: an indirect field accessor (->).
 --
 -- NB: this cannot be an empty product, the 'Selector' GADT does not allow it.
 eval_elim_product
   :: TypeRep ('Product types)
-  -> Selector CodeGen types r
-  -> CodeGen ('Product types)
-  -> CodeGen r
-eval_elim_product trep selector cgt = CodeGen $ do
+  -> Selector (CodeGen s) (Val s) types r
+  -> Val s ('Product types)
+  -> CodeGen s (Val s r)
+eval_elim_product trep selector cgt = do
   () <- product_declare trep
-  pexpr <- condExprIsPostfixExpr <$> getCodeGen cgt
-  getCodeGen $ eval_elim_product_with_selector 0 pexpr selector
+  let Val cexpr = cgt
+  let pexpr = condExprIsPostfixExpr cexpr
+  eval_elim_product_with_selector 0 pexpr selector
 
 -- |
 --
@@ -411,16 +567,16 @@ eval_elim_product trep selector cgt = CodeGen $ do
 eval_elim_product_with_selector
   :: Natural
   -> C.PostfixExpr -- ^ The C expression giving the product struct.
-  -> Selector CodeGen types r
-  -> CodeGen r
-eval_elim_product_with_selector n pexpr (OrC sel) = eval_elim_product_with_selector (n+1) pexpr sel
-eval_elim_product_with_selector n pexpr (AnyC k) = CodeGen $ do
+  -> Selector (CodeGen s) (Val s) types r
+  -> CodeGen s (Val s r)
+eval_elim_product_with_selector n pexpr (OrC sel) =
+  eval_elim_product_with_selector (n+1) pexpr sel
+eval_elim_product_with_selector n pexpr (AnyC k) = do
   fieldIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_product_with_selector bad field " ++ show n)
     (stringIdentifier ("field_" ++ show n))
   let expr = postfixExprIsCondExpr $ C.PostfixArrow pexpr fieldIdent
-      arg = CodeGen (pure expr)
-  getCodeGen (k arg)
+  k (Val expr)
 
 -- |
 --
@@ -428,38 +584,38 @@ eval_elim_product_with_selector n pexpr (AnyC k) = CodeGen $ do
 -- NULL and not allocate anything.
 eval_intro_sum
   :: TypeRep ('Sum types)
-  -> Any CodeGen types
-  -> CodeGen ('Sum types)
+  -> Any (Val s) types
+  -> CodeGen s (Val s ('Sum types))
 -- The meta-language doesn't allow for empty sums to be introduced (void type
 -- in the algebraic sense).
 eval_intro_sum (Sum_t AllF) it = case it of
   {}
-eval_intro_sum trep@(Sum_t (AndF _ _)) any = CodeGen $ do
+eval_intro_sum trep@(Sum_t (AndF _ _)) any = do
   () <- sum_declare trep
   specQual <- sum_spec_qual trep
   let typeName = C.TypeName specQual Nothing
   initList <- sum_field_inits any
   let pexpr = C.PostfixInits typeName initList
       uexpr = C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
-  pure $ unaryExprIsCondExpr uexpr
+  pure $ Val $ unaryExprIsCondExpr uexpr
 
 product_field_inits
   :: Natural
-  -> CodeGen t
-  -> All CodeGen ts
-  -> CodeGenM C.InitList
+  -> Val s t
+  -> All (Val s) ts
+  -> CodeGen s C.InitList
 product_field_inits n cgt AllF = do
-  expr <- getCodeGen cgt
+  let Val expr = cgt
   designator <- simple_designator ("field_" ++ show n)
   pure $ C.InitBase (Just designator) (C.InitExpr (condExprIsAssignExpr expr))
 product_field_inits n cgt (AndF cgt' cgts) = do
-  expr <- getCodeGen cgt
+  let Val expr = cgt
   designator <- simple_designator ("field_" ++ show n)
   subList <- product_field_inits (n+1) cgt' cgts
   pure $ C.InitCons subList (Just designator) (C.InitExpr (condExprIsAssignExpr expr))
 
 -- | The init list for a sum struct: its tag and its variant.
-sum_field_inits :: Any CodeGen ts -> CodeGenM C.InitList
+sum_field_inits :: Any (Val s) ts -> CodeGen s C.InitList
 sum_field_inits any = do
   tagExpr <- condExprIsAssignExpr <$> sum_tag_expr 0 any
   variantInitList <- sum_variant_init_list 0 any
@@ -473,7 +629,7 @@ sum_field_inits any = do
 
 -- | The expression for a sum's tag: determined by the offset in the disjuncts
 -- in the type signature, and the common "tag_" prefix.
-sum_tag_expr :: Natural -> Any f ts -> CodeGenM C.CondExpr
+sum_tag_expr :: Natural -> Any f ts -> CodeGen s C.CondExpr
 sum_tag_expr n (OrF there) = sum_tag_expr (n+1) there
 sum_tag_expr n (AnyF _) = do
   ident <- maybeError
@@ -483,10 +639,13 @@ sum_tag_expr n (AnyF _) = do
 
 -- | The variant expression for a sum: it's a union literal, _without_ a
 -- pointer (sums hold their tags and unions directly).
-sum_variant_init_list :: Natural -> Any CodeGen ts -> CodeGenM C.InitList
+sum_variant_init_list
+  :: Natural
+  -> Any (Val s) ts
+  -> CodeGen s C.InitList
 sum_variant_init_list n (OrF there) = sum_variant_init_list (n+1) there
 sum_variant_init_list n (AnyF cgt) = do
-  expr <- getCodeGen cgt
+  let Val expr = cgt
   designator <- simple_designator ("variant_" ++ show n)
   let initExpr = C.InitExpr (condExprIsAssignExpr expr)
   pure $ C.InitBase (Just designator) initExpr
@@ -500,32 +659,32 @@ sum_variant_init_list n (AnyF cgt) = do
 eval_elim_sum
   :: TypeRep ('Sum types)
   -> TypeRep r
-  -> Cases CodeGen types r
-  -> CodeGen ('Sum types)
-  -> CodeGen r
-eval_elim_sum trep rrep cases cgt = CodeGen $ do
+  -> Cases (CodeGen s) (Val s) types r
+  -> Val s ('Sum types)
+  -> CodeGen s (Val s r)
+eval_elim_sum trep rrep cases cgt = do
   () <- sum_declare trep
   -- We shall need two expressions: the sum's tag and its variant.
   -- These are taken by way of the indirect accessor. The union, however, will
   -- be accessed using the direct dot accessor.
-  pexpr <- condExprIsPostfixExpr <$> getCodeGen cgt
-  let tagExpr = postfixExprIsEqExpr $ C.PostfixArrow pexpr ident_tag
-      variantExpr = C.PostfixArrow pexpr ident_variant
-  getCodeGen $ eval_elim_sum_with_cases 0 rrep tagExpr variantExpr cases
+  let Val cexpr = cgt
+  let tagExpr = postfixExprIsEqExpr $ C.PostfixArrow (condExprIsPostfixExpr cexpr) ident_tag
+      variantExpr = C.PostfixArrow (condExprIsPostfixExpr cexpr) ident_variant
+  eval_elim_sum_with_cases 0 rrep tagExpr variantExpr cases
 
 eval_elim_sum_with_cases
   :: Natural
   -> TypeRep r
   -> C.EqExpr -- ^ The tag of the sum
   -> C.PostfixExpr -- ^ The variant of the sum
-  -> Cases CodeGen types r
-  -> CodeGen r
+  -> Cases (CodeGen s) (Val s) types r
+  -> CodeGen s (Val s r)
 -- TODO what should we put for eliminating an empty product? The idea is that
 -- this code should never be reached in the C executable.
-eval_elim_sum_with_cases n rrep tagExpr variantExpr AllC = CodeGen $ do
+eval_elim_sum_with_cases n rrep tagExpr variantExpr AllC = do
   typeName <- type_name rrep
-  pure $ unaryExprIsCondExpr $ cVOID typeName
-eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = CodeGen $ do
+  pure $ Val $ unaryExprIsCondExpr $ cVOID typeName
+eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = do
   tagIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
     (stringIdentifier ("tag_" ++ show n))
@@ -533,14 +692,19 @@ eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = CodeGen $ d
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
     (stringIdentifier ("variant_" ++ show n))
   let valueSelector = C.PostfixDot variantExpr variantIdent
-  trueExpr <- getCodeGen $ k (CodeGen (pure (postfixExprIsCondExpr valueSelector)))
-  falseExpr <- getCodeGen $ eval_elim_sum_with_cases (n+1) rrep tagExpr variantExpr cases
+  Val trueExpr <- k (Val (postfixExprIsCondExpr valueSelector))
+  Val falseExpr <- eval_elim_sum_with_cases (n+1) rrep tagExpr variantExpr cases
   let conditionExpr = eqExprIsLOrExpr $ C.EqEq tagExpr (identIsRelExpr tagIdent)
       condExpr = C.Cond conditionExpr (condExprIsExpr trueExpr) falseExpr
-  pure condExpr
+  pure $ Val condExpr
 
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
+
+identIsCondExpr :: C.Ident -> C.CondExpr
+identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
 
 identIsRelExpr :: C.Ident -> C.RelExpr
 identIsRelExpr = C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
@@ -590,7 +754,7 @@ unaryExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
 ident_designator :: C.Ident -> C.Design
 ident_designator = C.Design . C.DesigrBase . C.DesigrIdent
 
-simple_designator :: String -> CodeGenM C.Design
+simple_designator :: String -> CodeGen s C.Design
 simple_designator str = do
   ident <- maybeError
     (CodeGenInternalError $ "simple_designator bad identifier")
@@ -602,11 +766,6 @@ simple_designator str = do
 hex_const :: Natural -> C.HexConst
 hex_const = hexConst . hexDigits
 
--- | The target for generating C abstract syntax (and then concrete, by way of
--- Language.C99.Pretty).
-newtype CodeGen (t :: Type) = CodeGen
-  { getCodeGen :: CodeGenM C.CondExpr }
-
 data CodeGenError where
   -- | Indicates a bug in this program.
   CodeGenInternalError :: String -> CodeGenError
@@ -615,7 +774,7 @@ deriving instance Show CodeGenError
 
 -- | Code generation modifies a CodeGenState from an initial empty state.
 -- This state is relative to some C expression which is being built-up (see
--- the `CodeGenM` and `CodeGen` types).
+-- the `CodeGen` and `CodeGen` types).
 data CodeGenState = CodeGenState
   { -- | Bindings used in the expression.
     -- TODO FIXME we'll have to be very careful about this: bindings made
@@ -686,17 +845,19 @@ data SumDeclr = SumDeclr
 type TypeIdentifier = Haskell.TypeRep
 type VarIdentifier = String
 
+newtype Val (s :: Haskell.Type) (t :: Type) = Val { getVal :: C.CondExpr }
+
 -- | A monad to ease the expression of code generation, which carries some
 -- state and may exit early with error cases.
-newtype CodeGenM (t :: Haskell.Type) = CodeGenM
-  { runCodeGenM :: ExceptT CodeGenError (StateT CodeGenState Identity) t }
+newtype CodeGen (s :: Haskell.Type) (t :: Haskell.Type) = CodeGen
+  { runCodeGen :: ExceptT CodeGenError (StateT CodeGenState Identity) t }
 
-deriving instance Functor CodeGenM
-deriving instance Applicative CodeGenM
-deriving instance Monad CodeGenM
+deriving instance Functor (CodeGen s)
+deriving instance Applicative (CodeGen s)
+deriving instance Monad (CodeGen s)
 
-evalCodeGenM :: CodeGenM t -> (Either CodeGenError t, CodeGenState)
-evalCodeGenM cgm = runIdentity (runStateT (runExceptT (runCodeGenM cgm)) initialState)
+evalCodeGen :: CodeGen s t -> (Either CodeGenError t, CodeGenState)
+evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
   initialState = CodeGenState
     { cgsBindings = mempty
@@ -704,21 +865,21 @@ evalCodeGenM cgm = runIdentity (runStateT (runExceptT (runCodeGenM cgm)) initial
     , cgsSums     = mempty
     }
 
-codeGenError :: CodeGenError -> CodeGenM x
-codeGenError err = CodeGenM (throwE err)
+codeGenError :: CodeGenError -> CodeGen s x
+codeGenError err = CodeGen (throwE err)
 
-maybeError :: CodeGenError -> CodeGenM (Maybe x) -> CodeGenM x
+maybeError :: CodeGenError -> CodeGen s (Maybe x) -> CodeGen s x
 maybeError err act = do
   x <- act
   maybe (codeGenError err) pure x
 
 -- | Make a C identifier from a string. Will fail if the string is malformed
 -- w.r.t. valid C identifiers.
-stringIdentifier :: String -> CodeGenM (Maybe C.Ident)
+stringIdentifier :: forall s . String -> CodeGen s (Maybe C.Ident)
 stringIdentifier [] = pure Nothing
 stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
   where
-  go :: NonEmpty Char -> CodeGenM (Maybe C.Ident)
+  go :: NonEmpty Char -> CodeGen s (Maybe C.Ident)
   -- First character (end of list) must not be a digit).
   go (c NE.:| []) = (fmap . fmap) (C.IdentBase . C.IdentNonDigit) (cNonDigit c)
   -- Any other character (not the first) can be a digit or non digit.
@@ -733,17 +894,17 @@ stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
         mRest <- go (d NE.:| cs)
         pure $ fmap (\rest -> C.IdentConsNonDigit rest (C.IdentNonDigit nonDigit)) mRest
 
-symbolIdentifier :: forall name . KnownSymbol name => Proxy name -> CodeGenM (Maybe C.Ident)
+symbolIdentifier :: forall name s . KnownSymbol name => Proxy name -> CodeGen s (Maybe C.Ident)
 symbolIdentifier p = stringIdentifier (symbolVal p)
 
-cDigitOrNonDigit :: Char -> CodeGenM (Maybe (Either C.Digit C.NonDigit))
+cDigitOrNonDigit :: Char -> CodeGen s (Maybe (Either C.Digit C.NonDigit))
 cDigitOrNonDigit c = do
   mDigit <- (fmap . fmap) Left (cDigit c)
   case mDigit of
     Just d -> pure (Just d)
     Nothing -> (fmap . fmap) Right (cNonDigit c)
 
-cNonDigit :: Char -> CodeGenM (Maybe C.NonDigit)
+cNonDigit :: Char -> CodeGen s (Maybe C.NonDigit)
 cNonDigit c = case c of
   '_' -> pure . pure $ C.NDUnderscore
   'a' -> pure . pure $ C.NDa
@@ -800,7 +961,7 @@ cNonDigit c = case c of
   'Z' -> pure . pure $ C.NDZ
   _   -> pure Nothing
 
-cDigit :: Char -> CodeGenM (Maybe C.Digit)
+cDigit :: Char -> CodeGen s (Maybe C.Digit)
 cDigit c = case c of
   '0' -> pure . pure $ C.DZero
   '1' -> pure . pure $ C.DOne

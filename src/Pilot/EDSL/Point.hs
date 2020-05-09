@@ -19,9 +19,16 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 
 module Pilot.EDSL.Point
-  ( Type (..)
+  ( Expr (..)
+  , evalInMonad
+  , lift
+  , lower
+
+  , Type (..)
   , TypeRep (..)
   , KnownType (..)
 
@@ -42,38 +49,139 @@ module Pilot.EDSL.Point
 
   , UInt8
   , uint8_t
+  , uint8
   , UInt16
   , uint16_t
+  , uint16
   , UInt32
   , uint32_t
+  , uint32
   , UInt64
   , uint64_t
+  , uint64
   , Int8
   , int8_t
+  , int8
   , Int16
   , int16_t
+  , int16
   , Int32
   , int32_t
+  , int32
   , Int64
   , int64_t
+  , int64
 
   , Unit
   , unit_t
+  , unit
   , Void
   , void_t
   , Boolean
   , boolean_t
   , Pair
   , pair_t
+  , pair
+  , Maybe
   , maybe_t
+  , just
+  , nothing
+  , elim_maybe
+  , Either
+  , either_t
+  , left
+  , right
+
   ) where
 
 import Prelude hiding (Maybe, Either)
+import Control.Monad (ap, join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
 import Data.Typeable (Typeable)
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
+
+-- | The user-facing DSL.
+--
+-- It must be a monad, with the ST binding type parameter trick. Any pure
+-- Haskell computation can be used in this monad of course, and the result is
+-- something in the parameter f.
+--
+-- Intuitively, this type means that, if you know how to elaborate ExprF inside
+-- f, then you can get an expression inside f. That's to say, whatever this is,
+-- it's built atop ExprF and pure meta-language (Haskell) constructs.
+--
+-- Idea: to make it a monad, just add an STRef analog, call it Val?
+-- ExprF recursive parts can take
+--
+--   f s (Val s t) -> ...
+--
+-- then what we want in the continuation in Expr is
+--
+--   forall x y . ExprF f x y -> f x (Val x y)
+--
+-- ah but damn, Val actually depends upon f, as you might expect, since this is
+-- essentially the representation of the expression.
+-- One nice option could be to take 2 params: the monad and the STRef/val type.
+--
+--   (forall x y . ExprF f val x y -> f val x (val x y)) -> f val s t
+--
+-- and even beyond that, we still don't want to incur any constraints on f
+-- until evaluation time, so we need some sort of free structure over it.
+--
+-- f represents the interpretation. Think of it as code generation or something.
+-- s represents the binding context. It's the ST-style parameter used to ensure
+-- that what you do in one Expr cannot come out of that context.
+-- val represents object-language values, parameterized by the binding context.
+-- t is what you expect; this is a functor.
+--
+newtype Expr
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Haskell.Type) = Expr
+  { getExpr :: (forall x y . ExprF f val x y -> f x (val x y))
+            -- ^ Interpret expressions
+            -> (forall x y z . (y -> z) -> f x y -> f x z)
+            -- ^ fmap
+            -> (forall x y . y -> f x y)
+            -- ^ pure
+            -> (forall x y . f x (f x y) -> f x y)
+            -- ^ join
+            -> f s t
+  }
+
+instance Functor (Expr f val s) where
+  fmap f expr = Expr $ \interp map pure join ->
+    map f (getExpr expr interp map pure join)
+
+instance Applicative (Expr f val s) where
+  pure x = Expr $ \interp map pure' join -> pure' x
+  (<*>) = ap
+
+instance Monad (Expr f val s) where
+  return = pure
+  expr >>= f = Expr $ \interp map pure join ->
+    join (map (\x -> getExpr (f x) interp map pure join) (getExpr expr interp map pure join))
+
+evalInMonad
+  :: forall f val s t.
+     ( forall s . Monad (f s) )
+  -- TODO use the ST trick later. Not in because I want flexibility for development
+  -- => (forall q . Expr f val q t)
+  => Expr f val s t
+  -> (forall x y . ExprF f val x y -> f x (val x y))
+  -> f s t
+evalInMonad expr interp = getExpr expr interp fmap pure join
+
+-- Problem with this is the constraint is going to appear in every derived
+-- expression but I'd prefer to leave it until interpretation time (runInMonad).
+exprF :: forall f val s t . ExprF f val s t -> Expr f val s (val s t)
+exprF exprf = Expr $ \f map pure join ->
+  let v :: f s (val s t)
+      v = f exprf
+  in  join (map pure v)
 
 -- | Types for the pointwise EDSL: various numeric types, with finite sums and
 -- products. As usual, the empty product is unit, and the empty sum is void.
@@ -181,36 +289,48 @@ instance (Typeable t, Typeable ts, KnownType t, KnownType ('Sum ts))
 -- _target_ or object language, for instance generated C code, or an in-Haskell
 -- representation.
 --
-data ExprF (f :: Type -> Haskell.Type) (t :: Type) where
+data ExprF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
 
   -- Atomic data
   -- TODO arithmetic stuff
 
   IntroInteger :: TypeRep ('Integer signedness width)
                -> IntegerLiteral signedness width
-               -> ExprF f ('Integer signedness width)
+               -> ExprF f val s ('Integer signedness width)
 
   -- Compound data: algebraic datatypes
 
   IntroProduct :: TypeRep ('Product types)
-               -> All f types
-               -> ExprF f ('Product types)
+               -> All (val s) types
+               -> ExprF f val s ('Product types)
 
   IntroSum     :: TypeRep ('Sum types)
-               -> Any f types
-               -> ExprF f ('Sum types)
+               -> Any (val s) types
+               -> ExprF f val s ('Sum types)
 
   ElimProduct :: TypeRep ('Product types)
               -> TypeRep r
-              -> Selector f types r
-              -> f ('Product types)
-              -> ExprF f r
+              -> Selector (f s) (val s) types r
+              -> val s ('Product types)
+              -> ExprF f val s r
 
   ElimSum     :: TypeRep ('Sum types)
               -> TypeRep r
-              -> Cases f types r
-              -> f ('Sum types)
-              -> ExprF f r
+              -> Cases (f s) (val s) types r
+              -> val s ('Sum types)
+              -> ExprF f val s r
+
+  -- Explicit binding, so that the programmer may control sharing.
+  Local :: TypeRep t
+        -> TypeRep r
+        -> val s t
+        -> (val s t -> f s (val s r))
+        -> ExprF f val s r
 
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
   AllF :: All f '[]
@@ -220,15 +340,15 @@ data Any (f :: k -> Haskell.Type) (ts :: [k]) where
   AnyF :: f t -> Any f (t ': ts)
   OrF  :: Any f ts -> Any f (t ': ts)
 
-data Selector (f :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
-  AnyC :: (f t -> f r) -> Selector f (t ': ts) r
-  OrC  :: Selector f ts r -> Selector f (t ': ts) r
+data Selector (f :: Haskell.Type -> Haskell.Type) (val :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
+  AnyC :: (val t -> f (val r)) -> Selector f val (t ': ts) r
+  OrC  :: Selector f val ts r -> Selector f val (t ': ts) r
 
-data Cases (f :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
-  AllC :: Cases f '[] r
-  AndC :: (f t -> f r)
-       -> Cases f ts r
-       -> Cases f (t ': ts) r
+data Cases (f :: Haskell.Type -> Haskell.Type) (val :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
+  AllC :: Cases f val '[] r
+  AndC :: (val t -> f (val r))
+       -> Cases f val ts r
+       -> Cases f val (t ': ts) r
 
 -- Some examples of 'Type's and 'TypeRep's
 
@@ -271,6 +391,9 @@ type Unit = 'Product '[]
 unit_t :: TypeRep Unit
 unit_t = Product_t AllF
 
+unit :: Expr f val s (val s Unit)
+unit = exprF $ IntroProduct unit_t AllF
+
 type Void = 'Sum '[]
 
 void_t :: TypeRep Void
@@ -286,15 +409,149 @@ type Pair (s :: Type) (t :: Type) = 'Product '[ s, t]
 pair_t :: (Typeable s, Typeable t) => TypeRep s -> TypeRep t -> TypeRep (Pair s t)
 pair_t s t = Product_t (AndF s $ AndF t $ AllF)
 
+pair :: (Typeable a, Typeable b)
+     => TypeRep a
+     -> TypeRep b
+     -> val s a
+     -> val s b
+     -> Expr f val s (val s (Pair a b))
+pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb) (AndF va $ AndF vb $ AllF)
+
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
 
 maybe_t :: Typeable t => TypeRep t -> TypeRep (Maybe t)
 maybe_t t = Sum_t (AndF unit_t $ AndF t $ AllF)
+
+just :: Typeable t => TypeRep t -> val s t -> Expr f val s (val s (Maybe t))
+just tt t = exprF $ IntroSum (maybe_t tt) (OrF (AnyF t))
+
+nothing :: Typeable t => TypeRep t -> Expr f val s (val s (Maybe t))
+nothing tt = do
+  u <- unit
+  exprF $ IntroSum (maybe_t tt) (AnyF u)
+
+-- TODO some product and sum eliminations.
+
+lift :: f s t -> Expr f val s t
+lift ft = Expr $ \_ _ _ _ -> ft
+
+-- | This type necessary because we don't have impredicative polymorphism
+newtype Lower f val s = Lower { runLower :: forall t . Expr f val s t -> f s t }
+
+lower :: Expr f val s (Lower f val s)
+lower = Expr $ \interp map pure join -> pure $ Lower $ \expr ->
+  getExpr expr interp map pure join
+
+elim_maybe
+  :: forall val f s t r .
+     ( Typeable t )
+  => TypeRep t
+  -> TypeRep r
+  -- TODO should be `Expr f val s (val s r)` on the RHS
+  -- But we'll have to juggle a bit to make that viable. Do we change the
+  -- ExprF representation? I Don't think so... I think instead we take the
+  -- interp function from the monadic context and use it through the
+  -- case eliminators.
+  -- What we need here is 
+  --
+  --   Expr f val s (val s r) -> f s (val s r)
+  --
+  -- NB: we have
+  --
+  --   val s r -> Expr f val s (val s r)
+  --
+  -- it's called `pure`.
+  -- We also want
+  --
+  --   f s (val s r) -> Expr f val s (val s r)
+  --
+  -- right?
+  --
+  -- TODO should we have lower, though? Why not just put Expr f in the ExprF
+  -- constructors? What do we lose?
+  -> val s (Maybe t)
+  -> (val s Unit -> Expr f val s (val s r))
+  -> (val s t -> Expr f val s (val s r))
+  -> Expr f val s (val s r)
+elim_maybe trt trr v cNothing cJust = do
+  lexpr <- lower
+  exprF $ ElimSum trs trr
+    (AndC (\it -> runLower lexpr (cNothing it)) $ AndC (\it -> runLower lexpr (cJust it)) $ AllC)
+    v
+  where
+  trs = maybe_t trt
 
 type Either (s :: Type) (t :: Type) = 'Sum '[ s, t ]
 
 either_t :: (Typeable s, Typeable t) => TypeRep s -> TypeRep t -> TypeRep (Either s t)
 either_t s t = Sum_t (AndF s $ AndF t $ AllF)
 
+left
+  :: (Typeable a, Typeable b)
+  => TypeRep a
+  -> TypeRep b
+  -> val s a
+  -> Expr f val s (val s (Either a b))
+left ta tb va = exprF $ IntroSum (either_t ta tb) (AnyF va)
+
+right
+  :: (Typeable a, Typeable b)
+  => TypeRep a
+  -> TypeRep b
+  -> val s b
+  -> Expr f val s (val s (Either a b))
+right ta tb vb = exprF $ IntroSum (either_t ta tb) (OrF (AnyF vb))
+
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
+
+-- If we want to use a uint8 in, say, a product, we need to get a
+--
+--   Val f val s ('Integer Unsigned Eight)
+--
+-- i.e.
+--
+--   f s (val s ('Integer Unsigned Eight))
+--
+-- possible to define this????
+--
+--   val s t -> Val f val s t
+--
+--
+-- The GOAL is that the thing that you monadically bind can be dropped into a
+-- composite type, i.e.
+--
+--
+--    ...
+--    x <- uint8 42
+--    y <- uint16 43
+--    pair x y
+--
+-- I think the solution may be that the compound terms do not take f in them,
+-- only val. That does make sense...
+
+uint8 :: Haskell.Word8 -> Expr f val s (val s ('Integer Unsigned Eight))
+uint8 w8 = exprF $ IntroInteger uint8_t (UInt8 w8)
+
+uint16 :: Haskell.Word16 -> Expr f val s (val s ('Integer Unsigned Sixteen))
+uint16 w16 = exprF $ IntroInteger uint16_t (UInt16 w16)
+
+uint32 :: Haskell.Word32 -> Expr f val s (val s ('Integer Unsigned ThirtyTwo))
+uint32 w32 = exprF $ IntroInteger uint32_t (UInt32 w32)
+
+uint64 :: Haskell.Word64 -> Expr f val s (val s ('Integer Unsigned SixtyFour))
+uint64 w64 = exprF $ IntroInteger uint64_t (UInt64 w64)
+
+int8 :: Haskell.Int8 -> Expr f val s (val s ('Integer Signed Eight))
+int8 i8 = exprF $ IntroInteger int8_t (Int8 i8)
+
+int16 :: Haskell.Int16 -> Expr f val s (val s ('Integer Signed Sixteen))
+int16 i16 = exprF $ IntroInteger int16_t (Int16 i16)
+
+int32 :: Haskell.Int32 -> Expr f val s (val s ('Integer Signed ThirtyTwo))
+int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
+
+int64 :: Haskell.Int64 -> Expr f val s (val s ('Integer Signed SixtyFour))
+int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
+
+
