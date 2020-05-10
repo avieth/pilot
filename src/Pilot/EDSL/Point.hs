@@ -107,6 +107,7 @@ module Pilot.EDSL.Point
   , unit
   , Void
   , void_t
+  , absurd
   , Boolean
   , boolean_t
   , true
@@ -677,6 +678,7 @@ type Unit = 'Product '[]
 unit_t :: TypeRep Unit
 unit_t = Product_t All
 
+-- | An empty product can be introduced, but it cannot be eliminated.
 unit :: Expr f val s (val s Unit)
 unit = exprF $ IntroProduct unit_t AllF
 
@@ -684,6 +686,10 @@ type Void = 'Sum '[]
 
 void_t :: TypeRep Void
 void_t = Sum_t All
+
+-- | An empty sum can be eliminated, but it cannot be introduced.
+absurd :: TypeRep x -> Expr f val s (val s Void) -> Expr f val s (val s x)
+absurd x_t void = exprF $ ElimSum void_t x_t AllC void
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
 -- stands for true. An interpreter may need to know that. A C backend could,
