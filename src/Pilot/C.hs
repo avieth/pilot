@@ -346,7 +346,7 @@ enum_tag_declns n _ AllF = do
     (CodeGenInternalError $ "enum_tag_declns bad identifier")
     (stringIdentifier ("tag_" ++ show n))
   pure $ C.EnumrBase $ C.Enumr $ C.Enum ident
-enum_tag_declns n t (AndF t' ts) = do
+enum_tag_declns n _t (AndF t' ts) = do
   ident <- maybeError
     (CodeGenInternalError $ "enum_tag_declns bad identifier")
     (stringIdentifier ("tag_" ++ show n))
@@ -466,6 +466,19 @@ example_9 = do
   f <- shiftR uint8_t e a
   notB uint8_t f
 
+example_10 :: Expr f val s (val s UInt8)
+example_10 = do
+  a <- example_9
+  local uint8_t uint8_t a $ \a' -> do
+    b <- uint8 42
+    orB uint8_t a' b
+
+example_11 :: Expr f val s (val s Point.Ordering)
+example_11 = do
+  x <- example_10
+  y <- example_6
+  cmp uint8_t x y
+
 -- | Generate a C value representation for an expression, assuming any/all of
 -- its sub-expressions are already generated.
 --
@@ -485,13 +498,13 @@ example_9 = do
 -- The `s` type parameter serves to represent the fact that the Val, which must
 -- be a C expression, makes sense only in context.
 eval_expr :: ExprF CodeGen Val s t -> CodeGen s (Val s t)
-eval_expr (IntroInteger tr il)       = eval_intro_integer tr il
-eval_expr (PrimOp primop)            = eval_primop primop
-eval_expr (IntroProduct tr fields)   = eval_intro_product tr fields
-eval_expr (IntroSum tr variant)      = eval_intro_sum tr variant
-eval_expr (ElimProduct tr rr sel it) = eval_elim_product tr sel it
-eval_expr (ElimSum tr rr cases it)   = eval_elim_sum tr rr cases it
-eval_expr (Local tt tr it k)         = eval_local tt tr it k
+eval_expr (IntroInteger tr il)        = eval_intro_integer tr il
+eval_expr (PrimOp primop)             = eval_primop primop
+eval_expr (IntroProduct tr fields)    = eval_intro_product tr fields
+eval_expr (IntroSum tr variant)       = eval_intro_sum tr variant
+eval_expr (ElimProduct tr _rr sel it) = eval_elim_product tr sel it
+eval_expr (ElimSum tr rr cases it)    = eval_elim_sum tr rr cases it
+eval_expr (Local tt tr it k)          = eval_local tt tr it k
 
 eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
 eval_expr' expr = evalInMonad expr eval_expr
@@ -499,6 +512,8 @@ eval_expr' expr = evalInMonad expr eval_expr
 eval_primop :: PrimOpF CodeGen Val s t -> CodeGen s (Val s t)
 eval_primop (Arithmetic arithop) = eval_arithop arithop
 eval_primop (Bitwise bitop)      = eval_bitop bitop
+eval_primop (Logical logop)      = eval_logop logop
+eval_primop (Relative relop)     = eval_relop relop
 
 eval_arithop :: ArithmeticOpF CodeGen Val s t -> CodeGen s (Val s t)
 eval_arithop (AddInteger tr x y) = eval_add_integer tr x y
@@ -515,6 +530,14 @@ eval_bitop (XOrB tr x y)   = eval_xor_bitwise tr x y
 eval_bitop (NotB tr x)     = eval_not_bitwise tr x
 eval_bitop (ShiftL tr x y) = eval_shiftl_bitwise tr x y
 eval_bitop (ShiftR tr x y) = eval_shiftr_bitwise tr x y
+
+eval_logop :: LogicalOpF CodeGen Val s t -> CodeGen s (Val s t)
+eval_logop (AndL x y) = eval_and_bool x y
+eval_logop (OrL  x y) = eval_or_bool  x y
+eval_logop (NotL x)   = eval_not_bool x
+
+eval_relop :: RelativeOpF CodeGen Val s t -> CodeGen s (Val s t)
+eval_relop (Cmp tr x y) = eval_cmp tr x y
 
 -- | Take a fresh name, bind the expression to it, and use the _name_ rather
 -- than the expression to elaborate the code here in the meta-language.
@@ -534,7 +557,7 @@ eval_local
   -> Val s t
   -> (Val s t -> Expr CodeGen Val s (Val s r))
   -> CodeGen s (Val s r)
-eval_local tt tr val k = do
+eval_local _tt _tr val k = do
   (_ident, val') <- declare_initialized "local" val
   eval_expr' (k val')
 
@@ -710,6 +733,58 @@ eval_shiftr_bitwise tr bx by = type_rep_val tr expr
     (condExprIsShiftExpr (getVal bx))
     (condExprIsAddExpr   (getVal by))
 
+eval_and_bool
+  :: Val s Boolean
+  -> Val s Boolean
+  -> CodeGen s (Val s Boolean)
+eval_and_bool vx vy = type_rep_val boolean_t expr
+  where
+  expr = landExprIsCondExpr $ C.LAnd
+    (condExprIsLAndExpr (getVal vx))
+    (condExprIsOrExpr   (getVal vy))
+
+eval_or_bool
+  :: Val s Boolean
+  -> Val s Boolean
+  -> CodeGen s (Val s Boolean)
+eval_or_bool vx vy = type_rep_val boolean_t expr
+  where
+  expr = lorExprIsCondExpr $ C.LOr
+    (condExprIsLOrExpr  (getVal vx))
+    (condExprIsLAndExpr (getVal vy))
+
+eval_not_bool
+  :: Val s Boolean
+  -> CodeGen s (Val s Boolean)
+eval_not_bool vx = type_rep_val boolean_t expr
+  where
+  expr = unaryExprIsCondExpr $ C.UnaryOp C.UONot
+    (condExprIsCastExpr (getVal vx))
+
+-- | The comparison is expressed using 2 C ternary expressions.
+-- Relies on the assumption of a total order (that if x is neither than than nor
+-- greater than y then x is equal to y). Would not work for float/double, for
+-- example.
+eval_cmp
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s Point.Ordering)
+eval_cmp _tr vx vy = do
+  -- We elaborate all 3 cases here.
+  -- The ternary operator which we generate ensures that only one of them is
+  -- actually evaluated in the object-language
+  lessThan    <- eval_expr' lt
+  greaterThan <- eval_expr' gt
+  equalTo     <- eval_expr' eq
+  let isLt :: C.RelExpr
+      isLt = C.RelLT (condExprIsRelExpr (getVal vx)) (condExprIsShiftExpr (getVal vy))
+      isGt :: C.RelExpr
+      isGt = C.RelGT (condExprIsRelExpr (getVal vx)) (condExprIsShiftExpr (getVal vy))
+      expr = C.Cond (relExprIsLOrExpr isLt) (condExprIsExpr (getVal lessThan)) $
+             C.Cond (relExprIsLOrExpr isGt) (condExprIsExpr (getVal greaterThan)) $
+                                            (getVal equalTo)
+  type_rep_val ordering_t expr
 
 -- | Product intro: give all conjuncts and get the product. Since products are
 -- structs, this corresponds to a struct initializer with a field for each
@@ -1055,6 +1130,15 @@ condExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
 condExprIsShiftExpr :: C.CondExpr -> C.ShiftExpr
 condExprIsShiftExpr = C.ShiftAdd . condExprIsAddExpr
 
+condExprIsRelExpr :: C.CondExpr -> C.RelExpr
+condExprIsRelExpr = C.RelShift . condExprIsShiftExpr
+
+condExprIsLAndExpr :: C.CondExpr -> C.LAndExpr
+condExprIsLAndExpr = C.LAndOr . condExprIsOrExpr
+
+condExprIsLOrExpr :: C.CondExpr -> C.LOrExpr
+condExprIsLOrExpr = C.LOrAnd . condExprIsLAndExpr
+
 addExprIsCondExpr :: C.AddExpr -> C.CondExpr
 addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
@@ -1085,6 +1169,9 @@ eqExprIsCondExpr = andExprIsCondExpr . C.AndEq
 
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
+
+relExprIsLOrExpr :: C.RelExpr -> C.LOrExpr
+relExprIsLOrExpr = eqExprIsLOrExpr . C.EqRel
 
 identIsConstExpr :: C.Ident -> C.ConstExpr
 identIsConstExpr = C.Const . identIsCondExpr

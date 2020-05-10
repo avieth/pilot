@@ -49,6 +49,8 @@ module Pilot.EDSL.Point
   , PrimOpF (..)
   , ArithmeticOpF (..)
   , BitwiseOpF (..)
+  , LogicalOpF (..)
+  , RelativeOpF (..)
 
   , UInt8
   , uint8_t
@@ -89,6 +91,8 @@ module Pilot.EDSL.Point
   , shiftL
   , shiftR
 
+  , cmp
+
   , local
 
   , Unit
@@ -98,6 +102,16 @@ module Pilot.EDSL.Point
   , void_t
   , Boolean
   , boolean_t
+  , true
+  , false
+  , elim_boolean
+  , if_else
+  , Ordering
+  , ordering_t
+  , lt
+  , eq
+  , gt
+  , elim_ordering
   , Pair
   , pair_t
   , pair
@@ -116,7 +130,7 @@ module Pilot.EDSL.Point
 
   ) where
 
-import Prelude hiding (Maybe, Either, fst, snd, div, mod)
+import Prelude hiding (Maybe, Either, Ordering, fst, snd, div, mod)
 import qualified Control.Monad as Monad (ap, join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
@@ -175,24 +189,24 @@ newtype Expr
   }
 
 instance Functor (Expr f val s) where
-  fmap f expr = Expr $ \interp map pure join ->
-    map f (getExpr expr interp map pure join)
+  fmap f expr = Expr $ \interp' map' pure' join' ->
+    map' f (getExpr expr interp' map' pure' join')
 
 instance Applicative (Expr f val s) where
-  pure x = Expr $ \interp map pure' join -> pure' x
+  pure x = Expr $ \_interp _map pure' _join -> pure' x
   (<*>)  = Monad.ap
 
 instance Monad (Expr f val s) where
   return = pure
-  expr >>= f = Expr $ \interp map pure join ->
-    join (map (\x -> getExpr (f x) interp map pure join) (getExpr expr interp map pure join))
+  expr >>= f = Expr $ \interp' map' pure' join' ->
+    join' (map' (\x -> getExpr (f x) interp' map' pure' join') (getExpr expr interp' map' pure' join'))
 
 lift :: f s t -> Expr f val s t
 lift ft = Expr $ \_ _ _ _ -> ft
 
 evalInMonad
   :: forall f val s t.
-     ( forall s . Monad (f s) )
+     ( forall q . Monad (f q) )
   -- TODO use the ST trick later. Not in because I want flexibility for development
   -- => (forall q . Expr f val q t)
   => Expr f val s t
@@ -203,10 +217,10 @@ evalInMonad expr interp = getExpr expr interp fmap pure Monad.join
 -- Problem with this is the constraint is going to appear in every derived
 -- expression but I'd prefer to leave it until interpretation time (runInMonad).
 exprF :: forall f val s t . ExprF f val s t -> Expr f val s (val s t)
-exprF exprf = Expr $ \f map pure join ->
+exprF exprf = Expr $ \f map' pure' join' ->
   let v :: f s (val s t)
       v = f exprf
-  in  join (map pure v)
+  in  join' (map' pure' v)
 
 -- | Types for the pointwise EDSL: various numeric types, with finite sums and
 -- products. As usual, the empty product is unit, and the empty sum is void.
@@ -318,10 +332,8 @@ data PrimOpF
   where
   Arithmetic :: ArithmeticOpF f val s t -> PrimOpF f val s t
   Bitwise :: BitwiseOpF f val s t -> PrimOpF f val s t
-  --
-  --Logic 
-  -- TODO number comparisons.
-  -- Result should be the LT | EQ | GT enum
+  Logical  :: LogicalOpF f val s t -> PrimOpF f val s t
+  Relative :: RelativeOpF f val s t -> PrimOpF f val s t
 
 data ArithmeticOpF
   (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
@@ -385,6 +397,28 @@ data BitwiseOpF
          -> val s ('Integer signedness width)
          -> val s ('Integer 'Unsigned 'Eight)
          -> BitwiseOpF f val s ('Integer signedness width)
+
+data LogicalOpF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
+  AndL :: val s Boolean -> val s Boolean -> LogicalOpF f val s Boolean
+  OrL  :: val s Boolean -> val s Boolean -> LogicalOpF f val s Boolean
+  NotL :: val s Boolean -> LogicalOpF f val s Boolean
+
+data RelativeOpF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
+  Cmp :: TypeRep ('Integer signedness width)
+      -> val s ('Integer signedness width)
+      -> val s ('Integer signedness width)
+      -> RelativeOpF f val s Ordering
+
 
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
@@ -523,6 +557,67 @@ type Boolean = 'Sum '[ Unit, Unit ]
 
 boolean_t :: TypeRep Boolean
 boolean_t = Sum_t (AndF unit_t $ AndF unit_t $ AllF)
+
+true :: Expr f val s (val s Boolean)
+true = unit >>= \u -> exprF $ IntroSum boolean_t (AnyF u)
+
+false :: Expr f val s (val s Boolean)
+false = unit >>= \u -> exprF $ IntroSum boolean_t (OrF $ AnyF u)
+
+elim_boolean
+  :: forall val f s r .
+     ( Typeable r )
+  => TypeRep r
+  -> val s Boolean
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+elim_boolean trep vb cTrue cFalse = exprF $ ElimSum boolean_t trep
+  (AndC unit_t (\_ -> cTrue) $ AndC unit_t (\_ -> cFalse) $ AllC)
+  vb
+
+if_else
+  :: forall val f s r .
+     ( Typeable r )
+  => TypeRep r
+  -> val s Boolean
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+if_else = elim_boolean
+
+type Ordering = 'Sum '[ Unit, Unit, Unit ]
+
+ordering_t :: TypeRep Ordering
+ordering_t = Sum_t (AndF unit_t $ AndF unit_t $ AndF unit_t $ AllF)
+
+cmp :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s Ordering)
+cmp tr x y = exprF $ PrimOp $ Relative $ Cmp tr x y
+
+lt :: Expr f val s (val s Ordering)
+lt = unit >>= \u -> exprF $ IntroSum ordering_t (AnyF u)
+
+eq :: Expr f val s (val s Ordering)
+eq = unit >>= \u -> exprF $ IntroSum ordering_t (OrF $ AnyF u)
+
+gt :: Expr f val s (val s Ordering)
+gt = unit >>= \u -> exprF $ IntroSum ordering_t (OrF $ OrF $ AnyF u)
+
+elim_ordering
+  :: forall val f s r .
+     ( Typeable r )
+  => TypeRep r
+  -> val s Ordering
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+  -> Expr f val s (val s r)
+elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
+  (AndC unit_t (\_ -> cLt) $ AndC unit_t (\_ -> cEq) $ AndC unit_t (\_ -> cGt) $ AllC)
+  vo
 
 type Pair (s :: Type) (t :: Type) = 'Product '[ s, t]
 
