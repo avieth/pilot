@@ -51,26 +51,25 @@ import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
 --
+-- - Arithmetic, logic, and bitwise operators.
+--
 -- - C backend specific externs:
 --   - values of any EDSL type
 --   - Also, functions? Yeah, that's probably the way forward. This can express
 --     effectful things like triggers, but also pure things like introducing a
 --     mathematical function that you'd like to implement later, directly in C.
+--   - NB: in the pointwise EDSL, these must be constants.
+--   By using one of these, you constrain the f and val types on the expression.
+--   So, the programmer expresses as much as possible without specifying f or
+--   val, then when the backend is decided upon, these externs are dropped in.
+--   It should be very nice.
 --
--- - For sum elimination, _always_ bind the thing first, so we don't repeat
---   it in each branch.
---   How about this: whenever we have a sum elimination, we always create a new
---   block scope, bind the sum to a fresh name, then bind the elimination
---   expression to another fresh name that was declared in a _higher_ scope ?
---   Or, hm, can't we let the programmer decide that? Yeah let's not make the
---   decision here, but at one level up.
+-- - The lifted EDSL, so we can have nominal Haskell types for sums and
+--   products.
 --
---     it <- bind sum_term
---     match it (\a -> ...) (\b -> ...) ...
---
---   ah but you know what, sum elimination shouldn't even be a conditional
---   expression, we should just go and write an if/else block, so that each
---   atlernative gets its own block scope.
+-- - Then, the streamwise EDSL functor
+
+
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -440,14 +439,14 @@ example_6 :: Expr f val s (val s UInt8)
 example_6 = do
   x <- uint8 2
   y <- uint8 2
-  plus uint8_t x y
+  add uint8_t x y
 
 example_7 :: Expr f val s (val s UInt8)
 example_7 = do
   p <- example_1
   y <- example_6
   x <- Point.fst uint8_t int8_t p
-  plus uint8_t y x
+  add uint8_t y x
 
 example_8 :: Expr f val s (val s UInt8)
 example_8 = do
@@ -455,7 +454,17 @@ example_8 = do
   local (pair_t uint8_t int8_t) uint8_t p $ \p' -> do
     x <- Point.fst uint8_t int8_t p'
     y <- example_6
-    plus uint8_t x y
+    add uint8_t x y
+
+example_9 :: Expr f val s (val s UInt8)
+example_9 = do
+  a <- uint8 0
+  b <- uint8 1
+  c <- uint8 3
+  d <- add uint8_t a b
+  e <- add uint8_t d c
+  f <- shiftR uint8_t e a
+  notB uint8_t f
 
 -- | Generate a C value representation for an expression, assuming any/all of
 -- its sub-expressions are already generated.
@@ -477,7 +486,7 @@ example_8 = do
 -- be a C expression, makes sense only in context.
 eval_expr :: ExprF CodeGen Val s t -> CodeGen s (Val s t)
 eval_expr (IntroInteger tr il)       = eval_intro_integer tr il
-eval_expr (AddInteger tr x y)        = eval_add_integer tr x y
+eval_expr (PrimOp primop)            = eval_primop primop
 eval_expr (IntroProduct tr fields)   = eval_intro_product tr fields
 eval_expr (IntroSum tr variant)      = eval_intro_sum tr variant
 eval_expr (ElimProduct tr rr sel it) = eval_elim_product tr sel it
@@ -486,6 +495,26 @@ eval_expr (Local tt tr it k)         = eval_local tt tr it k
 
 eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
 eval_expr' expr = evalInMonad expr eval_expr
+
+eval_primop :: PrimOpF CodeGen Val s t -> CodeGen s (Val s t)
+eval_primop (Arithmetic arithop) = eval_arithop arithop
+eval_primop (Bitwise bitop)      = eval_bitop bitop
+
+eval_arithop :: ArithmeticOpF CodeGen Val s t -> CodeGen s (Val s t)
+eval_arithop (AddInteger tr x y) = eval_add_integer tr x y
+eval_arithop (SubInteger tr x y) = eval_sub_integer tr x y
+eval_arithop (MulInteger tr x y) = eval_mul_integer tr x y
+eval_arithop (DivInteger tr x y) = eval_div_integer tr x y
+eval_arithop (ModInteger tr x y) = eval_mod_integer tr x y
+eval_arithop (NegInteger tr x)   = eval_neg_integer tr x
+
+eval_bitop :: BitwiseOpF CodeGen Val s t -> CodeGen s (Val s t)
+eval_bitop (AndB tr x y)   = eval_and_bitwise tr x y
+eval_bitop (OrB  tr x y)   = eval_or_bitwise  tr x y
+eval_bitop (XOrB tr x y)   = eval_xor_bitwise tr x y
+eval_bitop (NotB tr x)     = eval_not_bitwise tr x
+eval_bitop (ShiftL tr x y) = eval_shiftl_bitwise tr x y
+eval_bitop (ShiftR tr x y) = eval_shiftr_bitwise tr x y
 
 -- | Take a fresh name, bind the expression to it, and use the _name_ rather
 -- than the expression to elaborate the code here in the meta-language.
@@ -564,6 +593,123 @@ eval_add_integer tr vx vy = type_rep_val tr expr
   expr = addExprIsCondExpr $ C.AddPlus
     (condExprIsAddExpr (getVal vx))
     (condExprIsMultExpr (getVal vy))
+
+eval_sub_integer
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_sub_integer tr vx vy = type_rep_val tr expr
+  where
+  expr = addExprIsCondExpr $ C.AddMin
+    (condExprIsAddExpr (getVal vx))
+    (condExprIsMultExpr (getVal vy))
+
+eval_mul_integer
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_mul_integer tr vx vy = type_rep_val tr expr
+  where
+  expr = addExprIsCondExpr $ C.AddMult $ C.MultMult
+    (condExprIsMultExpr (getVal vx))
+    (condExprIsCastExpr (getVal vy))
+
+eval_div_integer
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_div_integer tr vx vy = type_rep_val tr expr
+  where
+  expr = addExprIsCondExpr $ C.AddMult $ C.MultDiv
+    (condExprIsMultExpr (getVal vx))
+    (condExprIsCastExpr (getVal vy))
+
+eval_mod_integer
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_mod_integer tr vx vy = type_rep_val tr expr
+  where
+  expr = addExprIsCondExpr $ C.AddMult $ C.MultMod
+    (condExprIsMultExpr (getVal vx))
+    (condExprIsCastExpr (getVal vy))
+
+eval_neg_integer
+  :: TypeRep ('Integer 'Signed width)
+  -> Val s ('Integer 'Signed width)
+  -> CodeGen s (Val s ('Integer 'Signed width))
+eval_neg_integer tr vx = type_rep_val tr expr
+  where
+  expr = unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ condExprIsCastExpr (getVal vx)
+
+eval_and_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_and_bitwise tr bx by = type_rep_val tr expr
+  where
+  expr = andExprIsCondExpr $ C.And
+    (condExprIsAndExpr (getVal bx))
+    (condExprIsEqExpr  (getVal by))
+
+eval_or_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_or_bitwise tr bx by = type_rep_val tr expr
+  where
+  expr = orExprIsCondExpr $ C.Or
+    (condExprIsOrExpr  (getVal bx))
+    (condExprIsXOrExpr (getVal by))
+
+eval_xor_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_xor_bitwise tr bx by = type_rep_val tr expr
+  where
+  expr = xorExprIsCondExpr $ C.XOr
+    (condExprIsXOrExpr (getVal bx))
+    (condExprIsAndExpr (getVal by))
+
+eval_not_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_not_bitwise tr bx = type_rep_val tr expr
+  where
+  expr = unaryExprIsCondExpr $ C.UnaryOp C.UOBNot
+    (condExprIsCastExpr (getVal bx))
+
+eval_shiftl_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer 'Unsigned 'Eight)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_shiftl_bitwise tr bx by = type_rep_val tr expr
+  where
+  expr = shiftExprIsCondExpr $ C.ShiftLeft
+    (condExprIsShiftExpr (getVal bx))
+    (condExprIsAddExpr   (getVal by))
+
+eval_shiftr_bitwise
+  :: TypeRep ('Integer signedness width)
+  -> Val s ('Integer signedness width)
+  -> Val s ('Integer 'Unsigned 'Eight)
+  -> CodeGen s (Val s ('Integer signedness width))
+eval_shiftr_bitwise tr bx by = type_rep_val tr expr
+  where
+  expr = shiftExprIsCondExpr $ C.ShiftRight
+    (condExprIsShiftExpr (getVal bx))
+    (condExprIsAddExpr   (getVal by))
+
 
 -- | Product intro: give all conjuncts and get the product. Since products are
 -- structs, this corresponds to a struct initializer with a field for each
@@ -893,9 +1039,49 @@ condExprIsMultExpr :: C.CondExpr -> C.MultExpr
 condExprIsMultExpr = C.MultCast . C.CastUnary . C.UnaryPostfix . C.PostfixPrim .
   C.PrimExpr . C.ExprAssign . C.AssignCond
 
+condExprIsAndExpr :: C.CondExpr -> C.AndExpr
+condExprIsAndExpr = C.AndEq . condExprIsEqExpr
+
+condExprIsXOrExpr :: C.CondExpr -> C.XOrExpr
+condExprIsXOrExpr = C.XOrAnd . condExprIsAndExpr
+
+condExprIsOrExpr :: C.CondExpr -> C.OrExpr
+condExprIsOrExpr = C.OrXOr . condExprIsXOrExpr
+
+condExprIsEqExpr :: C.CondExpr -> C.EqExpr
+condExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimExpr . condExprIsExpr
+
+condExprIsShiftExpr :: C.CondExpr -> C.ShiftExpr
+condExprIsShiftExpr = C.ShiftAdd . condExprIsAddExpr
+
 addExprIsCondExpr :: C.AddExpr -> C.CondExpr
 addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
+
+lorExprIsCondExpr :: C.LOrExpr -> C.CondExpr
+lorExprIsCondExpr = C.CondLOr
+
+landExprIsCondExpr :: C.LAndExpr -> C.CondExpr
+landExprIsCondExpr = lorExprIsCondExpr . C.LOrAnd
+
+orExprIsCondExpr :: C.OrExpr -> C.CondExpr
+orExprIsCondExpr = landExprIsCondExpr . C.LAndOr
+
+xorExprIsCondExpr :: C.XOrExpr -> C.CondExpr
+xorExprIsCondExpr = orExprIsCondExpr . C.OrXOr
+
+andExprIsCondExpr :: C.AndExpr -> C.CondExpr
+andExprIsCondExpr = xorExprIsCondExpr . C.XOrAnd
+
+shiftExprIsCondExpr :: C.ShiftExpr -> C.CondExpr
+shiftExprIsCondExpr = relExprIsCondExpr . C.RelShift
+
+relExprIsCondExpr :: C.RelExpr -> C.CondExpr
+relExprIsCondExpr = eqExprIsCondExpr . C.EqRel
+
+eqExprIsCondExpr :: C.EqExpr -> C.CondExpr
+eqExprIsCondExpr = andExprIsCondExpr . C.AndEq
 
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq

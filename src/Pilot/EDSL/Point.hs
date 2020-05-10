@@ -46,6 +46,10 @@ module Pilot.EDSL.Point
   , WidthRep (..)
   , KnownWidth (..)
 
+  , PrimOpF (..)
+  , ArithmeticOpF (..)
+  , BitwiseOpF (..)
+
   , UInt8
   , uint8_t
   , uint8
@@ -71,7 +75,19 @@ module Pilot.EDSL.Point
   , int64_t
   , int64
 
-  , plus
+  , add
+  , sub
+  , mul
+  , div
+  , mod
+  , neg
+
+  , andB
+  , orB
+  , xorB
+  , notB
+  , shiftL
+  , shiftR
 
   , local
 
@@ -100,8 +116,8 @@ module Pilot.EDSL.Point
 
   ) where
 
-import Prelude hiding (Maybe, Either, fst, snd)
-import Control.Monad (ap, join)
+import Prelude hiding (Maybe, Either, fst, snd, div, mod)
+import qualified Control.Monad as Monad (ap, join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
@@ -164,7 +180,7 @@ instance Functor (Expr f val s) where
 
 instance Applicative (Expr f val s) where
   pure x = Expr $ \interp map pure' join -> pure' x
-  (<*>) = ap
+  (<*>)  = Monad.ap
 
 instance Monad (Expr f val s) where
   return = pure
@@ -182,7 +198,7 @@ evalInMonad
   => Expr f val s t
   -> (forall x y . ExprF f val x y -> f x (val x y))
   -> f s t
-evalInMonad expr interp = getExpr expr interp fmap pure join
+evalInMonad expr interp = getExpr expr interp fmap pure Monad.join
 
 -- Problem with this is the constraint is going to appear in every derived
 -- expression but I'd prefer to leave it until interpretation time (runInMonad).
@@ -248,15 +264,15 @@ instance KnownWidth 'SixtyFour where
 
 data IntegerLiteral (signedness :: Signedness) (width :: Width) where
 
-  UInt8  :: Haskell.Word8  -> IntegerLiteral Unsigned Eight
-  UInt16 :: Haskell.Word16 -> IntegerLiteral Unsigned Sixteen
-  UInt32 :: Haskell.Word32 -> IntegerLiteral Unsigned ThirtyTwo
-  UInt64 :: Haskell.Word64 -> IntegerLiteral Unsigned SixtyFour
+  UInt8  :: Haskell.Word8  -> IntegerLiteral 'Unsigned 'Eight
+  UInt16 :: Haskell.Word16 -> IntegerLiteral 'Unsigned 'Sixteen
+  UInt32 :: Haskell.Word32 -> IntegerLiteral 'Unsigned 'ThirtyTwo
+  UInt64 :: Haskell.Word64 -> IntegerLiteral 'Unsigned 'SixtyFour
 
-  Int8  :: Haskell.Int8  -> IntegerLiteral Signed Eight
-  Int16 :: Haskell.Int16 -> IntegerLiteral Signed Sixteen
-  Int32 :: Haskell.Int32 -> IntegerLiteral Signed ThirtyTwo
-  Int64 :: Haskell.Int64 -> IntegerLiteral Signed SixtyFour
+  Int8  :: Haskell.Int8  -> IntegerLiteral 'Signed 'Eight
+  Int16 :: Haskell.Int16 -> IntegerLiteral 'Signed 'Sixteen
+  Int32 :: Haskell.Int32 -> IntegerLiteral 'Signed 'ThirtyTwo
+  Int64 :: Haskell.Int64 -> IntegerLiteral 'Signed 'SixtyFour
 
 -- | Value-level representation of 'Type' data kinds.
 data TypeRep (t :: Type) where
@@ -294,6 +310,82 @@ instance (Typeable t, Typeable ts, KnownType t, KnownType ('Sum ts))
     let Sum_t theRest = typeRep (Proxy :: Proxy ('Sum ts))
     in  Sum_t (AndF (typeRep (Proxy :: Proxy t)) theRest)
 
+data PrimOpF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
+  Arithmetic :: ArithmeticOpF f val s t -> PrimOpF f val s t
+  Bitwise :: BitwiseOpF f val s t -> PrimOpF f val s t
+  --
+  --Logic 
+  -- TODO number comparisons.
+  -- Result should be the LT | EQ | GT enum
+
+data ArithmeticOpF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
+  AddInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ArithmeticOpF f val s ('Integer signedness width)
+  SubInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ArithmeticOpF f val s ('Integer signedness width)
+  MulInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ArithmeticOpF f val s ('Integer signedness width)
+  DivInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ArithmeticOpF f val s ('Integer signedness width)
+  ModInteger :: TypeRep ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> val s ('Integer signedness width)
+             -> ArithmeticOpF f val s ('Integer signedness width)
+  NegInteger :: TypeRep ('Integer 'Signed width)
+             -> val s ('Integer 'Signed width)
+             -> ArithmeticOpF f val s ('Integer 'Signed width)
+
+-- | Bitwise operations are permitted on all integral types. TODO maybe this
+-- is not ideal. Should we give bit types which do not allow for arithmetic,
+-- and demand explicit type conversions? Would maybe be useful.
+data BitwiseOpF
+  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
+  (val :: Haskell.Type -> Type -> Haskell.Type)
+  (s   :: Haskell.Type)
+  (t   :: Type)
+  where
+  AndB :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> BitwiseOpF f val s ('Integer signedness width)
+  OrB  :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> BitwiseOpF f val s ('Integer signedness width)
+  XOrB :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> BitwiseOpF f val s ('Integer signedness width)
+  NotB :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> BitwiseOpF f val s ('Integer signedness width)
+  ShiftL :: TypeRep ('Integer signedness width)
+         -> val s ('Integer signedness width)
+         -> val s ('Integer 'Unsigned 'Eight)
+         -> BitwiseOpF f val s ('Integer signedness width)
+  ShiftR :: TypeRep ('Integer signedness width)
+         -> val s ('Integer signedness width)
+         -> val s ('Integer 'Unsigned 'Eight)
+         -> BitwiseOpF f val s ('Integer signedness width)
+
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
 -- representation.
@@ -313,10 +405,7 @@ data ExprF
 
   -- TODO more arithmetic and logic stuff
 
-  AddInteger :: TypeRep ('Integer signedness width)
-             -> val s ('Integer signedness width)
-             -> val s ('Integer signedness width)
-             -> ExprF f val s ('Integer signedness width)
+  PrimOp :: PrimOpF f val s t -> ExprF f val s t
 
   -- TODO safe upcasts
   -- TODO checked downcasts
@@ -383,15 +472,15 @@ data Cases
 
 -- Some examples of 'Type's and 'TypeRep's
 
-type UInt8  = 'Integer Unsigned Eight
-type UInt16 = 'Integer Unsigned Sixteen
-type UInt32 = 'Integer Unsigned ThirtyTwo
-type UInt64 = 'Integer Unsigned SixtyFour
+type UInt8  = 'Integer 'Unsigned 'Eight
+type UInt16 = 'Integer 'Unsigned 'Sixteen
+type UInt32 = 'Integer 'Unsigned 'ThirtyTwo
+type UInt64 = 'Integer 'Unsigned 'SixtyFour
 
-type Int8  = 'Integer Signed Eight
-type Int16 = 'Integer Signed Sixteen
-type Int32 = 'Integer Signed ThirtyTwo
-type Int64 = 'Integer Signed SixtyFour
+type Int8  = 'Integer 'Signed 'Eight
+type Int16 = 'Integer 'Signed 'Sixteen
+type Int32 = 'Integer 'Signed 'ThirtyTwo
+type Int64 = 'Integer 'Signed 'SixtyFour
 
 uint8_t :: TypeRep UInt8
 uint8_t = Integer_t Unsigned_t Eight_t
@@ -532,35 +621,99 @@ elim_either tra trb trc val cLeft cRight = exprF $ ElimSum (either_t tra trb) tr
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
 
-uint8 :: Haskell.Word8 -> Expr f val s (val s ('Integer Unsigned Eight))
+uint8 :: Haskell.Word8 -> Expr f val s (val s ('Integer 'Unsigned 'Eight))
 uint8 w8 = exprF $ IntroInteger uint8_t (UInt8 w8)
 
-uint16 :: Haskell.Word16 -> Expr f val s (val s ('Integer Unsigned Sixteen))
+uint16 :: Haskell.Word16 -> Expr f val s (val s ('Integer 'Unsigned 'Sixteen))
 uint16 w16 = exprF $ IntroInteger uint16_t (UInt16 w16)
 
-uint32 :: Haskell.Word32 -> Expr f val s (val s ('Integer Unsigned ThirtyTwo))
+uint32 :: Haskell.Word32 -> Expr f val s (val s ('Integer 'Unsigned 'ThirtyTwo))
 uint32 w32 = exprF $ IntroInteger uint32_t (UInt32 w32)
 
-uint64 :: Haskell.Word64 -> Expr f val s (val s ('Integer Unsigned SixtyFour))
+uint64 :: Haskell.Word64 -> Expr f val s (val s ('Integer 'Unsigned 'SixtyFour))
 uint64 w64 = exprF $ IntroInteger uint64_t (UInt64 w64)
 
-int8 :: Haskell.Int8 -> Expr f val s (val s ('Integer Signed Eight))
+int8 :: Haskell.Int8 -> Expr f val s (val s ('Integer 'Signed 'Eight))
 int8 i8 = exprF $ IntroInteger int8_t (Int8 i8)
 
-int16 :: Haskell.Int16 -> Expr f val s (val s ('Integer Signed Sixteen))
+int16 :: Haskell.Int16 -> Expr f val s (val s ('Integer 'Signed 'Sixteen))
 int16 i16 = exprF $ IntroInteger int16_t (Int16 i16)
 
-int32 :: Haskell.Int32 -> Expr f val s (val s ('Integer Signed ThirtyTwo))
+int32 :: Haskell.Int32 -> Expr f val s (val s ('Integer 'Signed 'ThirtyTwo))
 int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
 
-int64 :: Haskell.Int64 -> Expr f val s (val s ('Integer Signed SixtyFour))
+int64 :: Haskell.Int64 -> Expr f val s (val s ('Integer 'Signed 'SixtyFour))
 int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
 
-plus :: TypeRep ('Integer signedness width)
+add :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+add tr x y = exprF $ PrimOp $ Arithmetic $ AddInteger tr x y
+
+sub :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+sub tr x y = exprF $ PrimOp $ Arithmetic $ SubInteger tr x y
+
+mul :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+mul tr x y = exprF $ PrimOp $ Arithmetic $ MulInteger tr x y
+
+div :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+div tr x y = exprF $ PrimOp $ Arithmetic $ DivInteger tr x y
+
+mod :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+mod tr x y = exprF $ PrimOp $ Arithmetic $ ModInteger tr x y
+
+neg :: TypeRep ('Integer 'Signed width)
+    -> val s ('Integer 'Signed width)
+    -> Expr f val s (val s ('Integer 'Signed width))
+neg tr x = exprF $ PrimOp $ Arithmetic $ NegInteger tr x
+
+andB :: TypeRep ('Integer signedness width)
      -> val s ('Integer signedness width)
      -> val s ('Integer signedness width)
      -> Expr f val s (val s ('Integer signedness width))
-plus tr x y = exprF $ AddInteger tr x y
+andB tr x y = exprF $ PrimOp $ Bitwise $ AndB tr x y
+
+orB :: TypeRep ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> val s ('Integer signedness width)
+    -> Expr f val s (val s ('Integer signedness width))
+orB tr x y = exprF $ PrimOp $ Bitwise $ OrB tr x y
+
+xorB :: TypeRep ('Integer signedness width)
+     -> val s ('Integer signedness width)
+     -> val s ('Integer signedness width)
+     -> Expr f val s (val s ('Integer signedness width))
+xorB tr x y = exprF $ PrimOp $ Bitwise $ XOrB tr x y
+
+notB :: TypeRep ('Integer signedness width)
+     -> val s ('Integer signedness width)
+     -> Expr f val s (val s ('Integer signedness width))
+notB tr x = exprF $ PrimOp $ Bitwise $ NotB tr x
+
+shiftL :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> val s ('Integer 'Unsigned 'Eight)
+       -> Expr f val s (val s ('Integer signedness width))
+shiftL tr x y = exprF $ PrimOp $ Bitwise $ ShiftL tr x y
+
+shiftR :: TypeRep ('Integer signedness width)
+       -> val s ('Integer signedness width)
+       -> val s ('Integer 'Unsigned 'Eight)
+       -> Expr f val s (val s ('Integer signedness width))
+shiftR tr x y = exprF $ PrimOp $ Bitwise $ ShiftR tr x y
 
 local
   :: TypeRep t
