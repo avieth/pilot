@@ -34,7 +34,6 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.List.NonEmpty (NonEmpty)
 import Data.Proxy (Proxy (..))
-import qualified Data.Typeable as Haskell
 import GHC.TypeLits (KnownSymbol, symbolVal)
 import Numeric.Natural (Natural)
 
@@ -50,6 +49,19 @@ import System.IO.Error (userError)
 import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
+--
+-- - Logical expressions: either we redefine the and/or/not operators to
+--   use the compound boolean, or we change the representation of sums to
+--   degrade to enums when all of their variants are unit.
+--   Latter would be more efficient.
+--   It would require that we set the enum values explicitly: we need to know
+--   that true is 1 and false is 0.
+--   There is short circuit semantics to worry about here: if we && a true on
+--   the left, the second boolean shouldn't even be allocated. May not be
+--   possible. The second boolean may have statements it requires; we'd have to
+--   put it into a separate function just for the sake of short curcuiting.
+--   Why not just give a uniformly strict semantics?
+--
 --
 -- - C backend specific externs:
 --   - values of any EDSL type
@@ -83,6 +95,11 @@ import Control.Exception (throwIO)
 --   so that the thing that all non-functions are wrapped in is
 --
 --     Expr f val s . val s
+--
+--   Yeah that looks to be the way forward. Haskell functions which are based
+--   over that type `Expr f val s . val s` are akin to meta-programming:
+--   constructing object-language things within the meta-language Haskell.
+--
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -90,6 +107,19 @@ prettyPrint = render . pretty
 
 -- |
 -- = Type names and type declarations
+
+-- | Identifies sum types of the form a_1 + ... + a_n where each a_i is either
+-- 1 or 0 (unit or void).
+-- We represent these as enums. Sums not of this form are structs carrying
+-- enums along with unions to represent the data they hold.
+sum_is_enum :: TypeRep ('Sum types) -> Maybe Natural
+sum_is_enum (Sum_t All)          = Just 0
+sum_is_enum (Sum_t (And ty tys)) = case ty of
+  -- This is 1 (unit)
+  Product_t All -> ((+) 1) <$> sum_is_enum (Sum_t tys)
+  -- This is 0 (void)
+  Sum_t All     -> ((+) 1) <$> sum_is_enum (Sum_t tys)
+  _             -> Nothing
 
 -- | For integral types we use the C standard explicit types like uint8_t.
 --
@@ -213,17 +243,17 @@ product_type_name trep@(Product_t (And _ _)) = do
 
 product_type_spec :: TypeRep ('Product ts) -> CodeGen s C.TypeSpec
 product_type_spec (Product_t All) = pure C.TVoid
-product_type_spec (Product_t tys@(And _ _)) = do
+product_type_spec trep@(Product_t (And _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
-  let haskellTypeRep :: Haskell.TypeRep
-      haskellTypeRep = Haskell.typeOf tys
+  let someTypeRep :: SomeTypeRep
+      someTypeRep = SomeTypeRep trep
   prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
-  case Map.lookup haskellTypeRep prodMap of
+  case Map.lookup someTypeRep prodMap of
     Just pdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
       C.Struct
       (pdStructIdent pdeclr)
     Nothing -> codeGenError $ CodeGenInternalError $
-      "product_spec_qual_type not found " ++ show haskellTypeRep
+      "product_spec_qual_type not found " ++ show someTypeRep
 
 -- | The product type for use with initialization of its struct.
 product_spec_qual :: TypeRep ('Product (t ': ts)) -> CodeGen s C.SpecQualList
@@ -233,17 +263,17 @@ product_spec_qual trep = do
 
 sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
 sum_type_spec (Sum_t All) = pure C.TVoid
-sum_type_spec (Sum_t tys@(And _ _)) = do
+sum_type_spec trep@(Sum_t (And _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
-  let haskellTypeRep :: Haskell.TypeRep
-      haskellTypeRep = Haskell.typeOf tys
+  let someTypeRep :: SomeTypeRep
+      someTypeRep = SomeTypeRep trep
   sumMap <- CodeGen $ Trans.lift $ gets cgsSums
-  case Map.lookup haskellTypeRep sumMap of
+  case Map.lookup someTypeRep sumMap of
     Just sdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
       C.Struct
       (sdStructIdent sdeclr)
     Nothing -> codeGenError $ CodeGenInternalError $
-      "sum_spec_qual_type not found " ++ show haskellTypeRep
+      "sum_spec_qual_type not found " ++ show someTypeRep
 
 -- | The sum type for use with initialization of its struct. The enum and
 -- union inside it do not need to be named (the C compiler can infer them).
@@ -259,11 +289,11 @@ sum_spec_qual trep = do
 product_declare :: TypeRep ('Product tys) -> CodeGen s ()
 -- Unit type: nothing to do, it's void*
 product_declare (Product_t All) = pure ()
-product_declare (Product_t tys@(And t ts)) = do
-  let haskellTypeRep :: Haskell.TypeRep
-      haskellTypeRep = Haskell.typeOf tys
+product_declare trep@(Product_t (And t ts)) = do
+  let someTypeRep :: SomeTypeRep
+      someTypeRep = SomeTypeRep trep
   prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
-  case Map.lookup haskellTypeRep prodMap of
+  case Map.lookup someTypeRep prodMap of
     -- Already there; good to go.
     Just _pdeclr -> pure ()
     -- This signature has not been seen yet. Generate a new name and compute
@@ -275,13 +305,13 @@ product_declare (Product_t tys@(And t ts)) = do
       st <- CodeGen $ Trans.lift get
       prodIdent <- maybeError
         -- We know this can't happen.
-        (CodeGenInternalError $ "product_declare bad identifier for " ++ show haskellTypeRep)
+        (CodeGenInternalError $ "product_declare bad identifier for " ++ show someTypeRep)
         (stringIdentifier ("product_" ++ show (Map.size (cgsProducts st))))
       let pdeclr = ProductDeclr
             { pdStructDeclnList = prodDeclns
             , pdStructIdent     = prodIdent
             }
-          prodMap' = Map.insert haskellTypeRep pdeclr (cgsProducts st)
+          prodMap' = Map.insert someTypeRep pdeclr (cgsProducts st)
           st' = st { cgsProducts = prodMap' }
       CodeGen $ Trans.lift $ put st'
 
@@ -297,11 +327,11 @@ product_declare (Product_t tys@(And t ts)) = do
 sum_declare :: TypeRep ('Sum tys) -> CodeGen s ()
 -- No declaration; it's void*
 sum_declare (Sum_t All) = pure ()
-sum_declare (Sum_t tys@(And t ts)) = do
-  let haskellTypeRep :: Haskell.TypeRep
-      haskellTypeRep = Haskell.typeOf tys
+sum_declare trep@(Sum_t (And t ts)) = do
+  let someTypeRep :: SomeTypeRep
+      someTypeRep = SomeTypeRep trep
   sumMap <- CodeGen $ Trans.lift $ gets cgsSums
-  case Map.lookup haskellTypeRep sumMap of
+  case Map.lookup someTypeRep sumMap of
     Just _sdeclr -> pure ()
     Nothing -> do
 
@@ -313,13 +343,13 @@ sum_declare (Sum_t tys@(And t ts)) = do
       let sumMap' = cgsSums st
 
       sumStructIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad struct identifier for " ++ show haskellTypeRep)
+        (CodeGenInternalError $ "sum_declare bad struct identifier for " ++ show someTypeRep)
         (stringIdentifier ("sum_" ++ show (Map.size sumMap')))
       sumUnionIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad union identifier for " ++ show haskellTypeRep)
+        (CodeGenInternalError $ "sum_declare bad union identifier for " ++ show someTypeRep)
         (stringIdentifier ("sum_variant_" ++ show (Map.size sumMap')))
       sumEnumIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad enum identifier for " ++ show haskellTypeRep)
+        (CodeGenInternalError $ "sum_declare bad enum identifier for " ++ show someTypeRep)
         (stringIdentifier ("sum_tag_" ++ show (Map.size sumMap')))
 
       -- The sum is
@@ -332,11 +362,11 @@ sum_declare (Sum_t tys@(And t ts)) = do
       -- NB: they are not pointers.
       let structDeclns = C.StructDeclnCons
             (C.StructDeclnBase $ C.StructDecln
-              (C.SpecQualType (C.TEnum (C.EnumSpecForw sumEnumIdent)) Nothing)
+              (C.SpecQualQual C.QConst $ Just (C.SpecQualType (C.TEnum (C.EnumSpecForw sumEnumIdent)) Nothing))
               (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_tag))))
             )
             (C.StructDecln
-              (C.SpecQualType (C.TStructOrUnion (C.StructOrUnionForwDecln C.Union sumUnionIdent)) Nothing)
+              (C.SpecQualQual C.QConst $ Just (C.SpecQualType (C.TStructOrUnion (C.StructOrUnionForwDecln C.Union sumUnionIdent)) Nothing))
               (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_variant))))
             )
 
@@ -348,7 +378,7 @@ sum_declare (Sum_t tys@(And t ts)) = do
             , sdUnionDeclnList  = unionDeclns
             , sdEnumrList       = enumrList
             }
-          sumMap'' = Map.insert haskellTypeRep sdeclr (cgsSums st)
+          sumMap'' = Map.insert someTypeRep sdeclr (cgsSums st)
           st' = st { cgsSums = sumMap'' }
       CodeGen $ Trans.lift $ put st'
 
@@ -366,42 +396,50 @@ enum_tag_declns n _t (And t' ts) = do
   subList <- enum_tag_declns (n+1) t' ts
   pure $ C.EnumrCons subList $ C.Enumr $ C.Enum ident
 
--- | This will put the fields in reverse order, since the C declaration list
+-- | The struct/union declaration list for product and sum types. For products,
+-- thsi will give the struct fields; for sums, the union variants.
+--
+-- This will put the fields in reverse order, since the C declaration list
 -- type is defines like a snoc-list. Doesn't really matter though.
-field_declns :: String -> Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.StructDeclnList
-
+field_declns
+  :: String  -- ^ Prefix for the fields/variants
+  -> Natural -- ^ Initial disambiguator. Call this will 0.
+  -> TypeRep ty
+  -> All TypeRep tys
+  -> CodeGen s C.StructDeclnList
 field_declns name n t All = do
-  -- TODO factor this out so we can re-use in the other case.
-  C.TypeName specQualList mAbstractDeclr <- type_name t
   ident <- maybeError
     (CodeGenInternalError $ "field_declns bad identifier")
     (stringIdentifier (name ++ show n))
-  let qualList :: C.SpecQualList
-      qualList = specQualList
+  typeSpec <- type_spec t
+  let -- We use the type spec, qualified by const: struct fields and union
+      -- variants are set on initialization and are never changed.
+      qualList :: C.SpecQualList
+      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType typeSpec $ Nothing
       -- We want the field to be a pointer iff the type of t is a pointer.
       mPtr :: Maybe C.Ptr
-      mPtr = mAbstractDeclr >>= \it -> case it of
-        C.AbstractDeclr ptr -> Just ptr
-        C.AbstractDeclrDirect mPtr' _ -> mPtr'
+      mPtr = type_rep_ptr t
       declrList :: C.StructDeclrList
-      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $ C.DirectDeclrIdent ident
+      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $
+        C.DirectDeclrIdent ident
   pure $ C.StructDeclnBase $ C.StructDecln qualList declrList
 
 field_declns name n t (And t' ts) = do
   subList <- field_declns name (n+1) t' ts
-  C.TypeName specQualList mAbstractDeclr <- type_name t
   ident <- maybeError
     (CodeGenInternalError $ "field_declns bad identifier")
     (stringIdentifier (name ++ show n))
-  let qualList :: C.SpecQualList
-      qualList = specQualList
+  typeSpec <- type_spec t
+  let -- We use the type spec, qualified by const: struct fields and union
+      -- variants are set on initialization and are never changed.
+      qualList :: C.SpecQualList
+      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType typeSpec $ Nothing
       -- We want the field to be a pointer iff the type of t is a pointer.
       mPtr :: Maybe C.Ptr
-      mPtr = mAbstractDeclr >>= \it -> case it of
-        C.AbstractDeclr ptr -> Just ptr
-        C.AbstractDeclrDirect mPtr' _ -> mPtr'
+      mPtr = type_rep_ptr t
       declrList :: C.StructDeclrList
-      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $ C.DirectDeclrIdent ident
+      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $
+        C.DirectDeclrIdent ident
   pure $ C.StructDeclnCons subList $ C.StructDecln qualList declrList
 
 -- |
@@ -470,6 +508,17 @@ example_11 =
   local uint8_t ordering_t example_10 $ \s ->
     local uint8_t ordering_t example_6 $ \t ->
       cmp uint8_t s t
+
+-- | Contains a nested product in a sum.
+example_12 :: Expr f val s (val s UInt8)
+example_12 =
+  -- Bind the pair from example_1
+  local (pair_t uint8_t int8_t) uint8_t example_1 $ \p ->
+    -- Bind a maybe of this
+    local (maybe_t (typeOf p)) uint8_t (nothing (typeOf p)) $ \s ->
+      elim_maybe (typeOf p) uint8_t s
+        (\_ -> uint8 1)
+        (\x -> Point.fst uint8_t int8_t x)
 
 -- | Generate a C value representation for an expression, assuming any/all of
 -- its sub-expressions are already generated.
@@ -753,6 +802,7 @@ eval_shiftr_bitwise tr bx by = do
         (condExprIsAddExpr   (getVal y))
   type_rep_val tr expr
 
+-- TODO is wrong
 eval_and_bool
   :: Expr CodeGen Val s (Val s Boolean)
   -> Expr CodeGen Val s (Val s Boolean)
@@ -765,6 +815,7 @@ eval_and_bool vx vy = do
         (condExprIsOrExpr   (getVal y))
   type_rep_val boolean_t expr
 
+-- TODO is wrong
 eval_or_bool
   :: Expr CodeGen Val s (Val s Boolean)
   -> Expr CodeGen Val s (Val s Boolean)
@@ -777,6 +828,7 @@ eval_or_bool vx vy = do
         (condExprIsLAndExpr (getVal y))
   type_rep_val boolean_t expr
 
+-- TODO is wrong
 eval_not_bool
   :: Expr CodeGen Val s (Val s Boolean)
   -> CodeGen s (Val s Boolean)
@@ -1458,8 +1510,7 @@ data SumDeclr = SumDeclr
   , sdEnumrList       :: !C.EnumrList
   }
 
-type TypeIdentifier = Haskell.TypeRep
-type VarIdentifier = String
+type TypeIdentifier = SomeTypeRep
 
 -- | Represents an object-language value within a 'CodeGen' context (the `s`
 -- type parameter, the ST/STRef trick).

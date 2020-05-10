@@ -29,7 +29,9 @@ module Pilot.EDSL.Point
 
   , Type (..)
   , TypeRep (..)
+  , SomeTypeRep (..)
   , KnownType (..)
+  , typeOf
 
   , ExprF (..)
   , All (..)
@@ -136,11 +138,11 @@ module Pilot.EDSL.Point
   ) where
 
 import Prelude hiding (Maybe, Either, Ordering, fst, snd, div, mod)
+import qualified Prelude
 import qualified Control.Monad as Monad (ap, join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
-import Data.Typeable (Typeable)
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
 -- | The user-facing DSL.
@@ -266,6 +268,29 @@ data WidthRep (t :: Width) where
   ThirtyTwo_t :: WidthRep 'ThirtyTwo
   SixtyFour_t :: WidthRep 'SixtyFour
 
+data SomeWidthRep where
+  SomeWidthRep :: WidthRep t -> SomeWidthRep
+
+instance Eq SomeWidthRep where
+  a == b = (a `compare` b) == EQ
+
+instance Ord SomeWidthRep where
+
+  SomeWidthRep Eight_t `compare` SomeWidthRep Eight_t = EQ
+  SomeWidthRep Eight_t `compare` _                    = LT
+
+  SomeWidthRep Sixteen_t `compare` SomeWidthRep Sixteen_t = EQ
+  SomeWidthRep Sixteen_t `compare` SomeWidthRep Eight_t   = GT
+  SomeWidthRep Sixteen_t `compare` _                      = LT
+
+  SomeWidthRep ThirtyTwo_t `compare` SomeWidthRep ThirtyTwo_t = EQ
+  SomeWidthRep ThirtyTwo_t `compare` SomeWidthRep Eight_t     = GT
+  SomeWidthRep ThirtyTwo_t `compare` SomeWidthRep Sixteen_t   = GT
+  SomeWidthRep ThirtyTwo_t `compare` _                        = LT
+
+  SomeWidthRep SixtyFour_t `compare` SomeWidthRep SixtyFour_t = EQ
+  SomeWidthRep SixtyFour_t `compare` _                        = GT
+
 class KnownWidth (w :: Width) where
   widthRep :: proxy w -> WidthRep w
 
@@ -301,8 +326,87 @@ data TypeRep (t :: Type) where
              -> TypeRep ('Integer sigedness width)
   Rational_t :: TypeRep 'Rational
 
-  Product_t :: Typeable tys => All TypeRep tys -> TypeRep ('Product tys)
-  Sum_t     :: Typeable tys => All TypeRep tys -> TypeRep ('Sum tys)
+  Product_t :: All TypeRep tys -> TypeRep ('Product tys)
+  Sum_t     :: All TypeRep tys -> TypeRep ('Sum tys)
+
+-- | Analagous to GHC Haskell's SomeTypeRep from Data.Typeable.
+-- We're interested in having this because it's Eq and Ord (i.e. you can put
+-- it into a Map).
+data SomeTypeRep where
+  SomeTypeRep :: TypeRep t -> SomeTypeRep
+
+instance Eq SomeTypeRep where
+  a == b = (a `compare` b) == EQ
+
+-- TODO how do we order this?
+-- Defining nontrivial ord instances is error prone and it's bitten me before.
+--
+-- For the integer types it can be simple enough.
+--   unsigned x < signed y
+--   signed x   < signed y   iff x < y
+--   unsigned x < unsigned y iif x < y
+--
+-- but for sums and products? Treat it like a tuple?
+--
+--   1. products are less than sums
+--   2. The shorter compound is less than the longer compound
+--   3. at each common point in the compound, if one is less than the other,
+--      then that composite is less than the other.
+-- 
+-- Pretty sure this is transitive.
+
+instance Ord SomeTypeRep where
+
+  SomeTypeRep (Integer_t Signed_t wr) `compare` SomeTypeRep (Integer_t Signed_t wr') =
+    SomeWidthRep wr `compare` SomeWidthRep wr'
+  SomeTypeRep (Integer_t Unsigned_t wr) `compare` SomeTypeRep (Integer_t Unsigned_t wr') =
+    SomeWidthRep wr `compare` SomeWidthRep wr'
+
+  SomeTypeRep (Integer_t Signed_t _)   `compare` SomeTypeRep (Integer_t Unsigned_t _) = LT
+  SomeTypeRep (Integer_t Unsigned_t _) `compare` SomeTypeRep (Integer_t Signed_t   _) = GT
+
+  SomeTypeRep (Integer_t _ _) `compare` _ = LT
+
+  SomeTypeRep Rational_t      `compare` SomeTypeRep (Integer_t _ _) = GT
+  SomeTypeRep Rational_t      `compare` _ = LT
+
+  SomeTypeRep (Product_t p) `compare` SomeTypeRep (Product_t q) = compare_compound p q
+  SomeTypeRep (Product_t _) `compare` SomeTypeRep (Sum_t _) = LT
+  SomeTypeRep (Product_t _) `compare` _ = GT
+
+  SomeTypeRep (Sum_t s) `compare` SomeTypeRep (Sum_t r) = compare_compound s r
+  SomeTypeRep (Sum_t _) `compare` _ = GT
+
+-- | An ordering on lists of 'TypeRep's.
+--
+-- The lists always have a common equal prefix (prefix such that all types at
+-- the corresponding positions are equal) even though that prefix may be of
+-- length 0.
+--
+-- To compute the order, we drop that prefix, finding the first position for
+-- which there is a different type rep.
+-- - If there is no such position, they're equal.
+-- - If the left list is a prefix of the right list then left is less than
+--   right.
+-- - If the right list is a prefix of the left list then right is less than
+--   left.
+-- - If there is a position for which the lists differ, then the ordering of
+--   that element is the ordering of the compound.
+--
+-- This is just list ordering. Should be legit.
+--
+compare_compound :: All TypeRep tys -> All TypeRep tys' -> Prelude.Ordering
+compare_compound All All = EQ
+compare_compound All (And _ _) = LT
+compare_compound (And _ _) All = GT
+compare_compound (And ty tys) (And ty' tys') = case SomeTypeRep ty `compare` SomeTypeRep ty' of
+  LT -> LT
+  GT -> GT
+  EQ -> compare_compound tys tys'
+
+-- TODO 
+instance Show SomeTypeRep where
+  show _ = "SomeTypeRep"
 
 class KnownType (t :: Type) where
   typeRep :: proxy t -> TypeRep t
@@ -314,7 +418,7 @@ instance (KnownSignedness signedness, KnownWidth width) => KnownType ('Integer s
 instance KnownType ('Product '[]) where
   typeRep _ = Product_t All
 
-instance (Typeable t, Typeable ts, KnownType t, KnownType ('Product ts))
+instance (KnownType t, KnownType ('Product ts))
   => KnownType ('Product (t ': ts)) where
   typeRep _ =
     let Product_t theRest = typeRep (Proxy :: Proxy ('Product ts))
@@ -323,7 +427,7 @@ instance (Typeable t, Typeable ts, KnownType t, KnownType ('Product ts))
 instance KnownType ('Sum '[]) where
   typeRep _ = Sum_t All
 
-instance (Typeable t, Typeable ts, KnownType t, KnownType ('Sum ts))
+instance (KnownType t, KnownType ('Sum ts))
   => KnownType ('Sum (t ': ts)) where
   typeRep _ =
     let Sum_t theRest = typeRep (Proxy :: Proxy ('Sum ts))
@@ -429,6 +533,8 @@ data RelativeOpF
       -> Expr f val s (val s ('Integer signedness width))
       -> RelativeOpF f val s Ordering
 
+typeOf :: forall f val s t . KnownType t => Expr f val s (val s t) -> TypeRep t
+typeOf _ = typeRep (Proxy :: Proxy t)
 
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
@@ -579,6 +685,9 @@ type Void = 'Sum '[]
 void_t :: TypeRep Void
 void_t = Sum_t All
 
+-- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
+-- stands for true. An interpreter may need to know that. A C backend could,
+-- for instance, represent this as a byte, and use typical logical operators.
 type Boolean = 'Sum '[ Unit, Unit ]
 
 boolean_t :: TypeRep Boolean
@@ -592,8 +701,7 @@ false = exprF $ IntroSum boolean_t (OrV $ AnyV unit)
 
 elim_boolean
   :: forall val f s r .
-     ( Typeable r )
-  => TypeRep r
+     TypeRep r
   -> Expr f val s (val s Boolean)
   -> Expr f val s (val s r)
   -> Expr f val s (val s r)
@@ -604,8 +712,7 @@ elim_boolean trep vb cTrue cFalse = exprF $ ElimSum boolean_t trep
 
 if_else
   :: forall val f s r .
-     ( Typeable r )
-  => TypeRep r
+     TypeRep r
   -> Expr f val s (val s Boolean)
   -> Expr f val s (val s r)
   -> Expr f val s (val s r)
@@ -634,8 +741,7 @@ gt = exprF $ IntroSum ordering_t (OrV $ OrV $ AnyV unit)
 
 elim_ordering
   :: forall val f s r .
-     ( Typeable r )
-  => TypeRep r
+     TypeRep r
   -> Expr f val s (val s Ordering)
   -> Expr f val s (val s r)
   -> Expr f val s (val s r)
@@ -647,19 +753,17 @@ elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
 
 type Pair (s :: Type) (t :: Type) = 'Product '[ s, t]
 
-pair_t :: (Typeable s, Typeable t) => TypeRep s -> TypeRep t -> TypeRep (Pair s t)
+pair_t :: TypeRep s -> TypeRep t -> TypeRep (Pair s t)
 pair_t s t = Product_t (And s $ And t $ All)
 
-pair :: (Typeable a, Typeable b)
-     => TypeRep a
+pair :: TypeRep a
      -> TypeRep b
      -> Expr f val s (val s a)
      -> Expr f val s (val s b)
      -> Expr f val s (val s (Pair a b))
 pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb) (AndF va $ AndF vb $ AllF)
 
-fst :: (Typeable a, Typeable b)
-    => TypeRep a
+fst :: TypeRep a
     -> TypeRep b
     -> Expr f val s (val s (Pair a b))
     -> Expr f val s (val s a)
@@ -667,8 +771,7 @@ fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta
   (AnyC ta (\it -> it))
   vp
 
-snd :: (Typeable a, Typeable b)
-    => TypeRep a
+snd :: TypeRep a
     -> TypeRep b
     -> Expr f val s (val s (Pair a b))
     -> Expr f val s (val s b)
@@ -678,19 +781,18 @@ snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb
 
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
 
-maybe_t :: Typeable t => TypeRep t -> TypeRep (Maybe t)
+maybe_t :: TypeRep t -> TypeRep (Maybe t)
 maybe_t t = Sum_t (And unit_t $ And t $ All)
 
-just :: Typeable t => TypeRep t -> Expr f val s (val s t) -> Expr f val s (val s (Maybe t))
+just :: TypeRep t -> Expr f val s (val s t) -> Expr f val s (val s (Maybe t))
 just tt t = exprF $ IntroSum (maybe_t tt) (OrV (AnyV t))
 
-nothing :: Typeable t => TypeRep t -> Expr f val s (val s (Maybe t))
+nothing :: TypeRep t -> Expr f val s (val s (Maybe t))
 nothing tt = exprF $ IntroSum (maybe_t tt) (AnyV unit)
 
 elim_maybe
   :: forall val f s t r .
-     ( Typeable t )
-  => TypeRep t
+     TypeRep t
   -> TypeRep r
   -> Expr f val s (val s (Maybe t))
   -> (Expr f val s (val s Unit) -> Expr f val s (val s r))
@@ -705,23 +807,20 @@ elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
 type Either (s :: Type) (t :: Type) = 'Sum '[ s, t ]
 
 either_t
-  :: (Typeable s, Typeable t)
-  => TypeRep s
+  :: TypeRep s
   -> TypeRep t
   -> TypeRep (Either s t)
 either_t s t = Sum_t (And s $ And t $ All)
 
 left
-  :: (Typeable a, Typeable b)
-  => TypeRep a
+  :: TypeRep a
   -> TypeRep b
   -> Expr f val s (val s a)
   -> Expr f val s (val s (Either a b))
 left ta tb va = exprF $ IntroSum (either_t ta tb) (AnyV va)
 
 right
-  :: (Typeable a, Typeable b)
-  => TypeRep a
+  :: TypeRep a
   -> TypeRep b
   -> Expr f val s (val s b)
   -> Expr f val s (val s (Either a b))
@@ -729,8 +828,7 @@ right ta tb vb = exprF $ IntroSum (either_t ta tb) (OrV (AnyV vb))
 
 elim_either
   :: forall a b c f val s .
-     ( Typeable a, Typeable b )
-  => TypeRep a
+     TypeRep a
   -> TypeRep b
   -> TypeRep c
   -> Expr f val s (val s (Either a b))
