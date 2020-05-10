@@ -28,7 +28,6 @@ import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
 import Data.Functor.Identity
 
-import qualified Data.Int as Haskell
 import qualified Data.Kind as Haskell (Type)
 import qualified Data.List.NonEmpty as NE
 import Data.Map.Strict (Map)
@@ -36,17 +35,15 @@ import qualified Data.Map.Strict as Map
 import Data.List.NonEmpty (NonEmpty)
 import Data.Proxy (Proxy (..))
 import qualified Data.Typeable as Haskell
-import qualified Data.Word as Haskell
-import GHC.TypeLits (Symbol, KnownSymbol, symbolVal)
+import GHC.TypeLits (KnownSymbol, symbolVal)
 import Numeric.Natural (Natural)
 
 import qualified Language.C99.AST as C
 import Language.C99.Pretty (Pretty, pretty)
 import Text.PrettyPrint (render)
 
-import Pilot.EDSL.Point hiding (Val (..), Either, Maybe)
+import Pilot.EDSL.Point hiding (Either, Maybe)
 import qualified Pilot.EDSL.Point as Point
-import Pilot.Types.Nat
 
 import System.IO (writeFile)
 import System.IO.Error (userError)
@@ -186,7 +183,7 @@ sum_type_name :: TypeRep ('Sum tys) -> CodeGen s C.TypeName
 sum_type_name (Sum_t AllF) = pure $ C.TypeName
   (C.SpecQualType C.TVoid Nothing)
   (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-sum_type_name trep@(Sum_t tys@(AndF _ _)) = do
+sum_type_name trep@(Sum_t (AndF _ _)) = do
   specQual <- sum_spec_qual trep
   pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
 
@@ -301,17 +298,17 @@ sum_declare (Sum_t tys@(AndF t ts)) = do
 
       -- NB: sumMap may have changed as a result of field_declns.
       st <- CodeGen $ Trans.lift get
-      let sumMap = cgsSums st
+      let sumMap' = cgsSums st
 
       sumStructIdent <- maybeError
         (CodeGenInternalError $ "sum_declare bad struct identifier for " ++ show haskellTypeRep)
-        (stringIdentifier ("sum_" ++ show (Map.size sumMap)))
+        (stringIdentifier ("sum_" ++ show (Map.size sumMap')))
       sumUnionIdent <- maybeError
         (CodeGenInternalError $ "sum_declare bad union identifier for " ++ show haskellTypeRep)
-        (stringIdentifier ("sum_variant_" ++ show (Map.size sumMap)))
+        (stringIdentifier ("sum_variant_" ++ show (Map.size sumMap')))
       sumEnumIdent <- maybeError
         (CodeGenInternalError $ "sum_declare bad enum identifier for " ++ show haskellTypeRep)
-        (stringIdentifier ("sum_tag_" ++ show (Map.size sumMap)))
+        (stringIdentifier ("sum_tag_" ++ show (Map.size sumMap')))
 
       -- The sum is
       --
@@ -339,8 +336,8 @@ sum_declare (Sum_t tys@(AndF t ts)) = do
             , sdUnionDeclnList  = unionDeclns
             , sdEnumrList       = enumrList
             }
-          sumMap' = Map.insert haskellTypeRep sdeclr (cgsSums st)
-          st' = st { cgsSums = sumMap' }
+          sumMap'' = Map.insert haskellTypeRep sdeclr (cgsSums st)
+          st' = st { cgsSums = sumMap'' }
       CodeGen $ Trans.lift $ put st'
 
 -- | Make enum declarations to serve as the tags for a sum representation.
@@ -539,7 +536,7 @@ is_negative_ (Int32 i32) = i32 < 0
 is_negative_ (Int64 i64) = i64 < 0
 is_negative_ _           = False
 
-is_negative :: IntegerLiteral Signed width -> Bool
+is_negative :: IntegerLiteral 'Signed width -> Bool
 is_negative (Int8 i8)   = i8 < 0
 is_negative (Int16 i16) = i16 < 0
 is_negative (Int32 i32) = i32 < 0
@@ -647,11 +644,11 @@ eval_intro_sum
 -- in the algebraic sense).
 eval_intro_sum (Sum_t AllF) it = case it of
   {}
-eval_intro_sum trep@(Sum_t (AndF _ _)) any = do
+eval_intro_sum trep@(Sum_t (AndF _ _)) anyt = do
   () <- sum_declare trep
   specQual <- sum_spec_qual trep
   let typeName = C.TypeName specQual Nothing
-  initList <- sum_field_inits any
+  initList <- sum_field_inits anyt
   let pexpr = C.PostfixInits typeName initList
       uexpr = C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
   type_rep_val trep (unaryExprIsCondExpr uexpr)
@@ -673,9 +670,9 @@ product_field_inits n cgt (AndF cgt' cgts) = do
 
 -- | The init list for a sum struct: its tag and its variant.
 sum_field_inits :: Any (Val s) ts -> CodeGen s C.InitList
-sum_field_inits any = do
-  tagExpr <- condExprIsAssignExpr <$> sum_tag_expr 0 any
-  variantInitList <- sum_variant_init_list 0 any
+sum_field_inits anyt = do
+  tagExpr <- condExprIsAssignExpr <$> sum_tag_expr 0 anyt
+  variantInitList <- sum_variant_init_list 0 anyt
   pure $ C.InitCons
     (C.InitBase (Just (ident_designator ident_tag)) (C.InitExpr tagExpr))
     (Just (ident_designator ident_variant))
@@ -734,8 +731,8 @@ eval_elim_sum trep rrep cases cgt = do
   -- Our two declarations: scrutinee and result.
   -- Declaring the scrutinee is important, so that we don't _ever_ have a case
   -- statement in which the scrutinee is repeatedly constructed at each case.
-  (scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgt
-  (resultIdent, resultVal)       <- declare_uninitialized "result"    rrep
+  (_scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgt
+  (resultIdent, resultVal)        <- declare_uninitialized "result"    rrep
   -- We take two expressions in the object-language (forgetting their
   -- meta-language types): the sum's tag and its variant. These are taken by way
   -- of the indirect accessor. The union, however, will be accessed using the
@@ -786,10 +783,10 @@ declare_initialized prefix val = do
       declr = C.Declr (valPtr val) (C.DirectDeclrIdent ident)
       cexpr :: C.CondExpr
       cexpr = getVal val
-      init :: C.Init
-      init = C.InitExpr (condExprIsAssignExpr cexpr);
+      cinit :: C.Init
+      cinit = C.InitExpr (condExprIsAssignExpr cexpr);
       initDeclr :: C.InitDeclr
-      initDeclr = C.InitDeclrInitr declr init
+      initDeclr = C.InitDeclrInitr declr cinit
       initDeclrList :: C.InitDeclrList
       initDeclrList = C.InitDeclrBase initDeclr
       blockItem :: C.BlockItem
@@ -875,10 +872,10 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
           (condExprIsAssignExpr (getVal expr))
       caseBreak :: C.BlockItem
       caseBreak = C.BlockItemStmt $ C.StmtJump $ C.JumpBreak
-      blockItemList :: C.BlockItemList
-      blockItemList = blockItemListNE (caseBreak NE.:| (resultAssignment : blockItems))
+      theBlockItemList :: C.BlockItemList
+      theBlockItemList = blockItemListNE (caseBreak NE.:| (resultAssignment : blockItems))
       caseBody :: C.Stmt
-      caseBody = C.StmtCompound $ C.Compound $ Just $ blockItemList
+      caseBody = C.StmtCompound $ C.Compound $ Just $ theBlockItemList
       blockItem :: C.BlockItem
       blockItem = C.BlockItemStmt $ C.StmtLabeled $ C.LabeledCase
         (identIsConstExpr tagIdent)
@@ -1127,8 +1124,8 @@ codeGenTransUnit cgs = mkTransUnit extDeclns
   extDeclns :: [C.ExtDecln]
   extDeclns = fmap C.ExtDecln (codeGenDeclns cgs)
 
-  funDefs :: [C.ExtDecln]
-  funDefs = fmap C.ExtFun (codeGenFunDefs cgs)
+  _funDefs :: [C.ExtDecln]
+  _funDefs = fmap C.ExtFun (codeGenFunDefs cgs)
 
 codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
 codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
@@ -1239,7 +1236,7 @@ codeGen cg = fmap mkTransUnit outcome
   -- TODO we'll want to factor this out and re-use it if we decide to allow
   -- for the expression of subroutines.
   mainFun :: Val s t -> CodeGenState -> C.FunDef
-  mainFun val cgs =
+  mainFun val cgs' =
     let declnSpecs :: C.DeclnSpecs
         declnSpecs = valSpecs val
         expr :: C.CondExpr
@@ -1256,7 +1253,7 @@ codeGen cg = fmap mkTransUnit outcome
         exprBlockItem = C.BlockItemStmt $ C.StmtJump $ C.JumpReturn $ Just $
           condExprIsExpr expr
         compoundStmt :: C.CompoundStmt
-        compoundStmt = C.Compound $ Just $ case blockItemList (cgsBlockItems cgs) of
+        compoundStmt = C.Compound $ Just $ case blockItemList (cgsBlockItems cgs') of
           Nothing  -> C.BlockItemBase exprBlockItem
           Just bil -> C.BlockItemCons bil exprBlockItem
     in  C.FunDef declnSpecs declr args compoundStmt
@@ -1289,17 +1286,17 @@ stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
   where
   go :: NonEmpty Char -> CodeGen s (Maybe C.Ident)
   -- First character (end of list) must not be a digit).
-  go (c NE.:| []) = (fmap . fmap) (C.IdentBase . C.IdentNonDigit) (cNonDigit c)
+  go (c' NE.:| []) = (fmap . fmap) (C.IdentBase . C.IdentNonDigit) (cNonDigit c')
   -- Any other character (not the first) can be a digit or non digit.
-  go (c NE.:| (d : cs)) = do
-    it <- cDigitOrNonDigit c
+  go (c' NE.:| (d : cs')) = do
+    it <- cDigitOrNonDigit c'
     case it of
       Nothing -> pure Nothing
       Just (Left digit) -> do
-        mRest <- go (d NE.:| cs)
+        mRest <- go (d NE.:| cs')
         pure $ fmap (\rest -> C.IdentCons rest digit) mRest
       Just (Right nonDigit) -> do
-        mRest <- go (d NE.:| cs)
+        mRest <- go (d NE.:| cs')
         pure $ fmap (\rest -> C.IdentConsNonDigit rest (C.IdentNonDigit nonDigit)) mRest
 
 symbolIdentifier :: forall name s . KnownSymbol name => Proxy name -> CodeGen s (Maybe C.Ident)
