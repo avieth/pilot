@@ -407,6 +407,7 @@ field_declns
   -> TypeRep ty
   -> All TypeRep tys
   -> CodeGen s C.StructDeclnList
+
 field_declns name n t All = do
   ident <- maybeError
     (CodeGenInternalError $ "field_declns bad identifier")
@@ -456,9 +457,6 @@ example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
 
 example_1_1 :: Expr f val s (val s (Pair UInt8 Int8))
 example_1_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
-
---example_1_2 :: Expr f val s (val s (Pair UInt8 Int8))
---example_1_2 = local
 
 example_2 :: Expr f val s (val s (Point.Either UInt8 Int8))
 example_2 = right uint8_t int8_t (int8 (-42))
