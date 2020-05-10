@@ -20,6 +20,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Pilot.C where
 
@@ -34,6 +35,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.List.NonEmpty (NonEmpty)
 import Data.Proxy (Proxy (..))
+import Data.Type.Equality ((:~:) (..))
 import GHC.TypeLits (KnownSymbol, symbolVal)
 import Numeric.Natural (Natural)
 
@@ -43,6 +45,7 @@ import Text.PrettyPrint (render)
 
 import Pilot.EDSL.Point hiding (Either, Maybe)
 import qualified Pilot.EDSL.Point as Point
+import Pilot.Types.Nat
 
 import System.IO (writeFile)
 import System.IO.Error (userError)
@@ -111,6 +114,12 @@ import Control.Exception (throwIO)
 --   say, a product contains no 1s, and a sum contains no 0s.
 --   It would give smaller (and probably faster) C.
 --
+--   NB: we also want to implement the important rule
+--
+--     0 * x = x * 0 = 0
+--
+--   i.e. if you have a void in a product, the whole product is void.
+
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -184,6 +193,325 @@ sum_is_enum (Sum_t (And ty tys)) = case ty of
   -- This is 0 (void)
   Sum_t All     -> ((+) 1) <$> sum_is_enum (Sum_t tys)
   _             -> Nothing
+
+--normalized_type_is_enum :: Normal_Type_Rep t -> 
+
+-- Algebraic datatype normalization.
+-- For any sum or product, we want a sharper representation in which
+--
+-- - there are no 0s in sums     (identity)
+-- - there are no 1s in products (identity)
+-- - there are no 0s in products (annihilation)
+--
+-- We do not change the nesting of products or sums (associativity), although
+-- in principle we could do this. It would make code generation for intro/elim
+-- much harder, though, because there would be no 1-to-1 correspondence between
+-- a disjunct/conjunct and a union/struct member.
+--
+-- Surely we'll want to use a sum-of-products for this normalization.
+-- Yeah, the programmer may write out ADTs which aren't explicitly sums of
+-- products (a product can be top level, and summand can be another summand)
+-- but it may be useful here in the C backend to have the normalized form, in
+-- order to generate more efficient code.
+--
+-- For example, if a summand is a unary product, we can put that product
+-- representation directly into the sum's union representation.
+-- Same goes for unary sums inside a product.
+-- Yeah, in general, any unary product or unary sum should have the same
+-- representation as that one thing.
+--
+-- Would implementing this make the simple sum normalization any easier?
+--
+-- 1. Zero (void) cannot appear anywhere in the normal form except at the top
+--    level. It is removed from sums, and annihilates products.
+-- 2. One (unit) may only appear in sums
+--
+--    0 + n = n
+--    1 * n = n
+--
+--
+-- NB: if we want this to work at all, then we need a way to convert
+-- - Fields
+-- - Variant
+-- - Select
+-- - Cases
+-- to the corresponding normalized type.
+
+type Not t = forall x . (t -> x)
+
+type NotSum     t = forall tys x . t :~: 'Sum tys     -> x
+type NotProduct t = forall tys x . t :~: 'Product tys -> x
+
+-- - A normalized type is either
+--   - Uninhabited
+--   - Inhabited
+--
+-- - An uninhabited type is
+--   - The empty sum (void)
+--
+-- - An inhabited type is either
+--   - A primitive type
+--   - A non-empty sum
+--
+-- - A non-empty sum is
+--   - 1 or more normalized products
+--
+-- - A normalized product is either
+--   - Unit
+--   - 1 or more _non-unit_ inhabited types (0 annihilates)
+
+
+-- Singleton sums and products can alway be eliminated.
+-- Nested sums and products can also be eliminated.
+-- But at the top-level we can have void, unit, sum, or product, just not
+-- singleton sums/products because they are absorbed (associativity).
+-- NB: we do not use distributivity, because this would be _less_ efficient in
+-- terms of C program size.
+--
+--   Normal = Primitive | Void | Unit | Sum2 | Product2
+--
+--   Primitive = Integral | Rational
+--
+--   Sum2 = Summand + Summand + Summands
+--   Summands = [Summand]
+--   Summand = Primitive | Unit | Product2
+--
+--   Product2 = Term * Term * Terms
+--   Terms = [Term]
+--   Term = Primitive | Sum2
+
+data Normal_Type where
+  NT_Primitive :: Normal_Primitive_Type -> Normal_Type
+  NT_Void      :: Normal_Type
+  NT_Unit      :: Normal_Type
+  NT_Sum       :: Normal_Sum_Type       -> Normal_Type
+  NT_Product   :: Normal_Product_Type   -> Normal_Type
+
+data Normal_Type_Rep (nt :: Normal_Type) where
+  NT_Primitive_t :: Normal_Primitive_Type_Rep npt -> Normal_Type_Rep ('NT_Primitive npt)
+  NT_Void_t      :: Normal_Type_Rep 'NT_Void
+  NT_Unit_t      :: Normal_Type_Rep 'NT_Unit
+  NT_Sum_t       :: Normal_Sum_Type_Rep nst -> Normal_Type_Rep ('NT_Sum nst)
+  NT_Product_t   :: Normal_Product_Type_Rep npt -> Normal_Type_Rep ('NT_Product npt)
+
+data Normal_Primitive_Type where
+  NPT_Integer  :: Signedness -> Width -> Normal_Primitive_Type
+  NPT_Rational :: Normal_Primitive_Type
+
+data Normal_Primitive_Type_Rep (t :: Normal_Primitive_Type) where
+  NPT_Integer_t  :: SignednessRep signedness
+                 -> WidthRep width
+                 -> Normal_Primitive_Type_Rep ('NPT_Integer signedness width)
+  NPT_Rational_t :: Normal_Primitive_Type_Rep 'NPT_Rational
+
+data Normal_Sum_Type where
+  NST_Sum :: Disjunct -> Disjunct -> [Disjunct] -> Normal_Sum_Type
+
+data Normal_Sum_Type_Rep (t :: Normal_Sum_Type) where
+  NST_Sum_t :: DisjunctRep d1
+            -> DisjunctRep d2
+            -> DisjunctsRep ds
+            -> Normal_Sum_Type_Rep ('NST_Sum d1 d2 ds)
+
+data Normal_Product_Type where
+  NPT_Product :: Conjunct -> Conjunct -> [Conjunct] -> Normal_Product_Type
+
+data Normal_Product_Type_Rep (t :: Normal_Product_Type) where
+  NPT_Product_t :: ConjunctRep c1
+                -> ConjunctRep c2
+                -> ConjunctsRep cs
+                -> Normal_Product_Type_Rep ('NPT_Product c1 c2 cs)
+
+data Disjunct where
+  D_Primitive :: Normal_Primitive_Type -> Disjunct
+  D_Unit      :: Disjunct
+  D_Product   :: Normal_Product_Type -> Disjunct
+
+data DisjunctRep (d :: Disjunct) where
+  D_Primitive_t :: Normal_Primitive_Type_Rep t -> DisjunctRep ('D_Primitive t)
+  D_Unit_t      :: DisjunctRep 'D_Unit
+  D_Product_t   :: Normal_Product_Type_Rep t -> DisjunctRep ('D_Product t)
+
+data Conjunct where
+  C_Primitive :: Normal_Primitive_Type -> Conjunct
+  C_Sum       :: Normal_Sum_Type -> Conjunct
+
+data ConjunctRep (c :: Conjunct) where
+  C_Primitive_t :: Normal_Primitive_Type_Rep t -> ConjunctRep ('C_Primitive t)
+  C_Sum_t       :: Normal_Sum_Type_Rep cs -> ConjunctRep ('C_Sum cs)
+
+data DisjunctsRep (ds :: [Disjunct]) where
+  DisjunctsNil_t  :: DisjunctsRep '[]
+  DisjunctsCons_t :: DisjunctRep d -> DisjunctsRep ds -> DisjunctsRep (d ': ds)
+
+data ConjunctsRep (cs :: [Conjunct]) where
+  ConjunctsNil_t  :: ConjunctsRep '[]
+  ConjunctsCons_t :: ConjunctRep c -> ConjunctsRep cs -> ConjunctsRep (c ': cs)
+
+data MaybeConjunctsRep (t :: Maybe r) where
+  JustConjuncts_t    :: ConjunctsRep t -> MaybeConjunctsRep ('Just t)
+  NothingConjuncts_t ::                   MaybeConjunctsRep 'Nothing
+
+type family NormalizeType (t :: Type) :: Normal_Type where
+
+  -- Primitive types remain in tact always.
+  NormalizeType ('Integer signedness width) = 'NT_Primitive ('NPT_Integer signedness width)
+  NormalizeType 'Rational = 'NT_Primitive 'NPT_Rational
+
+  -- For sums and products, we start by normalizing all of their components,
+  -- and then reducing these lists.
+  NormalizeType ('Sum     ts) = SumFromDisjuncts                   (Disjuncts (NormalizeTypes ts))
+  NormalizeType ('Product ts) = ProductFromConjuncts (ReverseMaybe (Conjuncts (NormalizeTypes ts) ('Just '[])))
+
+-- The prize
+normalize_type :: TypeRep t -> Normal_Type_Rep (NormalizeType t)
+
+normalize_type (Integer_t sr wr) = NT_Primitive_t (NPT_Integer_t sr wr)
+
+normalize_type Rational_t = NT_Primitive_t NPT_Rational_t
+
+normalize_type (Sum_t ts) = sum_from_disjuncts (disjuncts (normalize_types ts))
+
+normalize_type (Product_t ts) = product_from_conjuncts (reverse_maybe (conjuncts (normalize_types ts) (JustConjuncts_t ConjunctsNil_t)))
+
+-- | `fmap NormalizeType`
+type family NormalizeTypes (ps :: [Type]) :: [Normal_Type] where
+  NormalizeTypes '[]       = '[]
+  NormalizeTypes (p ': ps) = NormalizeType p ': NormalizeTypes ps
+
+normalize_types :: All TypeRep ts -> All Normal_Type_Rep (NormalizeTypes ts)
+normalize_types All        = All
+normalize_types (And t ts) = And (normalize_type t) (normalize_types ts)
+
+-- | Make disjuncts for a normalized sum from some normalized types.
+-- The resulting list may be longer or shorter, since nested sums are
+-- flattened, and zeros (voids) are absorbed.
+type family Disjuncts (t :: [Normal_Type]) :: [Disjunct] where
+  Disjuncts '[]                         =                     '[]
+  -- 0 is identity under addition
+  Disjuncts ( 'NT_Void          ': ds ) =                     Disjuncts ds
+  Disjuncts ( 'NT_Unit          ': ds ) = 'D_Unit          ': Disjuncts ds
+  Disjuncts ( 'NT_Primitive npt ': ds ) = 'D_Primitive npt ': Disjuncts ds
+  Disjuncts ( 'NT_Product   npt ': ds ) = 'D_Product   npt ': Disjuncts ds
+  -- Sums are expanded/flattened
+  Disjuncts ( 'NT_Sum       nst ': ds ) = ExpandSum nst ds
+
+disjuncts :: All Normal_Type_Rep ts -> DisjunctsRep (Disjuncts ts)
+disjuncts All = DisjunctsNil_t
+disjuncts (And NT_Void_t            ds) =                                      disjuncts ds
+disjuncts (And NT_Unit_t            ds) = DisjunctsCons_t D_Unit_t            (disjuncts ds)
+disjuncts (And (NT_Primitive_t npt) ds) = DisjunctsCons_t (D_Primitive_t npt) (disjuncts ds)
+disjuncts (And (NT_Product_t   npt) ds) = DisjunctsCons_t (D_Product_t   npt) (disjuncts ds)
+disjuncts (And (NT_Sum_t       nst) ds) = expand_sum nst ds
+
+type family ExpandSum (nst :: Normal_Sum_Type) (ts :: [Normal_Type]) :: [Disjunct] where
+  ExpandSum ( 'NST_Sum d1 d2 '[]        ) ts = d1 ': d2 ': Disjuncts ts
+  ExpandSum ( 'NST_Sum d1 d2 (d3 ': ds) ) ts = d1 ': ExpandSum ( 'NST_Sum d2 d3 ds ) ts
+
+expand_sum :: Normal_Sum_Type_Rep nst
+           -> All Normal_Type_Rep ts
+           -> DisjunctsRep (ExpandSum nst ts)
+expand_sum (NST_Sum_t d1 d2 DisjunctsNil_t) ts =
+  DisjunctsCons_t d1 (DisjunctsCons_t d2 (disjuncts ts))
+expand_sum (NST_Sum_t d1 d2 (DisjunctsCons_t d3 ds)) ts =
+  DisjunctsCons_t d1 (expand_sum (NST_Sum_t d2 d3 ds) ts)
+
+type family SumFromDisjuncts (ds :: [Disjunct]) :: Normal_Type where
+  SumFromDisjuncts '[]                   = 'NT_Void
+  SumFromDisjuncts '[ 'D_Unit ]          = 'NT_Unit
+  SumFromDisjuncts '[ 'D_Primitive npt ] = 'NT_Primitive npt
+  SumFromDisjuncts '[ 'D_Product   npt ] = 'NT_Product   npt
+  SumFromDisjuncts ( d1 ': d2 ': ds )    = 'NT_Sum       ('NST_Sum d1 d2 ds)
+
+sum_from_disjuncts :: DisjunctsRep ds -> Normal_Type_Rep (SumFromDisjuncts ds)
+sum_from_disjuncts                                      DisjunctsNil_t  = NT_Void_t
+sum_from_disjuncts (DisjunctsCons_t D_Unit_t            DisjunctsNil_t) = NT_Unit_t
+sum_from_disjuncts (DisjunctsCons_t (D_Primitive_t npt) DisjunctsNil_t) = NT_Primitive_t npt
+sum_from_disjuncts (DisjunctsCons_t (D_Product_t   npt) DisjunctsNil_t) = NT_Product_t   npt
+sum_from_disjuncts (DisjunctsCons_t d1 (DisjunctsCons_t d2 ds))         = NT_Sum_t (NST_Sum_t d1 d2 ds)
+
+-- | Make a list of conjuncts from a list of normal types. The resulting list
+-- may be shorter or longer, since 1s are eliminated, and products are
+-- flattened.
+--
+-- Of there is a void in the list, the whole thing is Void. In order to express
+-- this, we need an extra parameter (the Bool).
+--
+type family Conjuncts (t :: [Normal_Type]) (acc :: Maybe [Conjunct]) :: Maybe [Conjunct] where
+  Conjuncts x                           'Nothing   = 'Nothing
+  Conjuncts '[]                         ('Just xs) = 'Just xs
+  Conjuncts ( 'NT_Void ': ds          ) ('Just xs) = 'Nothing
+  Conjuncts ( 'NT_Unit ': ds          ) ('Just xs) = Conjuncts ds ('Just xs)
+  Conjuncts ( 'NT_Primitive npt ': ds ) ('Just xs) = Conjuncts ds ('Just ('C_Primitive npt ': xs))
+  Conjuncts ( 'NT_Sum       nst ': ds ) ('Just xs) = Conjuncts ds ('Just ('C_Sum       nst ': xs))
+  -- Products are expanded/flattened
+  Conjuncts ( 'NT_Product   npt ': ds ) ('Just xs) = ExpandProduct npt ds xs
+
+conjuncts :: All Normal_Type_Rep ts
+          -> MaybeConjunctsRep acc
+          -> MaybeConjunctsRep (Conjuncts ts acc)
+conjuncts x                             NothingConjuncts_t   = NothingConjuncts_t
+conjuncts All                           (JustConjuncts_t xs) = JustConjuncts_t xs
+conjuncts (And NT_Void_t ds)            (JustConjuncts_t xs) = NothingConjuncts_t
+conjuncts (And NT_Unit_t ds)            (JustConjuncts_t xs) = conjuncts ds (JustConjuncts_t xs)
+conjuncts (And (NT_Primitive_t npt) ds) (JustConjuncts_t xs) = conjuncts ds (JustConjuncts_t (ConjunctsCons_t (C_Primitive_t npt) xs))
+conjuncts (And (NT_Sum_t       nst) ds) (JustConjuncts_t xs) = conjuncts ds (JustConjuncts_t (ConjunctsCons_t (C_Sum_t nst) xs))
+conjuncts (And (NT_Product_t   npt) ds) (JustConjuncts_t xs) = expand_product npt ds xs
+
+type family ExpandProduct (npt :: Normal_Product_Type) (ts :: [Normal_Type]) (xs :: [Conjunct]) :: Maybe [Conjunct] where
+  ExpandProduct ( 'NPT_Product c1 c2 '[]        ) ts xs = Conjuncts ts ('Just (c1 ': c2 ': xs))
+  ExpandProduct ( 'NPT_Product c1 c2 (c3 ': cs) ) ts xs = ExpandProduct ( 'NPT_Product c2 c3 cs ) ts (c1 ': xs)
+
+expand_product :: Normal_Product_Type_Rep npt
+               -> All Normal_Type_Rep ts
+               -> ConjunctsRep xs
+               -> MaybeConjunctsRep (ExpandProduct npt ts xs)
+expand_product (NPT_Product_t c1 c2 ConjunctsNil_t) ts xs = conjuncts ts
+  (JustConjuncts_t (ConjunctsCons_t c1 (ConjunctsCons_t c2 xs)))
+expand_product (NPT_Product_t c1 c2 (ConjunctsCons_t c3 cs)) ts xs = expand_product
+  (NPT_Product_t c2 c3 cs) ts (ConjunctsCons_t c1 xs)
+
+type family ProductFromConjuncts (mcs :: Maybe [Conjunct]) :: Normal_Type where
+  ProductFromConjuncts 'Nothing    = 'NT_Void
+  ProductFromConjuncts ('Just '[]) = 'NT_Unit
+  ProductFromConjuncts ('Just '[ 'C_Primitive npt ]) = 'NT_Primitive npt
+  ProductFromConjuncts ('Just '[ 'C_Sum       nst ]) = 'NT_Sum       nst
+  ProductFromConjuncts ('Just ( c1 ': c2 ': cs)    ) = 'NT_Product   ('NPT_Product c1 c2 cs)
+
+product_from_conjuncts :: MaybeConjunctsRep mcs
+                       -> Normal_Type_Rep (ProductFromConjuncts mcs)
+product_from_conjuncts NothingConjuncts_t = NT_Void_t
+product_from_conjuncts (JustConjuncts_t ConjunctsNil_t) = NT_Unit_t
+product_from_conjuncts (JustConjuncts_t (ConjunctsCons_t (C_Primitive_t npt) ConjunctsNil_t)) =
+  NT_Primitive_t npt
+product_from_conjuncts (JustConjuncts_t (ConjunctsCons_t (C_Sum_t nst) ConjunctsNil_t)) =
+  NT_Sum_t nst
+product_from_conjuncts (JustConjuncts_t (ConjunctsCons_t c1 (ConjunctsCons_t c2 cs))) =
+  NT_Product_t (NPT_Product_t c1 c2 cs)
+
+type family ReverseMaybe (mcs :: Maybe [Conjunct]) :: Maybe [Conjunct] where
+  ReverseMaybe 'Nothing   = 'Nothing
+  ReverseMaybe ('Just ts) = 'Just (Reverse_Conjuncts ts)
+
+reverse_maybe :: MaybeConjunctsRep ts -> MaybeConjunctsRep (ReverseMaybe ts)
+reverse_maybe NothingConjuncts_t = NothingConjuncts_t
+reverse_maybe (JustConjuncts_t ts) = JustConjuncts_t (reverse_conjuncts ts)
+
+type family Reverse_Conjuncts (cs :: [Conjunct]) :: [Conjunct] where
+  Reverse_Conjuncts '[] = '[]
+  Reverse_Conjuncts (c ': cs) = Snoc (Reverse_Conjuncts cs) c
+
+reverse_conjuncts :: ConjunctsRep cs -> ConjunctsRep (Reverse_Conjuncts cs)
+reverse_conjuncts ConjunctsNil_t = ConjunctsNil_t
+reverse_conjuncts (ConjunctsCons_t c cs) = snoc (reverse_conjuncts cs) c
+
+type family Snoc (cs :: [Conjunct]) (c :: Conjunct) :: [Conjunct] where
+  Snoc '[] c = '[c]
+  Snoc (c ': cs) c' = c ': Snoc cs c'
+
+snoc :: ConjunctsRep cs -> ConjunctRep c -> ConjunctsRep (Snoc cs c)
+snoc ConjunctsNil_t         c  = ConjunctsCons_t c ConjunctsNil_t
+snoc (ConjunctsCons_t c cs) c' = ConjunctsCons_t c (snoc cs c')
 
 -- | For integral types we use the C standard explicit types like uint8_t.
 --
