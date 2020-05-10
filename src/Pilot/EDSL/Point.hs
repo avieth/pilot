@@ -324,7 +324,7 @@ data TypeRep (t :: Type) where
 
   Integer_t  :: SignednessRep signedness
              -> WidthRep width
-             -> TypeRep ('Integer sigedness width)
+             -> TypeRep ('Integer signedness width)
   Rational_t :: TypeRep 'Rational
 
   Product_t :: All TypeRep tys -> TypeRep ('Product tys)

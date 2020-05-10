@@ -680,21 +680,10 @@ eval_intro_integer tr@(Integer_t Unsigned_t _width) il = type_rep_val tr expr
   expr = constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
 
 eval_intro_integer tr@(Integer_t Signed_t _width) il = type_rep_val tr $
-  -- GHC rejects this if 'is_negative' is used because it doesn't think that
-  -- `il` is a signed type... but that must be a bug; the type signedness is
-  -- the same for the literal and the type rep, which the `tr` match has
-  -- revealed to be signed... maybe I'm losing my mind?
-  if is_negative_ il
+  if is_negative il
   then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
         C.IntHex (hex_const (absolute_value il)) Nothing
   else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-
-is_negative_ :: IntegerLiteral anything width -> Bool
-is_negative_ (Int8 i8)   = i8 < 0
-is_negative_ (Int16 i16) = i16 < 0
-is_negative_ (Int32 i32) = i32 < 0
-is_negative_ (Int64 i64) = i64 < 0
-is_negative_ _           = False
 
 is_negative :: IntegerLiteral 'Signed width -> Bool
 is_negative (Int8 i8)   = i8 < 0
