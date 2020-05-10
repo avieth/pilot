@@ -100,6 +100,17 @@ import Control.Exception (throwIO)
 --   over that type `Expr f val s . val s` are akin to meta-programming:
 --   constructing object-language things within the meta-language Haskell.
 --
+-- - Use of NULL for void and unit.
+--   Given that unit cannot be eliminated, and void cannot be introduced, we're
+--   sure that the use of NULL in the generated code is safe (it will never be
+--   dereferenced). However, wouldn't it be better if we didn't generate any
+--   code at all for these cases? Should look into that.
+--
+-- - Aggressive simplification of products and sums? It may be worthwhile to
+--   simplify all products and sums using the 1 and 0 identity laws. That's to
+--   say, a product contains no 1s, and a sum contains no 0s.
+--   It would give smaller (and probably faster) C.
+--
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -107,11 +118,64 @@ prettyPrint = render . pretty
 
 -- |
 -- = Type names and type declarations
+--
+-- Integral types are represented using standard C99 types such as uint8_t and
+-- int64_t.
+--
+-- Compound types, in general, are represented using structs, unions, and enums
+-- in the following way:
+--
+-- - An empty sum or empty product has type void * and their value
+--   representation is NULL. Since the empty sum cannot be introduced, and
+--   the empty product cannot be eliminated, this NULL will never actually be
+--   used.
+--
+-- - A non-empty product is a struct with a field for each conjunct.
+--
+-- - A non-sum is a struct with fields tag and variant. The tag is an enum with
+--   one constructor for each disjunct, and the variant is a union with one
+--   constructor for each disjunct.
+--
+-- - If a sum or product contains another compound type, it appears as a
+--   const restrict pointer in the union (for sum) or struct (for product).
+--   By doing so, we finesse the problem of declaration order: all compound
+--   types are forward-declared, so that their actual definitions may appear in
+--   any order.
+--
+-- - Introducing a sum or product means initializing the entire compound
+--   structure and then taking its address (&).
+--
+-- - Eliminating a product is a simple C indirect field accessor (->).
+--
+-- - Eliminating a sum is a switch/case construction, because each branch needs
+--   its own scope. Each of the branches will assign once to an uninitialized
+--   result variable. Each branch is given the corresponding union accessor
+--   for the variant.
+--
+-- However, this representation is not chosen for every sum. We would like for
+-- the sum 1 + 1 to be represented by a byte with 0 for one of the disjuncts and
+-- 1 for the other. By choosing this representation we can use it as the boolean
+-- type without any runtime cost.
+--
+-- More generally, for any sum of the form a_1 + ... + a_n, where each a_i is
+-- either 1 or 0 (unit or void), this sum is represented by an enum with its
+-- values specified increasing from 0 to n.
+--
+-- To introducing such a sum, just give the enum constructor. To eliminate, do
+-- the usual switch/case construction but instead of giving the union variant
+-- accessor, give the representation of 0 or 1 (i.e. NULL).
 
 -- | Identifies sum types of the form a_1 + ... + a_n where each a_i is either
 -- 1 or 0 (unit or void).
--- We represent these as enums. Sums not of this form are structs carrying
--- enums along with unions to represent the data they hold.
+--
+-- If the result is `Just 0`, then this is the empty sum (void) and we represent
+-- it as (void *) NULL.
+--
+-- If the result is `Just n, n > 0` then this is a simple enum and we represent
+-- it as a C `enum { tag_(n-1) = (n-1), ..., tag_0 = 0 }`.
+--
+-- Otherwise, we use the general sum representation as a struct with an enum tag
+-- and a union variant.
 sum_is_enum :: TypeRep ('Sum types) -> Maybe Natural
 sum_is_enum (Sum_t All)          = Just 0
 sum_is_enum (Sum_t (And ty tys)) = case ty of
