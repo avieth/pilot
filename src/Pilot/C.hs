@@ -51,8 +51,6 @@ import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
 --
--- - Arithmetic, logic, and bitwise operators.
---
 -- - C backend specific externs:
 --   - values of any EDSL type
 --   - Also, functions? Yeah, that's probably the way forward. This can express
@@ -68,8 +66,23 @@ import Control.Exception (throwIO)
 --   products.
 --
 -- - Then, the streamwise EDSL functor
-
-
+--   We're interested in Haskell functions in which every non-function type is
+--   a `val s` thing. Take for instance `just`. If we can automatically infer
+--   the  TypeRep then we have
+--
+--     just :: val s t -> Expr f val s (val s (Maybe t))
+--
+--   which could be fit into our streamwise EDSL as
+--
+--     just' :: Point expr f val s (t :-> Maybe t)
+--
+--   ah no it should be
+--
+--     just :: Expr f val s (val s t) -> Expr f val s (val s (Maybe t))
+--
+--   so that the thing that all non-functions are wrapped in is
+--
+--     Expr f val s . val s
 
 -- | Useful for debugging.
 prettyPrint :: Pretty a => a -> String
@@ -179,10 +192,10 @@ type_spec s@(Sum_t _) = do
 -- | Just like 'product_type_name'. Sums and products are both, at the
 -- top-level, represented by structs.
 sum_type_name :: TypeRep ('Sum tys) -> CodeGen s C.TypeName
-sum_type_name (Sum_t AllF) = pure $ C.TypeName
+sum_type_name (Sum_t All) = pure $ C.TypeName
   (C.SpecQualType C.TVoid Nothing)
   (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-sum_type_name trep@(Sum_t (AndF _ _)) = do
+sum_type_name trep@(Sum_t (And _ _)) = do
   specQual <- sum_spec_qual trep
   pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
 
@@ -191,16 +204,16 @@ sum_type_name trep@(Sum_t (AndF _ _)) = do
 -- For non-empty products we use the name of the corresponding struct (found
 -- in the state). The type is a pointer to it.
 product_type_name :: TypeRep ('Product tys) -> CodeGen s C.TypeName
-product_type_name (Product_t AllF) = pure $ C.TypeName
+product_type_name (Product_t All) = pure $ C.TypeName
   (C.SpecQualType C.TVoid Nothing)
   (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-product_type_name trep@(Product_t (AndF _ _)) = do
+product_type_name trep@(Product_t (And _ _)) = do
   specQual <- product_spec_qual trep
   pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
 
 product_type_spec :: TypeRep ('Product ts) -> CodeGen s C.TypeSpec
-product_type_spec (Product_t AllF) = pure C.TVoid
-product_type_spec (Product_t tys@(AndF _ _)) = do
+product_type_spec (Product_t All) = pure C.TVoid
+product_type_spec (Product_t tys@(And _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
@@ -219,8 +232,8 @@ product_spec_qual trep = do
   pure $ C.SpecQualType typeSpec Nothing
 
 sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
-sum_type_spec (Sum_t AllF) = pure C.TVoid
-sum_type_spec (Sum_t tys@(AndF _ _)) = do
+sum_type_spec (Sum_t All) = pure C.TVoid
+sum_type_spec (Sum_t tys@(And _ _)) = do
   -- We use the Haskell TypeRep as a key in a map to get the name.
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
@@ -245,8 +258,8 @@ sum_spec_qual trep = do
 -- struct declaration.
 product_declare :: TypeRep ('Product tys) -> CodeGen s ()
 -- Unit type: nothing to do, it's void*
-product_declare (Product_t AllF) = pure ()
-product_declare (Product_t tys@(AndF t ts)) = do
+product_declare (Product_t All) = pure ()
+product_declare (Product_t tys@(And t ts)) = do
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
   prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
@@ -283,8 +296,8 @@ product_declare (Product_t tys@(AndF t ts)) = do
 -- represent the sum directly by the enum.
 sum_declare :: TypeRep ('Sum tys) -> CodeGen s ()
 -- No declaration; it's void*
-sum_declare (Sum_t AllF) = pure ()
-sum_declare (Sum_t tys@(AndF t ts)) = do
+sum_declare (Sum_t All) = pure ()
+sum_declare (Sum_t tys@(And t ts)) = do
   let haskellTypeRep :: Haskell.TypeRep
       haskellTypeRep = Haskell.typeOf tys
   sumMap <- CodeGen $ Trans.lift $ gets cgsSums
@@ -341,12 +354,12 @@ sum_declare (Sum_t tys@(AndF t ts)) = do
 
 -- | Make enum declarations to serve as the tags for a sum representation.
 enum_tag_declns :: Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.EnumrList
-enum_tag_declns n _ AllF = do
+enum_tag_declns n _ All = do
   ident <- maybeError
     (CodeGenInternalError $ "enum_tag_declns bad identifier")
     (stringIdentifier ("tag_" ++ show n))
   pure $ C.EnumrBase $ C.Enumr $ C.Enum ident
-enum_tag_declns n _t (AndF t' ts) = do
+enum_tag_declns n _t (And t' ts) = do
   ident <- maybeError
     (CodeGenInternalError $ "enum_tag_declns bad identifier")
     (stringIdentifier ("tag_" ++ show n))
@@ -357,7 +370,7 @@ enum_tag_declns n _t (AndF t' ts) = do
 -- type is defines like a snoc-list. Doesn't really matter though.
 field_declns :: String -> Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.StructDeclnList
 
-field_declns name n t AllF = do
+field_declns name n t All = do
   -- TODO factor this out so we can re-use in the other case.
   C.TypeName specQualList mAbstractDeclr <- type_name t
   ident <- maybeError
@@ -374,7 +387,7 @@ field_declns name n t AllF = do
       declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $ C.DirectDeclrIdent ident
   pure $ C.StructDeclnBase $ C.StructDecln qualList declrList
 
-field_declns name n t (AndF t' ts) = do
+field_declns name n t (And t' ts) = do
   subList <- field_declns name (n+1) t' ts
   C.TypeName specQualList mAbstractDeclr <- type_name t
   ident <- maybeError
@@ -401,83 +414,62 @@ write_example :: String -> Expr CodeGen Val s (Val s t) -> IO ()
 write_example fp expr = codeGenToFile fp (evalInMonad expr eval_expr)
 
 example_1 :: Expr f val s (val s (Pair UInt8 Int8))
-example_1 = do
-  a <- uint8 42
-  b <- int8 (-42)
-  pair uint8_t int8_t a b
+example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
+
+example_1_1 :: Expr f val s (val s (Pair UInt8 Int8))
+example_1_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
+
+--example_1_2 :: Expr f val s (val s (Pair UInt8 Int8))
+--example_1_2 = local
 
 example_2 :: Expr f val s (val s (Point.Either UInt8 Int8))
-example_2 = do
-  b <- int8 (-42)
-  right uint8_t int8_t b
+example_2 = right uint8_t int8_t (int8 (-42))
 
 example_3 :: Expr f val s (val s (Point.Maybe Int8))
-example_3 = do
-  a <- int8 (-42)
-  just int8_t a
+example_3 = just int8_t (int8 (-42))
 
 example_4 :: Expr f val s (val s Int8)
-example_4 = do
-  it <- example_3
-  -- SHOULD be able to drop an Expr in these cases; should be able to write do
-  -- notations in there.
-  -- So, must also be able to lift an already evaluated val back into an expr.
-  -- Can do that by using pure, right?
-  elim_maybe int8_t int8_t it (\_ -> int8 (-1)) (\t -> pure t)
+example_4 = elim_maybe int8_t int8_t example_3
+  (\_ -> int8 (-1))
+  (\t -> t)
 
 example_4_1 :: Expr f val s (val s Int8)
-example_4_1 = do
-  it <- example_2
-  elim_either uint8_t int8_t int8_t it (\_ -> int8 (-1)) (\_ -> int8 2)
+example_4_1 = elim_either uint8_t int8_t int8_t example_2
+  (\_ -> int8 (-1))
+  (\_ -> int8 2)
 
 example_5 :: Expr f val s (val s UInt8)
-example_5 = do
-  p <- example_1
-  Point.fst uint8_t int8_t p
+example_5 = Point.fst uint8_t int8_t example_1
 
 example_6 :: Expr f val s (val s UInt8)
-example_6 = do
-  x <- uint8 2
-  y <- uint8 2
-  add uint8_t x y
+example_6 = add uint8_t (uint8 2) (uint8 2)
 
 example_7 :: Expr f val s (val s UInt8)
-example_7 = do
-  p <- example_1
-  y <- example_6
-  x <- Point.fst uint8_t int8_t p
-  add uint8_t y x
+example_7 = add uint8_t example_6 example_5
 
 example_8 :: Expr f val s (val s UInt8)
-example_8 = do
-  p <- example_1
-  local (pair_t uint8_t int8_t) uint8_t p $ \p' -> do
-    x <- Point.fst uint8_t int8_t p'
-    y <- example_6
-    add uint8_t x y
+example_8 = local (pair_t uint8_t int8_t) uint8_t example_1 $ \p -> do
+  add uint8_t (Point.fst uint8_t int8_t p) example_6
 
 example_9 :: Expr f val s (val s UInt8)
-example_9 = do
-  a <- uint8 0
-  b <- uint8 1
-  c <- uint8 3
-  d <- add uint8_t a b
-  e <- add uint8_t d c
-  f <- shiftR uint8_t e a
-  notB uint8_t f
+example_9 =
+  let a = uint8 0
+      b = uint8 1
+      c = uint8 3
+      d = add uint8_t a b
+      e = add uint8_t d c
+      f = shiftR uint8_t e a
+  in  notB uint8_t f
 
 example_10 :: Expr f val s (val s UInt8)
-example_10 = do
-  a <- example_9
-  local uint8_t uint8_t a $ \a' -> do
-    b <- uint8 42
-    orB uint8_t a' b
+example_10 = local uint8_t uint8_t example_9 $ \a ->
+  orB uint8_t a (uint8 42)
 
 example_11 :: Expr f val s (val s Point.Ordering)
-example_11 = do
-  x <- example_10
-  y <- example_6
-  cmp uint8_t x y
+example_11 =
+  local uint8_t ordering_t example_10 $ \s ->
+    local uint8_t ordering_t example_6 $ \t ->
+      cmp uint8_t s t
 
 -- | Generate a C value representation for an expression, assuming any/all of
 -- its sub-expressions are already generated.
@@ -531,6 +523,10 @@ eval_bitop (NotB tr x)     = eval_not_bitwise tr x
 eval_bitop (ShiftL tr x y) = eval_shiftl_bitwise tr x y
 eval_bitop (ShiftR tr x y) = eval_shiftr_bitwise tr x y
 
+-- TODO these are wrong. We can either
+-- - define them using pattern matching
+-- - special case the algebraic type 1 + 1 to be represented by an unsigned
+--   number, so that the C logical operators work on it
 eval_logop :: LogicalOpF CodeGen Val s t -> CodeGen s (Val s t)
 eval_logop (AndL x y) = eval_and_bool x y
 eval_logop (OrL  x y) = eval_or_bool  x y
@@ -554,12 +550,13 @@ eval_local
   :: forall t r s .
      TypeRep t
   -> TypeRep r
-  -> Val s t
-  -> (Val s t -> Expr CodeGen Val s (Val s r))
+  -> Expr CodeGen Val s (Val s t)
+  -> (Expr CodeGen Val s (Val s t) -> Expr CodeGen Val s (Val s r))
   -> CodeGen s (Val s r)
-eval_local _tt _tr val k = do
+eval_local _tt _tr x k = do
+  val <- eval_expr' x
   (_ident, val') <- declare_initialized "local" val
-  eval_expr' (k val')
+  eval_expr' (k (pure val'))
 
 eval_intro_integer
   :: forall signedness width s .
@@ -608,158 +605,186 @@ absolute_value (Int64 i64)  = fromIntegral (abs i64)
 -- integers are of the same type.
 eval_add_integer
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_add_integer tr vx vy = type_rep_val tr expr
-  where
-  expr = addExprIsCondExpr $ C.AddPlus
-    (condExprIsAddExpr (getVal vx))
-    (condExprIsMultExpr (getVal vy))
+eval_add_integer tr vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = addExprIsCondExpr $ C.AddPlus
+        (condExprIsAddExpr (getVal x))
+        (condExprIsMultExpr (getVal y))
+  type_rep_val tr expr
 
 eval_sub_integer
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_sub_integer tr vx vy = type_rep_val tr expr
-  where
-  expr = addExprIsCondExpr $ C.AddMin
-    (condExprIsAddExpr (getVal vx))
-    (condExprIsMultExpr (getVal vy))
+eval_sub_integer tr vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = addExprIsCondExpr $ C.AddMin
+        (condExprIsAddExpr (getVal x))
+        (condExprIsMultExpr (getVal y))
+  type_rep_val tr expr
 
 eval_mul_integer
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_mul_integer tr vx vy = type_rep_val tr expr
-  where
-  expr = addExprIsCondExpr $ C.AddMult $ C.MultMult
-    (condExprIsMultExpr (getVal vx))
-    (condExprIsCastExpr (getVal vy))
+eval_mul_integer tr vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMult
+        (condExprIsMultExpr (getVal x))
+        (condExprIsCastExpr (getVal y))
+  type_rep_val tr expr
 
 eval_div_integer
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_div_integer tr vx vy = type_rep_val tr expr
-  where
-  expr = addExprIsCondExpr $ C.AddMult $ C.MultDiv
-    (condExprIsMultExpr (getVal vx))
-    (condExprIsCastExpr (getVal vy))
+eval_div_integer tr vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultDiv
+        (condExprIsMultExpr (getVal x))
+        (condExprIsCastExpr (getVal y))
+  type_rep_val tr expr
 
 eval_mod_integer
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_mod_integer tr vx vy = type_rep_val tr expr
-  where
-  expr = addExprIsCondExpr $ C.AddMult $ C.MultMod
-    (condExprIsMultExpr (getVal vx))
-    (condExprIsCastExpr (getVal vy))
+eval_mod_integer tr vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMod
+        (condExprIsMultExpr (getVal x))
+        (condExprIsCastExpr (getVal y))
+  type_rep_val tr expr
 
 eval_neg_integer
   :: TypeRep ('Integer 'Signed width)
-  -> Val s ('Integer 'Signed width)
+  -> Expr CodeGen Val s (Val s ('Integer 'Signed width))
   -> CodeGen s (Val s ('Integer 'Signed width))
-eval_neg_integer tr vx = type_rep_val tr expr
-  where
-  expr = unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ condExprIsCastExpr (getVal vx)
+eval_neg_integer tr vx = do
+  x <- eval_expr' vx
+  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOMin $
+        condExprIsCastExpr (getVal x)
+  type_rep_val tr expr
 
 eval_and_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_and_bitwise tr bx by = type_rep_val tr expr
-  where
-  expr = andExprIsCondExpr $ C.And
-    (condExprIsAndExpr (getVal bx))
-    (condExprIsEqExpr  (getVal by))
+eval_and_bitwise tr bx by = do
+  x <- eval_expr' bx
+  y <- eval_expr' by
+  let expr = andExprIsCondExpr $ C.And
+        (condExprIsAndExpr (getVal x))
+        (condExprIsEqExpr  (getVal y))
+  type_rep_val tr expr
 
 eval_or_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_or_bitwise tr bx by = type_rep_val tr expr
-  where
-  expr = orExprIsCondExpr $ C.Or
-    (condExprIsOrExpr  (getVal bx))
-    (condExprIsXOrExpr (getVal by))
+eval_or_bitwise tr bx by = do
+  x <- eval_expr' bx
+  y <- eval_expr' by
+  let expr = orExprIsCondExpr $ C.Or
+        (condExprIsOrExpr  (getVal x))
+        (condExprIsXOrExpr (getVal y))
+  type_rep_val tr expr
 
 eval_xor_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_xor_bitwise tr bx by = type_rep_val tr expr
-  where
-  expr = xorExprIsCondExpr $ C.XOr
-    (condExprIsXOrExpr (getVal bx))
-    (condExprIsAndExpr (getVal by))
+eval_xor_bitwise tr bx by = do
+  x <- eval_expr' bx
+  y <- eval_expr' by
+  let expr = xorExprIsCondExpr $ C.XOr
+        (condExprIsXOrExpr (getVal x))
+        (condExprIsAndExpr (getVal y))
+  type_rep_val tr expr
 
 eval_not_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_not_bitwise tr bx = type_rep_val tr expr
-  where
-  expr = unaryExprIsCondExpr $ C.UnaryOp C.UOBNot
-    (condExprIsCastExpr (getVal bx))
+eval_not_bitwise tr bx = do
+  x <- eval_expr' bx
+  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOBNot
+        (condExprIsCastExpr (getVal x))
+  type_rep_val tr expr
 
 eval_shiftl_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer 'Unsigned 'Eight)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer 'Unsigned 'Eight))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_shiftl_bitwise tr bx by = type_rep_val tr expr
-  where
-  expr = shiftExprIsCondExpr $ C.ShiftLeft
-    (condExprIsShiftExpr (getVal bx))
-    (condExprIsAddExpr   (getVal by))
+eval_shiftl_bitwise tr bx by = do
+  x <- eval_expr' bx
+  y <- eval_expr' by
+  let expr = shiftExprIsCondExpr $ C.ShiftLeft
+        (condExprIsShiftExpr (getVal x))
+        (condExprIsAddExpr   (getVal y))
+  type_rep_val tr expr
 
 eval_shiftr_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer 'Unsigned 'Eight)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer 'Unsigned 'Eight))
   -> CodeGen s (Val s ('Integer signedness width))
-eval_shiftr_bitwise tr bx by = type_rep_val tr expr
-  where
-  expr = shiftExprIsCondExpr $ C.ShiftRight
-    (condExprIsShiftExpr (getVal bx))
-    (condExprIsAddExpr   (getVal by))
+eval_shiftr_bitwise tr bx by = do
+  x <- eval_expr' bx
+  y <- eval_expr' by
+  let expr = shiftExprIsCondExpr $ C.ShiftRight
+        (condExprIsShiftExpr (getVal x))
+        (condExprIsAddExpr   (getVal y))
+  type_rep_val tr expr
 
 eval_and_bool
-  :: Val s Boolean
-  -> Val s Boolean
+  :: Expr CodeGen Val s (Val s Boolean)
+  -> Expr CodeGen Val s (Val s Boolean)
   -> CodeGen s (Val s Boolean)
-eval_and_bool vx vy = type_rep_val boolean_t expr
-  where
-  expr = landExprIsCondExpr $ C.LAnd
-    (condExprIsLAndExpr (getVal vx))
-    (condExprIsOrExpr   (getVal vy))
+eval_and_bool vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = landExprIsCondExpr $ C.LAnd
+        (condExprIsLAndExpr (getVal x))
+        (condExprIsOrExpr   (getVal y))
+  type_rep_val boolean_t expr
 
 eval_or_bool
-  :: Val s Boolean
-  -> Val s Boolean
+  :: Expr CodeGen Val s (Val s Boolean)
+  -> Expr CodeGen Val s (Val s Boolean)
   -> CodeGen s (Val s Boolean)
-eval_or_bool vx vy = type_rep_val boolean_t expr
-  where
-  expr = lorExprIsCondExpr $ C.LOr
-    (condExprIsLOrExpr  (getVal vx))
-    (condExprIsLAndExpr (getVal vy))
+eval_or_bool vx vy = do
+  x <- eval_expr' vx
+  y <- eval_expr' vy
+  let expr = lorExprIsCondExpr $ C.LOr
+        (condExprIsLOrExpr  (getVal x))
+        (condExprIsLAndExpr (getVal y))
+  type_rep_val boolean_t expr
 
 eval_not_bool
-  :: Val s Boolean
+  :: Expr CodeGen Val s (Val s Boolean)
   -> CodeGen s (Val s Boolean)
-eval_not_bool vx = type_rep_val boolean_t expr
-  where
-  expr = unaryExprIsCondExpr $ C.UnaryOp C.UONot
-    (condExprIsCastExpr (getVal vx))
+eval_not_bool vx = do
+  x <- eval_expr' vx
+  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UONot
+        (condExprIsCastExpr (getVal x))
+  type_rep_val boolean_t expr
 
 -- | The comparison is expressed using 2 C ternary expressions.
 -- Relies on the assumption of a total order (that if x is neither than than nor
@@ -767,8 +792,8 @@ eval_not_bool vx = type_rep_val boolean_t expr
 -- example.
 eval_cmp
   :: TypeRep ('Integer signedness width)
-  -> Val s ('Integer signedness width)
-  -> Val s ('Integer signedness width)
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr CodeGen Val s (Val s ('Integer signedness width))
   -> CodeGen s (Val s Point.Ordering)
 eval_cmp _tr vx vy = do
   -- We elaborate all 3 cases here.
@@ -777,10 +802,12 @@ eval_cmp _tr vx vy = do
   lessThan    <- eval_expr' lt
   greaterThan <- eval_expr' gt
   equalTo     <- eval_expr' eq
+  x <- eval_expr' vx
+  y <- eval_expr' vy
   let isLt :: C.RelExpr
-      isLt = C.RelLT (condExprIsRelExpr (getVal vx)) (condExprIsShiftExpr (getVal vy))
+      isLt = C.RelLT (condExprIsRelExpr (getVal x)) (condExprIsShiftExpr (getVal y))
       isGt :: C.RelExpr
-      isGt = C.RelGT (condExprIsRelExpr (getVal vx)) (condExprIsShiftExpr (getVal vy))
+      isGt = C.RelGT (condExprIsRelExpr (getVal x)) (condExprIsShiftExpr (getVal y))
       expr = C.Cond (relExprIsLOrExpr isLt) (condExprIsExpr (getVal lessThan)) $
              C.Cond (relExprIsLOrExpr isGt) (condExprIsExpr (getVal greaterThan)) $
                                             (getVal equalTo)
@@ -802,7 +829,7 @@ eval_cmp _tr vx vy = do
 -- get away with simply erasing an intro of an empty product.
 eval_intro_product
   :: TypeRep ('Product types)
-  -> All (Val s) types
+  -> Fields CodeGen Val s types
   -> CodeGen s (Val s ('Product types))
 eval_intro_product trep AllF = type_rep_val trep cNULL
 eval_intro_product trep (AndF t ts) = do
@@ -823,12 +850,12 @@ eval_intro_product trep (AndF t ts) = do
 eval_elim_product
   :: TypeRep ('Product types)
   -> Selector CodeGen Val s types r
-  -> Val s ('Product types)
+  -> Expr CodeGen Val s (Val s ('Product types))
   -> CodeGen s (Val s r)
 eval_elim_product trep selector cgt = do
   () <- product_declare trep
-  let exprVal = cgt
-  let pexpr = condExprIsPostfixExpr (getVal exprVal)
+  cgtVal <- eval_expr' cgt
+  let pexpr = condExprIsPostfixExpr (getVal cgtVal)
   eval_elim_product_with_selector 0 pexpr selector
 
 -- |
@@ -851,7 +878,7 @@ eval_elim_product_with_selector n pexpr (AnyC trep k) = do
     (stringIdentifier ("field_" ++ show n))
   let expr = postfixExprIsCondExpr $ C.PostfixArrow pexpr fieldIdent
   val <- type_rep_val trep expr
-  eval_expr' (k val)
+  eval_expr' (k (pure val))
 
 -- |
 --
@@ -859,13 +886,13 @@ eval_elim_product_with_selector n pexpr (AnyC trep k) = do
 -- NULL and not allocate anything.
 eval_intro_sum
   :: TypeRep ('Sum types)
-  -> Any (Val s) types
+  -> Variant CodeGen Val s types
   -> CodeGen s (Val s ('Sum types))
 -- The meta-language doesn't allow for empty sums to be introduced (void type
 -- in the algebraic sense).
-eval_intro_sum (Sum_t AllF) it = case it of
+eval_intro_sum (Sum_t All) it = case it of
   {}
-eval_intro_sum trep@(Sum_t (AndF _ _)) anyt = do
+eval_intro_sum trep@(Sum_t (And _ _)) anyt = do
   () <- sum_declare trep
   specQual <- sum_spec_qual trep
   let typeName = C.TypeName specQual Nothing
@@ -876,21 +903,21 @@ eval_intro_sum trep@(Sum_t (AndF _ _)) anyt = do
 
 product_field_inits
   :: Natural
-  -> Val s t
-  -> All (Val s) ts
+  -> Expr CodeGen Val s (Val s t)
+  -> Fields CodeGen Val s ts
   -> CodeGen s C.InitList
 product_field_inits n cgt AllF = do
-  let exprVal = cgt
+  exprVal <- eval_expr' cgt
   designator <- simple_designator ("field_" ++ show n)
   pure $ C.InitBase (Just designator) (C.InitExpr (condExprIsAssignExpr (getVal exprVal)))
 product_field_inits n cgt (AndF cgt' cgts) = do
-  let exprVal = cgt
+  exprVal <- eval_expr' cgt
   designator <- simple_designator ("field_" ++ show n)
   subList <- product_field_inits (n+1) cgt' cgts
   pure $ C.InitCons subList (Just designator) (C.InitExpr (condExprIsAssignExpr (getVal exprVal)))
 
 -- | The init list for a sum struct: its tag and its variant.
-sum_field_inits :: Any (Val s) ts -> CodeGen s C.InitList
+sum_field_inits :: Variant CodeGen Val s ts -> CodeGen s C.InitList
 sum_field_inits anyt = do
   tagExpr <- condExprIsAssignExpr <$> sum_tag_expr 0 anyt
   variantInitList <- sum_variant_init_list 0 anyt
@@ -904,9 +931,9 @@ sum_field_inits anyt = do
 
 -- | The expression for a sum's tag: determined by the offset in the disjuncts
 -- in the type signature, and the common "tag_" prefix.
-sum_tag_expr :: Natural -> Any f ts -> CodeGen s C.CondExpr
-sum_tag_expr n (OrF there) = sum_tag_expr (n+1) there
-sum_tag_expr n (AnyF _) = do
+sum_tag_expr :: Natural -> Variant f val s ts -> CodeGen s C.CondExpr
+sum_tag_expr n (OrV there) = sum_tag_expr (n+1) there
+sum_tag_expr n (AnyV _) = do
   ident <- maybeError
     (CodeGenInternalError $ "sum_tag_expr invalid tag field " ++ show n)
     (stringIdentifier ("tag_" ++ show n))
@@ -916,11 +943,11 @@ sum_tag_expr n (AnyF _) = do
 -- pointer (sums hold their tags and unions directly).
 sum_variant_init_list
   :: Natural
-  -> Any (Val s) ts
+  -> Variant CodeGen Val s ts
   -> CodeGen s C.InitList
-sum_variant_init_list n (OrF there) = sum_variant_init_list (n+1) there
-sum_variant_init_list n (AnyF cgt) = do
-  let exprVal = cgt
+sum_variant_init_list n (OrV there) = sum_variant_init_list (n+1) there
+sum_variant_init_list n (AnyV cgt) = do
+  exprVal <- eval_expr' cgt
   designator <- simple_designator ("variant_" ++ show n)
   let initExpr = C.InitExpr (condExprIsAssignExpr (getVal exprVal))
   pure $ C.InitBase (Just designator) initExpr
@@ -945,14 +972,15 @@ eval_elim_sum
   :: TypeRep ('Sum types)
   -> TypeRep r
   -> Cases CodeGen Val s types r
-  -> Val s ('Sum types)
+  -> Expr CodeGen Val s (Val s ('Sum types))
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
   () <- sum_declare trep
+  cgtVal <- eval_expr' cgt
   -- Our two declarations: scrutinee and result.
   -- Declaring the scrutinee is important, so that we don't _ever_ have a case
   -- statement in which the scrutinee is repeatedly constructed at each case.
-  (_scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgt
+  (_scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgtVal
   (resultIdent, resultVal)        <- declare_uninitialized "result"    rrep
   -- We take two expressions in the object-language (forgetting their
   -- meta-language types): the sum's tag and its variant. These are taken by way
@@ -972,8 +1000,8 @@ eval_elim_sum trep rrep cases cgt = do
   -- Should be you can never introduce an empty sum, so this code should not
   -- be reachable.
   caseBlockItems :: [C.BlockItem] <- case trep of
-    Sum_t AllF       -> pure []
-    Sum_t (AndF _ _) -> NE.toList <$> eval_elim_sum_cases 0 rrep
+    Sum_t All       -> pure []
+    Sum_t (And _ _) -> NE.toList <$> eval_elim_sum_cases 0 rrep
       (postfixExprIsEqExpr tagPostfixExpr)
       variantExpr
       resultIdent
@@ -1082,7 +1110,7 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
   let valueSelector :: C.PostfixExpr
       valueSelector = C.PostfixDot variantExpr variantIdent
   valInThisCase <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
-  (expr, blockItems) <- withNewScope $ eval_expr' (k valInThisCase)
+  (expr, blockItems) <- withNewScope $ eval_expr' (k (pure valInThisCase))
   let -- Here we have the result assignment and the case break, the final two
       -- statements in the compound statement.
       resultAssignment :: C.BlockItem
