@@ -429,6 +429,11 @@ example_4 = do
   -- Can do that by using pure, right?
   elim_maybe int8_t int8_t it (\_ -> int8 (-1)) (\t -> pure t)
 
+example_4_1 :: Expr f val s (val s Int8)
+example_4_1 = do
+  it <- example_2
+  elim_either uint8_t int8_t int8_t it (\_ -> int8 (-1)) (\_ -> int8 2)
+
 example_5 :: Expr f val s (val s UInt8)
 example_5 = do
   p <- example_1
@@ -482,6 +487,9 @@ eval_expr (ElimProduct tr rr sel it) = eval_elim_product tr sel it
 eval_expr (ElimSum tr rr cases it)   = eval_elim_sum tr rr cases it
 eval_expr (Local tt tr it k)         = eval_local tt tr it k
 
+eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
+eval_expr' expr = evalInMonad expr eval_expr
+
 -- | Take a fresh name, bind the expression to it, and use the _name_ rather
 -- than the expression to elaborate the code here in the meta-language.
 --
@@ -500,60 +508,42 @@ eval_local
   -> Val s t
   -> (Val s t -> Expr CodeGen Val s (Val s r))
   -> CodeGen s (Val s r)
-eval_local tt tr it k = do
-  typeSpec <- type_spec tt
-  ident <- fresh_binder "local"
-  -- Now we must make a block item which assigns the value `it` to the
-  -- identifier `ident`.
-  --
-  -- Every binding is const. TBD should we use volatile? register? No idea.
-  --
-  --   const <typeSpec> <ident> = <rexpr>;
-  --   |______________| |_____|   |_____|
-  --      declnSpecs     decln     init
-  --
-  let declnSpecs :: C.DeclnSpecs
-      declnSpecs = C.DeclnSpecsQual C.QConst $
-        Just (C.DeclnSpecsType typeSpec Nothing)
-      -- Should the binding be a pointer or not? Depends upon the type of
-      -- the value we're binding.
-      --
-      -- TODO make this not so ad hoc; sort out all that type spec vs. type qual
-      -- vs. type name etc. and make it abundantly clear, in one place, what
-      -- the rules are for C types.
-      mPtr :: Maybe C.Ptr
-      mPtr = case tt of
-        Product_t _ -> Just $ C.PtrBase Nothing
-        Sum_t _     -> Just $ C.PtrBase Nothing
-        _           -> Nothing
-      declr :: C.Declr
-      declr = C.Declr mPtr (C.DirectDeclrIdent ident)
-      cexpr :: C.CondExpr
-      cexpr = getVal it
-      init :: C.Init
-      init = C.InitExpr (condExprIsAssignExpr cexpr);
-      initDeclr :: C.InitDeclr
-      initDeclr = C.InitDeclrInitr declr init
-      initDeclrList :: C.InitDeclrList
-      initDeclrList = C.InitDeclrBase initDeclr
-      blockItem :: C.BlockItem
-      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
-  addBlockItem blockItem
-  -- And now, carry on with the identifier standing in for the value
-  val :: Val s t <- type_rep_val tt (identIsCondExpr ident)
-  eval_expr' (k val)
+eval_local tt tr val k = do
+  (_ident, val') <- declare_initialized "local" val
+  eval_expr' (k val')
 
 eval_intro_integer
-  :: TypeRep ('Integer signedness width)
+  :: forall signedness width s .
+     TypeRep ('Integer signedness width)
   -> IntegerLiteral signedness width
   -> CodeGen s (Val s ('Integer signedness width))
+
 eval_intro_integer tr@(Integer_t Unsigned_t _width) il = type_rep_val tr expr
   where
   expr = constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-eval_intro_integer tr@(Integer_t Signed_t _width) il = type_rep_val tr expr
-  where
-  expr =  unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
-    C.IntHex (hex_const (absolute_value il)) Nothing
+
+eval_intro_integer tr@(Integer_t Signed_t _width) il = type_rep_val tr $
+  -- GHC rejects this if 'is_negative' is used because it doesn't think that
+  -- `il` is a signed type... but that must be a bug; the type signedness is
+  -- the same for the literal and the type rep, which the `tr` match has
+  -- revealed to be signed... maybe I'm losing my mind?
+  if is_negative_ il
+  then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
+        C.IntHex (hex_const (absolute_value il)) Nothing
+  else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+
+is_negative_ :: IntegerLiteral anything width -> Bool
+is_negative_ (Int8 i8)   = i8 < 0
+is_negative_ (Int16 i16) = i16 < 0
+is_negative_ (Int32 i32) = i32 < 0
+is_negative_ (Int64 i64) = i64 < 0
+is_negative_ _           = False
+
+is_negative :: IntegerLiteral Signed width -> Bool
+is_negative (Int8 i8)   = i8 < 0
+is_negative (Int16 i16) = i16 < 0
+is_negative (Int32 i32) = i32 < 0
+is_negative (Int64 i64) = i64 < 0
 
 absolute_value :: IntegerLiteral signedness width -> Natural
 absolute_value (UInt8 w8)   = fromIntegral w8
@@ -717,12 +707,22 @@ sum_variant_init_list n (AnyF cgt) = do
   let initExpr = C.InitExpr (condExprIsAssignExpr (getVal exprVal))
   pure $ C.InitBase (Just designator) initExpr
 
--- | Sum elimination is a conditional expression (the ? : ternary operator).
+-- | Sum elimination is the most complex of the basic expressions. Since each
+-- branch may induce bindings, each branch needs its own scope. Thus we cannot
+-- get away with using nested ternary expressions here, we have to use if/else
+-- or a switch on the tag. We choose a switch.
 --
--- TODO moving forward, we'll need to demarcate scope in the code gen state.
--- If one of the branches does a binding, then we need to factor it into a
--- function so it gets its own scope and is not evaluated too eagerly (and
--- therefore incorrectly/probably wastefully).
+-- We also make two variable declarations:
+-- - The scrutinee (the sum itself)
+-- - The result (uninitialized)
+-- The switch is on the scrutinee tag, each cases statement referencing the
+-- relevant enum constructor. Within each case is a compound statement (a new
+-- scope) which will use the variant union under an assumed type.
+-- Each of these compound statements will, as its final 2 statements, assign the
+-- result value, and break out of the switch.
+--
+-- The resulting expression for this elimination is simply the identifier of
+-- the result. The preceding statements go into the CodeGen state.
 eval_elim_sum
   :: TypeRep ('Sum types)
   -> TypeRep r
@@ -731,48 +731,163 @@ eval_elim_sum
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
   () <- sum_declare trep
-  -- We shall need two expressions: the sum's tag and its variant.
-  -- These are taken by way of the indirect accessor. The union, however, will
-  -- be accessed using the direct dot accessor.
-  let exprVal = cgt
-  let tagExpr = postfixExprIsEqExpr $ C.PostfixArrow (condExprIsPostfixExpr (getVal exprVal)) ident_tag
-      variantExpr = C.PostfixArrow (condExprIsPostfixExpr (getVal exprVal)) ident_variant
-  eval_elim_sum_with_cases 0 rrep tagExpr variantExpr cases
+  -- Our two declarations: scrutinee and result.
+  -- Declaring the scrutinee is important, so that we don't _ever_ have a case
+  -- statement in which the scrutinee is repeatedly constructed at each case.
+  (scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgt
+  (resultIdent, resultVal)       <- declare_uninitialized "result"    rrep
+  -- We take two expressions in the object-language (forgetting their
+  -- meta-language types): the sum's tag and its variant. These are taken by way
+  -- of the indirect accessor. The union, however, will be accessed using the
+  -- direct dot accessor, for the struct itself contains the union directly.
+  let tagPostfixExpr :: C.PostfixExpr
+      tagPostfixExpr = C.PostfixArrow
+        (condExprIsPostfixExpr (getVal scrutineeVal))
+        ident_tag
+      tagExpr :: C.Expr
+      tagExpr = postfixExprIsExpr tagPostfixExpr
+      variantExpr = C.PostfixArrow
+        (condExprIsPostfixExpr (getVal scrutineeVal))
+        ident_variant
+  -- If the sum is empty, the result is a switch statement with no cases behind
+  -- it. That's a no-op. The result variable will remain undefined.
+  -- Should be you can never introduce an empty sum, so this code should not
+  -- be reachable.
+  caseBlockItems :: [C.BlockItem] <- case trep of
+    Sum_t AllF       -> pure []
+    Sum_t (AndF _ _) -> NE.toList <$> eval_elim_sum_cases 0 rrep
+      (postfixExprIsEqExpr tagPostfixExpr)
+      variantExpr
+      resultIdent
+      cases
+  let casesStmt :: C.Stmt
+      casesStmt = C.StmtCompound $ C.Compound $ blockItemList caseBlockItems
+      switchItem :: C.BlockItem
+      switchItem = C.BlockItemStmt $ C.StmtSelect $ C.SelectSwitch tagExpr casesStmt
+  addBlockItem switchItem
+  pure resultVal
 
-eval_elim_sum_with_cases
+-- | Make a declaration assigning the given value to a new identifier.
+-- The resulting Val is that identifier.
+declare_initialized :: String -> Val s t -> CodeGen s (C.Ident, Val s t)
+declare_initialized prefix val = do
+  ident <- fresh_binder prefix
+  -- Now we must make a block item which assigns the value `it` to the
+  -- identifier `ident`.
+  -- Every initialized binding is const.
+  --
+  --   const <typeSpec> <ident> = <rexpr>;
+  --   |______________| |_____|   |_____|
+  --      declnSpecs     decln     init
+  --
+  let declnSpecs :: C.DeclnSpecs
+      declnSpecs = C.DeclnSpecsQual C.QConst $ Just (valSpecs val)
+      declr :: C.Declr
+      declr = C.Declr (valPtr val) (C.DirectDeclrIdent ident)
+      cexpr :: C.CondExpr
+      cexpr = getVal val
+      init :: C.Init
+      init = C.InitExpr (condExprIsAssignExpr cexpr);
+      initDeclr :: C.InitDeclr
+      initDeclr = C.InitDeclrInitr declr init
+      initDeclrList :: C.InitDeclrList
+      initDeclrList = C.InitDeclrBase initDeclr
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
+  addBlockItem blockItem
+  let val' = Val
+        { getVal   = identIsCondExpr ident
+        , valSpecs = valSpecs val
+        , valPtr   = valPtr val
+        }
+  pure (ident, val')
+
+-- | Make a declaration without initializing it.
+-- If it's a pointer type we make sure it's not declared const.
+-- See 'declare_initialized', which is defined similarly.
+declare_uninitialized :: String -> TypeRep t -> CodeGen s (C.Ident, Val s t)
+declare_uninitialized prefix trep = do
+  ident <- fresh_binder prefix
+  let ptr = type_rep_ptr trep
+  declnSpecs <- decln_specs trep
+  let --declnSpecs = C.DeclnSpecsType C.TVoid Nothing
+      --ident = ident_eval
+      --ptr = Nothing
+      -- 'declare_initialized' puts a const here, but since this one is not
+      -- initialized, putting a const would be rather silly.
+      declr :: C.Declr
+      declr = C.Declr ptr (C.DirectDeclrIdent ident)
+      initDeclr :: C.InitDeclr
+      initDeclr = C.InitDeclr declr
+      initDeclrList :: C.InitDeclrList
+      initDeclrList = C.InitDeclrBase initDeclr
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
+  addBlockItem blockItem
+  let val = Val
+        { getVal   = identIsCondExpr ident
+        , valSpecs = declnSpecs
+        , valPtr   = ptr
+        }
+  pure (ident, val)
+
+-- | Makes the cases in a switch statement for a sum elimination.
+eval_elim_sum_cases
   :: Natural
   -> TypeRep r
   -> C.EqExpr -- ^ The tag of the sum
   -> C.PostfixExpr -- ^ The variant of the sum
-  -> Cases CodeGen Val s types r
-  -> CodeGen s (Val s r)
--- TODO what should we put for eliminating an empty product? The idea is that
--- this code should never be reached in the C executable.
-eval_elim_sum_with_cases n rrep tagExpr variantExpr AllC = do
-  typeName <- type_name rrep
-  -- TODO this doesn't work anyway, we need to make this thing into a switch
-  -- block.
-  type_rep_val undefined (unaryExprIsCondExpr (cVOID typeName))
-eval_elim_sum_with_cases n rrep tagExpr variantExpr (AndC k cases) = do
+  -> C.Ident -- ^ Identifier of the place to assign the result.
+  -> Cases CodeGen Val s (ty ': tys) r
+  -> CodeGen s (NonEmpty C.BlockItem)
+eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) = do
+  -- We need the identifiers for the enum tag, and the union variant, at this
+  -- case.
   tagIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
     (stringIdentifier ("tag_" ++ show n))
   variantIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
     (stringIdentifier ("variant_" ++ show n))
-  let valueSelector = C.PostfixDot variantExpr variantIdent
-  -- What we need is
-  --   Expr CodeGen val s (val s r1) -> CodeGen s (val s r1)
-  -- but that we can define here for CodeGen in particular, yeah?
-  val <- type_rep_val undefined (postfixExprIsCondExpr valueSelector)
-  trueVal <- eval_expr' (k val)
-  falseVal <- eval_elim_sum_with_cases (n+1) rrep tagExpr variantExpr cases
-  let conditionExpr = eqExprIsLOrExpr $ C.EqEq tagExpr (identIsRelExpr tagIdent)
-      condExpr = C.Cond conditionExpr (condExprIsExpr (getVal trueVal)) (getVal falseVal)
-  type_rep_val rrep condExpr
-
-eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
-eval_expr' expr = evalInMonad expr eval_expr
+  -- This block item is
+  --
+  --   case tagIdent:
+  --   {
+  --     // compute x using scrutinee->variantIdent
+  --     ...
+  --     result = x;
+  --     break;
+  --   }
+  --
+  -- To get the block item list to put before the result and the break, we
+  -- have to run the code gen behind the continuation k, with a new scope.
+  let valueSelector :: C.PostfixExpr
+      valueSelector = C.PostfixDot variantExpr variantIdent
+  valInThisCase <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
+  (expr, blockItems) <- withNewScope $ eval_expr' (k valInThisCase)
+  let -- Here we have the result assignment and the case break, the final two
+      -- statements in the compound statement.
+      resultAssignment :: C.BlockItem
+      resultAssignment = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+        C.ExprAssign $ C.Assign
+          (identIsUnaryExpr resultIdent)
+          C.AEq
+          (condExprIsAssignExpr (getVal expr))
+      caseBreak :: C.BlockItem
+      caseBreak = C.BlockItemStmt $ C.StmtJump $ C.JumpBreak
+      blockItemList :: C.BlockItemList
+      blockItemList = blockItemListNE (caseBreak NE.:| (resultAssignment : blockItems))
+      caseBody :: C.Stmt
+      caseBody = C.StmtCompound $ C.Compound $ Just $ blockItemList
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemStmt $ C.StmtLabeled $ C.LabeledCase
+        (identIsConstExpr tagIdent)
+        caseBody
+  case cases of
+    AllC -> pure $ blockItem NE.:| []
+    cases'@(AndC _ _ _) -> do
+      items <- eval_elim_sum_cases (n+1) rrep tagExpr variantExpr resultIdent cases'
+      pure $ NE.cons blockItem items
 
 condExprIsAddExpr :: C.CondExpr -> C.AddExpr
 condExprIsAddExpr = C.AddMult . condExprIsMultExpr
@@ -788,6 +903,12 @@ addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
 eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
 eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
 
+identIsConstExpr :: C.Ident -> C.ConstExpr
+identIsConstExpr = C.Const . identIsCondExpr
+
+identIsExpr :: C.Ident -> C.Expr
+identIsExpr = condExprIsExpr . identIsCondExpr
+
 identIsCondExpr :: C.Ident -> C.CondExpr
 identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
@@ -796,6 +917,23 @@ identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
 identIsRelExpr :: C.Ident -> C.RelExpr
 identIsRelExpr = C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
   C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
+
+identIsUnaryExpr :: C.Ident -> C.UnaryExpr
+identIsUnaryExpr = C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
+
+identIsPostfixExpr :: C.Ident -> C.PostfixExpr
+identIsPostfixExpr = condExprIsPostfixExpr . identIsCondExpr
+
+postfixExprIsCondExpr :: C.PostfixExpr -> C.CondExpr
+postfixExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix
+
+postfixExprIsAssignExpr :: C.PostfixExpr -> C.AssignExpr
+postfixExprIsAssignExpr = C.AssignCond . postfixExprIsCondExpr
+
+postfixExprIsExpr :: C.PostfixExpr -> C.Expr
+postfixExprIsExpr = C.ExprAssign . C.AssignCond . postfixExprIsCondExpr
 
 postfixExprIsEqExpr :: C.PostfixExpr -> C.EqExpr
 postfixExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult .
@@ -812,11 +950,6 @@ condExprIsAssignExpr = C.AssignCond
 
 condExprIsExpr :: C.CondExpr -> C.Expr
 condExprIsExpr = C.ExprAssign . C.AssignCond
-
-postfixExprIsCondExpr :: C.PostfixExpr -> C.CondExpr
-postfixExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
-  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary . C.UnaryPostfix
 
 condExprIsPostfixExpr :: C.CondExpr -> C.PostfixExpr
 condExprIsPostfixExpr = C.PostfixPrim . C.PrimExpr . C.ExprAssign . C.AssignCond
@@ -1000,12 +1133,15 @@ codeGenTransUnit cgs = mkTransUnit extDeclns
 codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
 codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
 
+blockItemListNE :: NonEmpty C.BlockItem -> C.BlockItemList
+blockItemListNE (item NE.:| [])              = C.BlockItemBase item
+blockItemListNE (item NE.:| (item' : items)) = C.BlockItemCons
+  (blockItemListNE (item' NE.:| items))
+  item
+
 blockItemList :: [C.BlockItem] -> Maybe C.BlockItemList
 blockItemList []             = Nothing
-blockItemList (item : items) = Just $ go item items
-  where
-  go item []              = C.BlockItemBase item
-  go item (item' : items) = C.BlockItemCons (go item' items) item
+blockItemList (item : items) = Just (blockItemListNE (item NE.:| items))
 
 -- | A nonempty product is represented by a struct.
 data ProductDeclr = ProductDeclr
@@ -1055,9 +1191,9 @@ deriving instance Functor (CodeGen s)
 deriving instance Applicative (CodeGen s)
 deriving instance Monad (CodeGen s)
 
--- | Run a CodeGen in a fresh scope. A new C scope block will be placed around
--- any generated block items.
-withNewScope :: CodeGen s t -> CodeGen s t
+-- | Run a CodeGen in a fresh scope, giving back all of the generated block
+-- items. This allows you to create a new scope using a compound statement.
+withNewScope :: CodeGen s t -> CodeGen s (t, [C.BlockItem])
 withNewScope cg = CodeGen $ do
   st <- Trans.lift get
   let scopes = cgsScope st
@@ -1066,11 +1202,10 @@ withNewScope cg = CodeGen $ do
       blockItems' = []
       st' = st { cgsBlockItems = blockItems', cgsScope = NE.cons scope' scopes }
       Identity (outcome, st'') = runStateT (runExceptT (runCodeGen cg)) st'
-      newBlockItem = C.BlockItemStmt $ C.StmtCompound $ C.Compound $
-        blockItemList (cgsBlockItems st'')
-      blockItems'' = newBlockItem : blockItems
-  Trans.lift $ put $ st'' { cgsBlockItems = blockItems'', cgsScope = scopes }
-  except outcome
+      newBlockItems = cgsBlockItems st''
+  Trans.lift $ put $ st'' { cgsBlockItems = blockItems, cgsScope = scopes }
+  t <- except outcome
+  pure (t, newBlockItems)
 
 addBlockItem :: C.BlockItem -> CodeGen s ()
 addBlockItem !bitem = CodeGen $ do

@@ -96,6 +96,7 @@ module Pilot.EDSL.Point
   , either_t
   , left
   , right
+  , elim_either
 
   ) where
 
@@ -375,7 +376,8 @@ data Cases
   (r   :: k)
   where
   AllC :: Cases f val s '[] r
-  AndC :: (val s t -> Expr f val s (val s r))
+  AndC :: TypeRep t
+       -> (val s t -> Expr f val s (val s r))
        -> Cases f val s ts r
        -> Cases f val s (t ': ts) r
 
@@ -487,7 +489,7 @@ elim_maybe
   -> (val s t -> Expr f val s (val s r))
   -> Expr f val s (val s r)
 elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
-  (AndC cNothing $ AndC cJust $ AllC)
+  (AndC unit_t cNothing $ AndC trt cJust $ AllC)
   v
   where
   trs = maybe_t trt
@@ -512,6 +514,20 @@ right
   -> val s b
   -> Expr f val s (val s (Either a b))
 right ta tb vb = exprF $ IntroSum (either_t ta tb) (OrF (AnyF vb))
+
+elim_either
+  :: forall a b c f val s .
+     ( Typeable a, Typeable b )
+  => TypeRep a
+  -> TypeRep b
+  -> TypeRep c
+  -> val s (Either a b)
+  -> (val s a -> Expr f val s (val s c))
+  -> (val s b -> Expr f val s (val s c))
+  -> Expr f val s (val s c)
+elim_either tra trb trc val cLeft cRight = exprF $ ElimSum (either_t tra trb) trc
+  (AndC tra cLeft $ AndC trb cRight $ AllC)
+  val
 
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.

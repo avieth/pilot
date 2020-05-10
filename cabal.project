@@ -4,4 +4,4 @@ packages:
 source-repository-package
   type: git
   location: https://github.com/avieth/language-c99
-  tag: dc252fc366d8250d3b9ed5c2de0c49f5a6eb47c5
+  tag: a4fe2991cfd47894c6a7714a411113b7da2af893
