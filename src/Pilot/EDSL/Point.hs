@@ -146,6 +146,8 @@ import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
+import Pilot.Types.Represented
+
 -- | The user-facing DSL.
 --
 -- It must be a monad, with the ST binding type parameter trick. Any pure
@@ -239,9 +241,15 @@ data Type where
   Product  :: [Type] -> Type
   Sum      :: [Type] -> Type
 
+instance Represented Type where
+  type Rep Type = TypeRep
+
 data Signedness where
   Signed   :: Signedness
   Unsigned :: Signedness
+
+instance Represented Signedness where
+  type Rep Signedness = SignednessRep
 
 data SignednessRep (s :: Signedness) where
   Signed_t :: SignednessRep 'Signed
@@ -262,6 +270,9 @@ data Width where
   Sixteen   :: Width
   ThirtyTwo :: Width
   SixtyFour :: Width
+
+instance Represented Width where
+  type Rep Width = WidthRep
 
 data WidthRep (t :: Width) where
   Eight_t     :: WidthRep 'Eight

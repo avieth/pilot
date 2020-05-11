@@ -15,9 +15,11 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     
                        Pilot.EDSL.Point
+
                        Pilot.C
 
                        Pilot.Types.Nat
+                       Pilot.Types.Represented
 
   build-depends:       base,
                        containers,
