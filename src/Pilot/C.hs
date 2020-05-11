@@ -510,48 +510,50 @@ field_declns name n t (And t' ts) = do
 -- |
 -- = Evaluation of expressions
 
-run_example :: Expr CodeGen Val s t -> (Prelude.Either CodeGenError t, CodeGenState)
+run_example
+  :: Expr ExprF CodeGen Val s t
+  -> (Prelude.Either CodeGenError (Val s t), CodeGenState)
 run_example x = evalCodeGen (evalInMonad x eval_expr)
 
-write_example :: String -> Expr CodeGen Val s (Val s t) -> IO ()
+write_example :: String -> Expr ExprF CodeGen Val s t -> IO ()
 write_example fp expr = codeGenToFile fp (evalInMonad expr eval_expr)
 
-example_1 :: Expr f val s (val s (Pair UInt8 Int8))
+example_1 :: Expr ExprF f val s (Pair UInt8 Int8)
 example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
 
-example_1_1 :: Expr f val s (val s (Pair UInt8 Int8))
+example_1_1 :: Expr ExprF f val s (Pair UInt8 Int8)
 example_1_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
 
-example_2 :: Expr f val s (val s (Point.Either UInt8 Int8))
+example_2 :: Expr ExprF f val s (Point.Either UInt8 Int8)
 example_2 = right uint8_t int8_t (int8 (-42))
 
-example_3 :: Expr f val s (val s (Point.Maybe Int8))
+example_3 :: Expr ExprF f val s (Point.Maybe Int8)
 example_3 = just int8_t (int8 (-42))
 
-example_4 :: Expr f val s (val s Int8)
+example_4 :: Expr ExprF f val s Int8
 example_4 = elim_maybe int8_t int8_t example_3
   (\_ -> int8 (-1))
   (\t -> t)
 
-example_4_1 :: Expr f val s (val s Int8)
+example_4_1 :: Expr ExprF f val s Int8
 example_4_1 = elim_either uint8_t int8_t int8_t example_2
   (\_ -> int8 (-1))
   (\_ -> int8 2)
 
-example_5 :: Expr f val s (val s UInt8)
+example_5 :: Expr ExprF f val s UInt8
 example_5 = Point.fst uint8_t int8_t example_1
 
-example_6 :: Expr f val s (val s UInt8)
+example_6 :: Expr ExprF f val s UInt8
 example_6 = add uint8_t (uint8 2) (uint8 2)
 
-example_7 :: Expr f val s (val s UInt8)
+example_7 :: Expr ExprF f val s UInt8
 example_7 = add uint8_t example_6 example_5
 
-example_8 :: Expr f val s (val s UInt8)
+example_8 :: Expr ExprF f val s UInt8
 example_8 = local (pair_t uint8_t int8_t) uint8_t example_1 $ \p -> do
   add uint8_t (Point.fst uint8_t int8_t p) example_6
 
-example_9 :: Expr f val s (val s UInt8)
+example_9 :: Expr ExprF f val s UInt8
 example_9 =
   let a = uint8 0
       b = uint8 1
@@ -561,18 +563,18 @@ example_9 =
       f = shiftR uint8_t e a
   in  notB uint8_t f
 
-example_10 :: Expr f val s (val s UInt8)
+example_10 :: Expr ExprF f val s UInt8
 example_10 = local uint8_t uint8_t example_9 $ \a ->
   orB uint8_t a (uint8 42)
 
-example_11 :: Expr f val s (val s Point.Ordering)
+example_11 :: Expr ExprF f val s Point.Ordering
 example_11 =
   local uint8_t ordering_t example_10 $ \s ->
     local uint8_t ordering_t example_6 $ \t ->
       cmp uint8_t s t
 
 -- | Contains a nested product in a sum.
-example_12 :: Expr f val s (val s UInt8)
+example_12 :: Expr ExprF f val s UInt8
 example_12 =
   -- Bind the pair from example_1
   local (pair_t uint8_t int8_t) uint8_t example_1 $ \p ->
@@ -609,7 +611,7 @@ eval_expr (ElimProduct tr _rr sel it) = eval_elim_product tr sel it
 eval_expr (ElimSum tr rr cases it)    = eval_elim_sum tr rr cases it
 eval_expr (Local tt tr it k)          = eval_local tt tr it k
 
-eval_expr' :: Expr CodeGen Val s (Val s x) -> CodeGen s (Val s x)
+eval_expr' :: Expr ExprF CodeGen Val s x -> CodeGen s (Val s x)
 eval_expr' expr = evalInMonad expr eval_expr
 
 eval_primop :: PrimOpF CodeGen Val s t -> CodeGen s (Val s t)
@@ -661,8 +663,8 @@ eval_local
   :: forall t r s .
      TypeRep t
   -> TypeRep r
-  -> Expr CodeGen Val s (Val s t)
-  -> (Expr CodeGen Val s (Val s t) -> Expr CodeGen Val s (Val s r))
+  -> Expr ExprF CodeGen Val s t
+  -> (Expr ExprF CodeGen Val s t -> Expr ExprF CodeGen Val s r)
   -> CodeGen s (Val s r)
 eval_local _tt _tr x k = do
   val <- eval_expr' x
@@ -705,8 +707,8 @@ absolute_value (Int64 i64)  = fromIntegral (abs i64)
 -- integers are of the same type.
 eval_add_integer
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_add_integer tr vx vy = do
   x <- eval_expr' vx
@@ -718,8 +720,8 @@ eval_add_integer tr vx vy = do
 
 eval_sub_integer
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_sub_integer tr vx vy = do
   x <- eval_expr' vx
@@ -731,8 +733,8 @@ eval_sub_integer tr vx vy = do
 
 eval_mul_integer
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_mul_integer tr vx vy = do
   x <- eval_expr' vx
@@ -744,8 +746,8 @@ eval_mul_integer tr vx vy = do
 
 eval_div_integer
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_div_integer tr vx vy = do
   x <- eval_expr' vx
@@ -757,8 +759,8 @@ eval_div_integer tr vx vy = do
 
 eval_mod_integer
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_mod_integer tr vx vy = do
   x <- eval_expr' vx
@@ -770,7 +772,7 @@ eval_mod_integer tr vx vy = do
 
 eval_neg_integer
   :: TypeRep ('Integer 'Signed width)
-  -> Expr CodeGen Val s (Val s ('Integer 'Signed width))
+  -> Expr ExprF CodeGen Val s ('Integer 'Signed width)
   -> CodeGen s (Val s ('Integer 'Signed width))
 eval_neg_integer tr vx = do
   x <- eval_expr' vx
@@ -780,8 +782,8 @@ eval_neg_integer tr vx = do
 
 eval_and_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_and_bitwise tr bx by = do
   x <- eval_expr' bx
@@ -793,8 +795,8 @@ eval_and_bitwise tr bx by = do
 
 eval_or_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_or_bitwise tr bx by = do
   x <- eval_expr' bx
@@ -806,8 +808,8 @@ eval_or_bitwise tr bx by = do
 
 eval_xor_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_xor_bitwise tr bx by = do
   x <- eval_expr' bx
@@ -819,7 +821,7 @@ eval_xor_bitwise tr bx by = do
 
 eval_not_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_not_bitwise tr bx = do
   x <- eval_expr' bx
@@ -829,8 +831,8 @@ eval_not_bitwise tr bx = do
 
 eval_shiftl_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer 'Unsigned 'Eight))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer 'Unsigned 'Eight)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_shiftl_bitwise tr bx by = do
   x <- eval_expr' bx
@@ -842,8 +844,8 @@ eval_shiftl_bitwise tr bx by = do
 
 eval_shiftr_bitwise
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer 'Unsigned 'Eight))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer 'Unsigned 'Eight)
   -> CodeGen s (Val s ('Integer signedness width))
 eval_shiftr_bitwise tr bx by = do
   x <- eval_expr' bx
@@ -855,8 +857,8 @@ eval_shiftr_bitwise tr bx by = do
 
 -- TODO is wrong
 eval_and_bool
-  :: Expr CodeGen Val s (Val s Boolean)
-  -> Expr CodeGen Val s (Val s Boolean)
+  :: Expr ExprF CodeGen Val s Boolean
+  -> Expr ExprF CodeGen Val s Boolean
   -> CodeGen s (Val s Boolean)
 eval_and_bool vx vy = do
   x <- eval_expr' vx
@@ -868,8 +870,8 @@ eval_and_bool vx vy = do
 
 -- TODO is wrong
 eval_or_bool
-  :: Expr CodeGen Val s (Val s Boolean)
-  -> Expr CodeGen Val s (Val s Boolean)
+  :: Expr ExprF CodeGen Val s Boolean
+  -> Expr ExprF CodeGen Val s Boolean
   -> CodeGen s (Val s Boolean)
 eval_or_bool vx vy = do
   x <- eval_expr' vx
@@ -881,7 +883,7 @@ eval_or_bool vx vy = do
 
 -- TODO is wrong
 eval_not_bool
-  :: Expr CodeGen Val s (Val s Boolean)
+  :: Expr ExprF CodeGen Val s Boolean
   -> CodeGen s (Val s Boolean)
 eval_not_bool vx = do
   x <- eval_expr' vx
@@ -895,8 +897,8 @@ eval_not_bool vx = do
 -- example.
 eval_cmp
   :: TypeRep ('Integer signedness width)
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
-  -> Expr CodeGen Val s (Val s ('Integer signedness width))
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
+  -> Expr ExprF CodeGen Val s ('Integer signedness width)
   -> CodeGen s (Val s Point.Ordering)
 eval_cmp _tr vx vy = do
   -- We elaborate all 3 cases here.
@@ -953,7 +955,7 @@ eval_intro_product trep (AndF t ts) = do
 eval_elim_product
   :: TypeRep ('Product types)
   -> Selector CodeGen Val s types r
-  -> Expr CodeGen Val s (Val s ('Product types))
+  -> Expr ExprF CodeGen Val s ('Product types)
   -> CodeGen s (Val s r)
 eval_elim_product trep selector cgt = do
   () <- product_declare trep
@@ -1006,7 +1008,7 @@ eval_intro_sum trep@(Sum_t (And _ _)) anyt = do
 
 product_field_inits
   :: Natural
-  -> Expr CodeGen Val s (Val s t)
+  -> Expr ExprF CodeGen Val s t
   -> Fields CodeGen Val s ts
   -> CodeGen s C.InitList
 product_field_inits n cgt AllF = do
@@ -1075,7 +1077,7 @@ eval_elim_sum
   :: TypeRep ('Sum types)
   -> TypeRep r
   -> Cases CodeGen Val s types r
-  -> Expr CodeGen Val s (Val s ('Sum types))
+  -> Expr ExprF CodeGen Val s ('Sum types)
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
   () <- sum_declare trep
@@ -2126,5 +2128,4 @@ ident_variant =
       (C.IdentNonDigit C.NDn)
     )
     (C.IdentNonDigit C.NDt)
-
 
