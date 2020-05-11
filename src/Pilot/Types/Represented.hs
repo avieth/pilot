@@ -10,12 +10,15 @@ Portability : non-portable (GHC only)
 
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Pilot.Types.Represented
   ( Represented (..)
   ) where
 
 import qualified Data.Kind as Haskell (Type)
+import Data.Functor.Identity (Identity)
 
 -- | A kind is "represented" if there is a GADT parameterized on it giving its
 -- singleton type. For example
@@ -28,3 +31,6 @@ import qualified Data.Kind as Haskell (Type)
 -- so a class/type family definition like this makes sense.
 class Represented (k :: Haskell.Type) where
   type Rep k :: k -> Haskell.Type
+
+instance Represented Haskell.Type where
+  type Rep Haskell.Type = Identity
