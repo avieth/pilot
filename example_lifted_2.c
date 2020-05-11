@@ -45,6 +45,7 @@ struct product_0 eval() {
 /* End of generated C */
 
 int main(void){
-  printf("(%d, %d)\n", eval().field_0, eval().field_1);
+  struct product_0 x = eval();
+  printf("(%d, %d)\n", x.field_0, x.field_1);
   return 0;
 }
