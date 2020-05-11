@@ -21,6 +21,8 @@ library
                        Pilot.Types.Nat
                        Pilot.Types.Represented
 
+                       Examples
+
   build-depends:       base,
                        containers,
                        language-c99,
@@ -31,3 +33,4 @@ library
   default-language:    Haskell2010
   ghc-options:         -fwarn-incomplete-patterns
                        -fwarn-unused-imports
+                       -Wall
