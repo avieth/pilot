@@ -50,19 +50,6 @@ import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
 --
--- - Logical expressions: either we redefine the and/or/not operators to
---   use the compound boolean, or we change the representation of sums to
---   degrade to enums when all of their variants are unit.
---   Latter would be more efficient.
---   It would require that we set the enum values explicitly: we need to know
---   that true is 1 and false is 0.
---   There is short circuit semantics to worry about here: if we && a true on
---   the left, the second boolean shouldn't even be allocated. May not be
---   possible. The second boolean may have statements it requires; we'd have to
---   put it into a separate function just for the sake of short curcuiting.
---   Why not just give a uniformly strict semantics?
---
---
 -- - C backend specific externs:
 --   - values of any EDSL type
 --   - Also, functions? Yeah, that's probably the way forward. This can express
@@ -617,7 +604,6 @@ eval_expr' expr = evalInMonad expr eval_expr
 eval_primop :: PrimOpF CodeGen Val s t -> CodeGen s (Val s t)
 eval_primop (Arithmetic arithop) = eval_arithop arithop
 eval_primop (Bitwise bitop)      = eval_bitop bitop
-eval_primop (Logical logop)      = eval_logop logop
 eval_primop (Relative relop)     = eval_relop relop
 
 eval_arithop :: ArithmeticOpF CodeGen Val s t -> CodeGen s (Val s t)
@@ -635,15 +621,6 @@ eval_bitop (XOrB tr x y)   = eval_xor_bitwise tr x y
 eval_bitop (NotB tr x)     = eval_not_bitwise tr x
 eval_bitop (ShiftL tr x y) = eval_shiftl_bitwise tr x y
 eval_bitop (ShiftR tr x y) = eval_shiftr_bitwise tr x y
-
--- TODO these are wrong. We can either
--- - define them using pattern matching
--- - special case the algebraic type 1 + 1 to be represented by an unsigned
---   number, so that the C logical operators work on it
-eval_logop :: LogicalOpF CodeGen Val s t -> CodeGen s (Val s t)
-eval_logop (AndL x y) = eval_and_bool x y
-eval_logop (OrL  x y) = eval_or_bool  x y
-eval_logop (NotL x)   = eval_not_bool x
 
 eval_relop :: RelativeOpF CodeGen Val s t -> CodeGen s (Val s t)
 eval_relop (Cmp tr x y) = eval_cmp tr x y

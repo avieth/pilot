@@ -53,7 +53,6 @@ module Pilot.EDSL.Point
   , PrimOpF (..)
   , ArithmeticOpF (..)
   , BitwiseOpF (..)
-  , LogicalOpF (..)
   , RelativeOpF (..)
 
   , UInt8
@@ -94,10 +93,6 @@ module Pilot.EDSL.Point
   , notB
   , shiftL
   , shiftR
-
-  , andL
-  , orL
-  , notL
 
   , cmp
 
@@ -466,7 +461,6 @@ data PrimOpF
   where
   Arithmetic :: ArithmeticOpF f val s t -> PrimOpF f val s t
   Bitwise :: BitwiseOpF f val s t -> PrimOpF f val s t
-  Logical  :: LogicalOpF f val s t -> PrimOpF f val s t
   Relative :: RelativeOpF f val s t -> PrimOpF f val s t
 
 data ArithmeticOpF
@@ -531,21 +525,6 @@ data BitwiseOpF
          -> Expr ExprF f val s ('Integer signedness width)
          -> Expr ExprF f val s ('Integer 'Unsigned 'Eight)
          -> BitwiseOpF f val s ('Integer signedness width)
-
-data LogicalOpF
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> Type -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (t   :: Type)
-  where
-  AndL :: Expr ExprF f val s Boolean
-       -> Expr ExprF f val s Boolean
-       -> LogicalOpF f val s Boolean
-  OrL  :: Expr ExprF f val s Boolean
-       -> Expr ExprF f val s Boolean
-       -> LogicalOpF f val s Boolean
-  NotL :: Expr ExprF f val s Boolean
-       -> LogicalOpF f val s Boolean
 
 data RelativeOpF
   (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
@@ -970,20 +949,6 @@ shiftR :: TypeRep ('Integer signedness width)
        -> Expr ExprF f val s ('Integer 'Unsigned 'Eight)
        -> Expr ExprF f val s ('Integer signedness width)
 shiftR tr x y = exprF $ PrimOp $ Bitwise $ ShiftR tr x y
-
-andL :: Expr ExprF f val s Boolean
-     -> Expr ExprF f val s Boolean
-     -> Expr ExprF f val s Boolean
-andL x y = exprF $ PrimOp $ Logical $ AndL x y
-
-orL :: Expr ExprF f val s Boolean
-    -> Expr ExprF f val s Boolean
-    -> Expr ExprF f val s Boolean
-orL x y = exprF $ PrimOp $ Logical $ OrL x y
-
-notL :: Expr ExprF f val s Boolean
-     -> Expr ExprF f val s Boolean
-notL x = exprF $ PrimOp $ Logical $ NotL x
 
 local
   :: TypeRep t
