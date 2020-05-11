@@ -667,7 +667,7 @@ eval_local
 eval_local _tt _tr x k = do
   val <- eval_expr' x
   (_ident, val') <- declare_initialized "local" val
-  eval_expr' (k (pure val'))
+  eval_expr' (k (value val'))
 
 eval_intro_integer
   :: forall signedness width s .
@@ -981,7 +981,7 @@ eval_elim_product_with_selector n pexpr (AnyC trep k) = do
     (stringIdentifier ("field_" ++ show n))
   let expr = postfixExprIsCondExpr $ C.PostfixArrow pexpr fieldIdent
   val <- type_rep_val trep expr
-  eval_expr' (k (pure val))
+  eval_expr' (k (value val))
 
 -- |
 --
@@ -1213,7 +1213,7 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
   let valueSelector :: C.PostfixExpr
       valueSelector = C.PostfixDot variantExpr variantIdent
   valInThisCase <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
-  (expr, blockItems) <- withNewScope $ eval_expr' (k (pure valInThisCase))
+  (expr, blockItems) <- withNewScope $ eval_expr' (k (value valInThisCase))
   let -- Here we have the result assignment and the case break, the final two
       -- statements in the compound statement.
       resultAssignment :: C.BlockItem
