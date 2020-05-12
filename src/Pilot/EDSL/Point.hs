@@ -142,6 +142,7 @@ import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
+import Pilot.Types.Nat
 import Pilot.Types.Represented
 
 -- | The user-facing DSL.
@@ -178,6 +179,7 @@ import Pilot.Types.Represented
 -- val represents object-language values, parameterized by the binding context.
 -- t is what you expect; this is a functor.
 --
+-- TODO define this in its own module.
 newtype Expr
   (exprF) -- Kind is too long to write.
   (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
@@ -248,6 +250,7 @@ data Type where
   Rational :: Type
   Product  :: [Type] -> Type
   Sum      :: [Type] -> Type
+  Stream   :: Nat -> Type -> Type
 
 instance Represented Type where
   type Rep Type = TypeRep
@@ -349,6 +352,8 @@ data TypeRep (t :: Type) where
   Product_t :: All TypeRep tys -> TypeRep ('Product tys)
   Sum_t     :: All TypeRep tys -> TypeRep ('Sum tys)
 
+  Stream_t  :: NatRep nat -> TypeRep ty -> TypeRep ('Stream nat ty)
+
 -- | Analagous to GHC Haskell's SomeTypeRep from Data.Typeable.
 -- We're interested in having this because it's Eq and Ord (i.e. you can put
 -- it into a Map).
@@ -395,7 +400,12 @@ instance Ord SomeTypeRep where
   SomeTypeRep (Product_t _) `compare` _ = GT
 
   SomeTypeRep (Sum_t s) `compare` SomeTypeRep (Sum_t r) = compare_compound s r
+  SomeTypeRep (Sum_t _) `compare` SomeTypeRep (Stream_t _ _) = LT
   SomeTypeRep (Sum_t _) `compare` _ = GT
+
+  SomeTypeRep (Stream_t n s) `compare` SomeTypeRep (Stream_t n' s') =
+    (SomeNatRep n, SomeTypeRep s) `compare` (SomeNatRep n', SomeTypeRep s')
+  SomeTypeRep (Stream_t _ _) `compare` _ = GT
 
 -- | An ordering on lists of 'TypeRep's.
 --
@@ -452,6 +462,9 @@ instance (KnownType t, KnownType ('Sum ts))
   typeRep _ =
     let Sum_t theRest = typeRep (Proxy :: Proxy ('Sum ts))
     in  Sum_t (And (typeRep (Proxy :: Proxy t)) theRest)
+
+instance (KnownNat n, KnownType t) => KnownType ('Stream n t) where
+  typeRep _ = Stream_t (natRep (Proxy :: Proxy n)) (typeRep (Proxy :: Proxy t))
 
 data PrimOpF
   (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
@@ -597,6 +610,38 @@ data ExprF
         -> Expr ExprF f val s t
         -> (Expr ExprF f val s t -> Expr ExprF f val s r)
         -> ExprF f val s r
+
+  -- | This is like applicative pure. Think in analogy to IO for typical
+  -- Haskell.
+  -- NB: the stream size parameter is forall n.
+  ConstantStream :: TypeRep t
+                 -> Expr ExprF f val s t
+                 -> ExprF f val s ('Stream n t)
+
+  DropStream :: TypeRep t
+             -> Expr ExprF f val s ('Stream ('S n) t)
+             -> ExprF f val s ('Stream n t)
+
+  -- Like DropStream it lowers the nat index, but the value at an instant of the
+  -- stream doesn't change. This just says that a stream with more memory can
+  -- stand in for a stream with less memory, whereas DropStream says that we
+  -- can forget memory.
+  ShiftStream :: TypeRep t
+              -> Expr ExprF f val s ('Stream ('S n) t)
+              -> ExprF f val s ('Stream n t)
+
+  -- | This is how memory is introduced into a program: give 1 or more initial
+  -- values, then define the rest of the stream (possibly using those values).
+  -- Notice that the stream given in the continuation is 1 less than the number
+  -- of values given. That's because the latest/current value of the stream
+  -- must not be used there, else it would be circular. If, for example, 1
+  -- initial value is given, then DropStream allows us to take the latest value
+  -- (not the one in memory), but we wouldn't want to be able to do that within
+  -- the definition of the current value itself (i.e. the continuation here).
+  MemoryStream :: TypeRep t
+               -> Vec ('S n) (Expr ExprF f val s t)
+               -> (Expr ExprF f val s ('Stream n t) -> Expr ExprF f val s ('Stream 'Z t))
+               -> ExprF f val s ('Stream ('S n) t)
 
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
   All :: All f '[]
