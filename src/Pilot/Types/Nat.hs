@@ -22,18 +22,44 @@ import Data.Kind (Type)
 import Data.Proxy (Proxy (..))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
+import Pilot.Types.Represented
+
 data Nat where
   S :: Nat -> Nat
   Z :: Nat
 
+data NatRep (n :: Nat) where
+  S_t :: NatRep t -> NatRep ('S t)
+  Z_t :: NatRep 'Z
+
+instance Represented Nat where
+  type Rep Nat = NatRep
+
+data SomeNatRep where
+  SomeNatRep :: NatRep n -> SomeNatRep
+
+instance Eq SomeNatRep where
+  n == m = (n `compare` m) == EQ
+
+instance Ord SomeNatRep where
+  SomeNatRep Z_t     `compare` SomeNatRep Z_t     = EQ
+  SomeNatRep Z_t     `compare` SomeNatRep _       = LT
+  SomeNatRep _       `compare` SomeNatRep Z_t     = GT
+  SomeNatRep (S_t n) `compare` SomeNatRep (S_t m) =
+    SomeNatRep n `compare` SomeNatRep m
+
+natVal :: SomeNatRep -> Natural
+natVal (SomeNatRep Z_t) = 0
+natVal (SomeNatRep (S_t n)) = 1 + natVal (SomeNatRep n)
+
 class KnownNat (n :: Nat) where
-  natVal :: proxy n -> Natural
+  natRep :: proxy n -> NatRep n
 
 instance KnownNat Z where
-  natVal _ = 0
+  natRep _ = Z_t
 
 instance KnownNat n => KnownNat (S n) where
-  natVal _ = 1 + natVal (Proxy :: Proxy n)
+  natRep _ = S_t (natRep (Proxy :: Proxy n))
 
 type family Plus (n :: Nat) (m :: Nat) :: Nat where
   Plus n Z = n
