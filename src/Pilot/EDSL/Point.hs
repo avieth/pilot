@@ -97,6 +97,7 @@ module Pilot.EDSL.Point
   , cmp
 
   , local
+  , lift
 
   , Unit
   , unit_t
@@ -136,7 +137,7 @@ module Pilot.EDSL.Point
 
 import Prelude hiding (Maybe, Either, Ordering, fst, snd, div, mod)
 import qualified Prelude
-import qualified Control.Monad as Monad (ap, join)
+import qualified Control.Monad as Monad (join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
@@ -144,6 +145,7 @@ import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
 import Pilot.Types.Nat
 import Pilot.Types.Represented
+import Pilot.EDSL.Fun as Fun
 
 -- | The user-facing DSL.
 --
@@ -611,14 +613,34 @@ data ExprF
         -> (Expr ExprF f val s t -> Expr ExprF f val s r)
         -> ExprF f val s r
 
-  -- | This is like applicative pure. Think in analogy to IO for typical
-  -- Haskell.
-  -- NB: the stream size parameter is forall n.
-  ConstantStream :: TypeRep t
-                 -> Expr ExprF f val s t
-                 -> ExprF f val s ('Stream n t)
+  -- | Any first-order function within expr can be "lifted" so that all of its
+  -- arguments and its results are now streams. It must be fully applied, since
+  -- this language does not have functions. Makes sense: all of the other
+  -- expressions which take parameters are fully applied (intro/elim,
+  -- arithmetic, etc).
+  --
+  -- NB: this also expresses "pure" or constant streams, when the argument list
+  -- is empty.
+  LiftStream :: NatRep n
+             -> Args TypeRep args
+             -> (Args (Expr ExprF f val s) args -> Expr ExprF f val s r)
+             -- ^ The function being lifted.
+             -> Args (Expr ExprF f val s) (MapArgs ('Stream n) args)
+             -- ^ The arguments to the lifted function, but their types now have
+             -- Stream n applied out front.
+             -- An interpretation of this term therefore must be able to
+             -- use `Stream n t` wherever `t` is required, so long as the result
+             -- also has `Stream n` in front. This is like applicative functor
+             -- style.
+             -> ExprF f val s ('Stream n r)
+
+  JoinStream :: TypeRep t
+             -> NatRep n
+             -> Expr ExprF f val s ('Stream n ('Stream n t))
+             -> ExprF f val s ('Stream n t)
 
   DropStream :: TypeRep t
+             -> NatRep n
              -> Expr ExprF f val s ('Stream ('S n) t)
              -> ExprF f val s ('Stream n t)
 
@@ -627,6 +649,7 @@ data ExprF
   -- stand in for a stream with less memory, whereas DropStream says that we
   -- can forget memory.
   ShiftStream :: TypeRep t
+              -> NatRep ('S n)
               -> Expr ExprF f val s ('Stream ('S n) t)
               -> ExprF f val s ('Stream n t)
 
@@ -639,6 +662,7 @@ data ExprF
   -- (not the one in memory), but we wouldn't want to be able to do that within
   -- the definition of the current value itself (i.e. the continuation here).
   MemoryStream :: TypeRep t
+               -> NatRep ('S n)
                -> Vec ('S n) (Expr ExprF f val s t)
                -> (Expr ExprF f val s ('Stream n t) -> Expr ExprF f val s ('Stream 'Z t))
                -> ExprF f val s ('Stream ('S n) t)
@@ -1002,3 +1026,29 @@ local
   -> (Expr ExprF f val s t -> Expr ExprF f val s r)
   -> Expr ExprF f val s r
 local trt trr val k = exprF (Local trt trr val k)
+
+-- TODO remove? probably not useful. 'lift' seems like a better type from a
+-- usability perspective.
+lift_ :: NatRep n
+      -> Args TypeRep ts
+      -> (Args (Expr ExprF f val s) ts -> Expr ExprF f val s r)
+      -> Args (Expr ExprF f val s) (MapArgs ('Stream n) ts)
+      -> Expr ExprF f val s ('Stream n r)
+lift_ nrep argsrep f args = exprF $ LiftStream nrep argsrep f args
+
+-- | Any first-order function over expressions can be "lifted" over streams:
+-- all of the arguments and the result become streams.
+--
+-- This is like typical applicative functor style in Haskell. Such things cannot
+-- be done directly in this EDSL, because it doesn't have functions.
+lift :: NatRep n
+     -> Args TypeRep ts
+     -> Fun (Expr ExprF f val s) ('Sig ts r)
+     -> Fun (Expr ExprF f val s) (Fun.Lift ('Stream n) ('Sig ts r))
+lift nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
+  exprF $ LiftStream nrep argsrep (Fun.apply f) sargs
+
+-- | "Lift" the argument type reps into streams for a given prefix length.
+mkStreamRep :: NatRep n -> Args TypeRep ts -> Args TypeRep (MapArgs ('Stream n) ts)
+mkStreamRep _    Args            = Args
+mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
