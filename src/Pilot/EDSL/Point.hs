@@ -615,6 +615,12 @@ data ExprF
         -> (Expr ExprF f val s t -> Expr ExprF f val s r)
         -> ExprF f val s r
 
+  -- NB: no NatRep needed; this stream has a prefix of arbitrary size, since it
+  -- is "pure"/"timeless".
+  ConstantStream :: TypeRep t
+                 -> Expr ExprF f val s t
+                 -> ExprF f val s ('Stream n t)
+
   -- | Any first-order function within expr can be "lifted" so that all of its
   -- arguments and its results are now streams. It must be fully applied, since
   -- this language does not have functions. Makes sense: all of the other
@@ -623,6 +629,7 @@ data ExprF
   --
   -- NB: this also expresses "pure" or constant streams, when the argument list
   -- is empty.
+  -- TODO maybe that's not a good idea though?
   LiftStream :: NatRep n
              -> Args TypeRep args
              -> (Args (Expr ExprF f val s) args -> Expr ExprF f val s r)
@@ -1056,11 +1063,13 @@ mkStreamRep _    Args            = Args
 mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
 
 constant :: TypeRep t
-         -> NatRep n
          -> Expr ExprF f val s t
          -> Expr ExprF f val s ('Stream n t)
--- lift a nullary function that gives the value
-constant trep nrep t = Fun.unval (lift nrep Args (Val t))
+-- NB if we had a NatRep we could do this:
+--   constant trep t = Fun.unval (lift nrep Args (Val t))
+-- but it wouldn't be good to have to specify a prefix size for constant
+-- streams.
+constant trep t = exprF $ ConstantStream trep t
 
 join :: TypeRep t
      -> NatRep n
