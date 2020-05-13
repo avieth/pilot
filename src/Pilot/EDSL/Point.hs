@@ -98,6 +98,10 @@ module Pilot.EDSL.Point
 
   , local
   , lift
+  , join
+  , drop
+  , shift
+  , memory
 
   , Unit
   , unit_t
@@ -135,7 +139,7 @@ module Pilot.EDSL.Point
 
   ) where
 
-import Prelude hiding (Maybe, Either, Ordering, fst, snd, div, mod)
+import Prelude hiding (Maybe, Either, Ordering, fst, snd, div, drop, mod)
 import qualified Prelude
 import qualified Control.Monad as Monad (join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
@@ -1052,3 +1056,28 @@ lift nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
 mkStreamRep :: NatRep n -> Args TypeRep ts -> Args TypeRep (MapArgs ('Stream n) ts)
 mkStreamRep _    Args            = Args
 mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
+
+join :: TypeRep t
+     -> NatRep n
+     -> Expr ExprF f val s ('Stream n ('Stream n t))
+     -> Expr ExprF f val s ('Stream n t)
+join trep nrep ss = exprF $ JoinStream trep nrep ss
+
+drop :: TypeRep t
+     -> NatRep n
+     -> Expr ExprF f val s ('Stream ('S n) t)
+     -> Expr ExprF f val s ('Stream n t)
+drop trep nrep s = exprF $ DropStream trep nrep s
+
+shift :: TypeRep t
+      -> NatRep ('S n)
+      -> Expr ExprF f val s ('Stream ('S n) t)
+      -> Expr ExprF f val s ('Stream n t)
+shift trep nrep s = exprF $ ShiftStream trep nrep s
+
+memory :: TypeRep t
+       -> NatRep ('S n)
+       -> Vec ('S n) (Expr ExprF f val s t)
+       -> (Expr ExprF f val s ('Stream n t) -> Expr ExprF f val s ('Stream 'Z t))
+       -> Expr ExprF f val s ('Stream ('S n) t)
+memory trep nrep inits k = exprF $ MemoryStream trep nrep inits k
