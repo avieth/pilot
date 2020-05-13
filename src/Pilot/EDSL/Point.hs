@@ -98,6 +98,7 @@ module Pilot.EDSL.Point
 
   , local
   , lift
+  , constant
   , join
   , drop
   , shift
@@ -226,9 +227,6 @@ instance Monad (Expr f val s) where
   expr >>= f = Expr $ \interp' map' pure' join' ->
     join' (map' (\x -> getExpr (f x) interp' map' pure' join') (getExpr expr interp' map' pure' join'))
 -}
-
---lift :: f s (val s t) -> Expr exprF f val s t
---lift ft = Expr $ \_ _ _ _ -> ft
 
 evalInMonad
   :: forall exprF f val s t.
@@ -1056,6 +1054,13 @@ lift nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
 mkStreamRep :: NatRep n -> Args TypeRep ts -> Args TypeRep (MapArgs ('Stream n) ts)
 mkStreamRep _    Args            = Args
 mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
+
+constant :: TypeRep t
+         -> NatRep n
+         -> Expr ExprF f val s t
+         -> Expr ExprF f val s ('Stream n t)
+-- lift a nullary function that gives the value
+constant trep nrep t = Fun.unval (lift nrep Args (Val t))
 
 join :: TypeRep t
      -> NatRep n

@@ -28,6 +28,7 @@ module Pilot.EDSL.Fun
   , type MapArgs
   , Fun (..)
   , val
+  , unval
   , fun
   , at
   , Args (..)
@@ -86,6 +87,9 @@ data Fun expr sig where
 
 val :: expr r -> Fun expr ('Sig '[] r)
 val = Val
+
+unval :: Fun expr ('Sig '[] r) -> expr r
+unval (Val r) = r
 
 fun :: (expr t -> Fun expr ('Sig ts r)) -> Fun expr ('Sig (t ': ts) r)
 fun = Fun
