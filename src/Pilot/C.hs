@@ -23,7 +23,6 @@ Portability : non-portable (GHC only)
 
 module Pilot.C where
 
-import Control.Monad (unless, void)
 import qualified Control.Monad.Trans.Class as Trans (lift)
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
@@ -50,6 +49,24 @@ import System.IO.Error (userError)
 import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
+--
+-- - Compound-types-by-reference optimization.
+--   For each compound type, we can generate "reference" type declarations along
+--   with it. It's the same as the basic definition, except that now every
+--   compound type which appears in it is a const restrict pointer to the
+--   reference type of that compound type.
+--
+--   What's different when the optimization is on?
+--   - Declaration generation: if it's on, generate 2 of each of the struct and
+--     union types (enum can be re-used of course).
+--     Suffix these names with _shared.
+--     But what about the map giving type specs? We would now need more than
+--     one...
+--   - Must also generate to/from conversion functions.
+--     This actually need not be functions, they can be meta-expressions.
+--   - Every use of a sum or product (intro, elim) uses a reference now,
+--     _except_ if it's 
+--
 --
 -- - Streams.
 --   - "pure" streams (made from pointwise functions through the stream functor/
@@ -280,20 +297,25 @@ data CTypeInfo = CTypeInfo
 -- pointer, which is often an important thing to know... Weird that in,
 -- "pointer" is not a type specifier, as we might expect from experience in
 -- functional languages.
-type_info :: TypeRep t -> CodeGen s CTypeInfo
-type_info trep = do
-  typeSpec <- type_spec trep
-  pure $ CTypeInfo { ctypeSpec = typeSpec, ctypePtr = type_ptr trep }
+type_info :: CompoundTypeTreatment -> TypeRep t -> CodeGen s CTypeInfo
+type_info ctt trep = do
+  typeSpec <- type_spec ctt trep
+  pure $ CTypeInfo { ctypeSpec = typeSpec, ctypePtr = type_ptr ctt trep }
 
 -- | Use the type rep to fill in the specs and pointer properties of the
 -- val record.
 type_rep_val :: TypeRep ty -> C.CondExpr -> CodeGen s (Val s ty)
 type_rep_val tr cexpr = do
-  typeSpec <- type_spec tr
+  ctt <- defaultCompoundTypeTreatment
+  type_rep_val_with_treatment ctt tr cexpr
+
+type_rep_val_with_treatment :: CompoundTypeTreatment -> TypeRep ty -> C.CondExpr -> CodeGen s (Val s ty)
+type_rep_val_with_treatment ctt tr cexpr = do
+  typeSpec <- type_spec ctt tr
   pure $ Val
     { getVal = cexpr
     , valSpecs = typeSpec
-    , valPtr = type_ptr tr
+    , valPtr = type_ptr ctt tr
     }
 
 -- | C pointer information for a given type. If its representation is to be
@@ -301,31 +323,50 @@ type_rep_val tr cexpr = do
 --
 -- At the moment, only empty products and sums are represented using pointers
 -- (they are void *).
-type_ptr :: TypeRep ty -> Maybe C.Ptr
-type_ptr (Sum_t All)     = Just $ C.PtrBase $ Just const_restrict
-type_ptr (Product_t All) = Just $ C.PtrBase $ Just const_restrict
-type_ptr _               = Nothing
+type_ptr :: CompoundTypeTreatment -> TypeRep ty -> Maybe C.Ptr
+
+type_ptr _ (Sum_t All)     = Just $ C.PtrBase $ Just const_restrict
+type_ptr _ (Product_t All) = Just $ C.PtrBase $ Just const_restrict
+
+-- When treatment compound types with sharing, every compound is a const
+-- restrict pointer.
+type_ptr Shared (Sum_t _)     = Just $ C.PtrBase $ Just const_restrict
+type_ptr Shared (Product_t _) = Just $ C.PtrBase $ Just const_restrict
+
+type_ptr _ _ = Nothing
 
 const_restrict :: C.TypeQualList
 const_restrict = C.TypeQualCons
   (C.TypeQualBase C.QConst)
   C.QRestrict
 
+-- | How should composite type nesting be treated?
+data CompoundTypeTreatment where
+  -- | A composite type should be duplicated fully if it appears in another
+  -- composite type.
+  NotShared :: CompoundTypeTreatment
+  -- | A composite type should appear as a (const restrict) pointer in another
+  -- composite type.
+  Shared    :: CompoundTypeTreatment
+
+deriving instance Eq CompoundTypeTreatment
+deriving instance Ord CompoundTypeTreatment
+
 -- | The C type specifier. This doesn't include pointer information.
-type_spec :: TypeRep ty -> CodeGen s C.TypeSpec
+type_spec :: CompoundTypeTreatment -> TypeRep ty -> CodeGen s C.TypeSpec
 
 -- Integer types use the standard sized variants like uint8_t. These are
 -- typedefs.
-type_spec (Integer_t sr wr) =
+type_spec _ (Integer_t sr wr) =
   pure $ C.TTypedef $ C.TypedefName (integer_ident sr wr)
 
 -- TODO develop support for rational numbers.
-type_spec Rational_t = codeGenError $
+type_spec _ Rational_t = codeGenError $
   CodeGenInternalError "fractional numbers not supported at the moment"
 
-type_spec p@(Product_t _) = product_type_spec p
+type_spec ctt p@(Product_t _) = product_type_spec ctt p
 
-type_spec s@(Sum_t _)     = sum_type_spec s
+type_spec ctt s@(Sum_t _)     = sum_type_spec ctt s
 
 -- TODO
 -- refactoring of the product_type_spec and sum_type_spec motifs. All we need to
@@ -340,32 +381,39 @@ type_spec s@(Sum_t _)     = sum_type_spec s
 --
 -- Otherwise, we generate a new identifier, and include its struct declaration
 -- in the CodeGen declarations list.
-product_type_spec :: TypeRep ('Product tys) -> CodeGen s C.TypeSpec
-product_type_spec (Product_t All) = pure $ C.TVoid
-product_type_spec trep@(Product_t fields@(And t ts)) = do
+product_type_spec :: CompoundTypeTreatment -> TypeRep ('Product tys) -> CodeGen s C.TypeSpec
+product_type_spec _ (Product_t All) = pure $ C.TVoid
+product_type_spec ctt trep@(Product_t fields@(And t ts)) = do
   st <- CodeGen $ Trans.lift get
   let someTypeRep :: SomeTypeRep
       someTypeRep = SomeTypeRep trep
-  case Map.lookup someTypeRep (cgsProducts st) of
+      cti :: CompoundTypeIdentifier
+      cti = CompoundTypeIdentifier { ctiHaskellTypeRep = someTypeRep, ctiTreatment = ctt }
+  case Map.lookup cti (cgsProducts st) of
     -- TODO should store the TypeRep the map and do a sanity check that that
     -- it is equal to what we expect?
     Just pdeclr -> pure $ pdTypeSpec pdeclr
     Nothing -> do
-      declnList <- field_declns "field_" 0 (NonEmptyFields fields)
+      declnList <- field_declns ctt "field_" 0 (NonEmptyFields fields)
       -- NB: map may have changed as a result of fields_declare, in case there
       -- are composite types in there which have not yet been seen.
       st <- CodeGen $ Trans.lift get
 
+      let suffix :: String
+          suffix = case ctt of
+            Shared -> "_shared"
+            _      -> ""
+
       -- Create the product's declaration.
       let !ident = assertValidIdentifier
             ("product_type_spec bad identifier for " ++ show someTypeRep)
-            (stringIdentifier ("product_" ++ show (Map.size (cgsProducts st))))
+            (stringIdentifier ("product_" ++ show (Map.size (cgsProducts st)) ++ suffix))
 
       let typeSpecs = product_decln_type_spec ident declnList
           decln = C.Decln (C.DeclnSpecsType (ctDef typeSpecs) Nothing) Nothing
 
       let !pdeclr = ProductDeclr { pdTypeSpec = ctDec typeSpecs }
-          !prodMap' = Map.insert someTypeRep pdeclr (cgsProducts st)
+          !prodMap' = Map.insert cti pdeclr (cgsProducts st)
           !declns' = decln : cgsDeclns st
           !st' = st { cgsDeclns = declns', cgsProducts = prodMap' }
       CodeGen $ Trans.lift $ put st'
@@ -383,37 +431,44 @@ product_decln_type_spec ident declnList = CompTypeSpec
 
 -- | Exactly like 'product_type_spec' but on a different part of the CodeGen
 -- state.
-sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
-sum_type_spec (Sum_t All) = pure $ C.TVoid
-sum_type_spec trep@(Sum_t variants@(And t ts)) = do
+sum_type_spec :: CompoundTypeTreatment -> TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
+sum_type_spec _   (Sum_t All) = pure $ C.TVoid
+sum_type_spec ctt trep@(Sum_t variants@(And t ts)) = do
   st <- CodeGen $ Trans.lift get
   let someTypeRep :: SomeTypeRep
       someTypeRep = SomeTypeRep trep
-  case Map.lookup someTypeRep (cgsSums st) of
+      cti :: CompoundTypeIdentifier
+      cti = CompoundTypeIdentifier { ctiHaskellTypeRep = someTypeRep, ctiTreatment = ctt }
+  case Map.lookup cti (cgsSums st) of
     Just sdeclr -> pure $ sdTypeSpec sdeclr
     Nothing -> do
-      declnList <- field_declns "variant_" 0 (NonEmptyFields variants)
+      declnList <- field_declns ctt "variant_" 0 (NonEmptyFields variants)
       st <- CodeGen $ Trans.lift get
+
+      let suffix :: String
+          suffix = case ctt of
+            Shared -> "_shared"
+            _      -> ""
 
       let !ident = assertValidIdentifier
             ("sum_type_spec bad identifier for " ++ show someTypeRep)
-            (stringIdentifier ("sum_" ++ show (Map.size (cgsSums st))))
+            (stringIdentifier ("sum_" ++ show (Map.size (cgsSums st)) ++ suffix))
           !tagIdent = assertValidIdentifier
             ("sum_type_spec bad enum identifier for " ++ show someTypeRep)
-            (stringIdentifier ("sum_tag_" ++ show (Map.size (cgsSums st))))
+            (stringIdentifier ("sum_tag_" ++ show (Map.size (cgsSums st)) ++ suffix))
           !variantIdent = assertValidIdentifier
             ("sum_type_spec bad union identifier for " ++ show someTypeRep)
-            (stringIdentifier ("sum_variant_" ++ show (Map.size (cgsSums st))))
+            (stringIdentifier ("sum_variant_" ++ show (Map.size (cgsSums st)) ++ suffix))
 
       let tagSpecs = sum_tag_decln_type_spec tagIdent (NonEmptyFields variants)
           variantSpecs = sum_variant_decln_type_spec variantIdent declnList
-          typeSpecs = sum_decln_type_spec ident (ctDec tagSpecs) (ctDec variantSpecs) declnList
+          typeSpecs = sum_decln_type_spec ident (ctDec tagSpecs) (ctDec variantSpecs)
           tagDecln = C.Decln (C.DeclnSpecsType (ctDef tagSpecs) Nothing) Nothing
           variantDecln = C.Decln (C.DeclnSpecsType (ctDef variantSpecs) Nothing) Nothing
           decln = C.Decln (C.DeclnSpecsType (ctDef typeSpecs) Nothing) Nothing
 
       let !sdeclr = SumDeclr { sdTypeSpec = ctDec typeSpecs }
-          !sumMap' = Map.insert someTypeRep sdeclr (cgsSums st)
+          !sumMap' = Map.insert cti sdeclr (cgsSums st)
           !declns' = decln : variantDecln : tagDecln : cgsDeclns st
           !st' = st { cgsDeclns = declns', cgsSums = sumMap' }
       CodeGen $ Trans.lift $ put st'
@@ -439,9 +494,8 @@ sum_decln_type_spec
   :: C.Ident
   -> C.TypeSpec -- ^ Type for the tag.
   -> C.TypeSpec -- ^ Type for the variant.
-  -> C.StructDeclnList
   -> CompTypeSpec
-sum_decln_type_spec ident tagSpec variantSpec decln = CompTypeSpec
+sum_decln_type_spec ident tagSpec variantSpec = CompTypeSpec
   { ctDef = definition
   , ctDec = declaration
   }
@@ -523,13 +577,14 @@ sum_variant_decln_type_spec ident declnList = CompTypeSpec
 -- in the CodeGen monad, then another function which takes a NonEmpty CTypeInfo
 -- and String and Natural and generates the StructDeclnList.
 field_declns
-  :: String  -- ^ Prefix for the fields/variants
+  :: CompoundTypeTreatment
+  -> String  -- ^ Prefix for the fields/variants
   -> Natural -- ^ Initial disambiguator. Call this will 0.
   -> NonEmptyFields
   -> CodeGen s C.StructDeclnList
 
-field_declns name n (NonEmptyFields (And t All)) = do
-  info <- type_info t
+field_declns ctt name n (NonEmptyFields (And t All)) = do
+  info <- type_info ctt t
   let !ident = assertValidIdentifier 
         ("field_declns bad identifier")
         (stringIdentifier (name ++ show n))
@@ -542,9 +597,9 @@ field_declns name n (NonEmptyFields (And t All)) = do
         C.DirectDeclrIdent ident
   pure $ C.StructDeclnBase $ C.StructDecln qualList declrList
 
-field_declns name n (NonEmptyFields (And t (And t' ts))) = do
-  subList <- field_declns name (n+1) (NonEmptyFields (And t' ts))
-  info <- type_info t
+field_declns ctt name n (NonEmptyFields (And t (And t' ts))) = do
+  subList <- field_declns ctt name (n+1) (NonEmptyFields (And t' ts))
+  info <- type_info ctt t
   let !ident = assertValidIdentifier
         ("field_declns bad identifier")
         (stringIdentifier (name ++ show n))
@@ -559,12 +614,17 @@ field_declns name n (NonEmptyFields (And t (And t' ts))) = do
 -- = Evaluation of expressions
 
 run_example
-  :: Expr ExprF CodeGen Val s t
+  :: Bool -- ^ True to use the composite reference optimization
+  -> Expr ExprF CodeGen Val s t
   -> (Prelude.Either CodeGenError (Val s t), CodeGenState)
-run_example x = evalCodeGen (evalInMonad x eval_expr)
+run_example b x = evalCodeGen opts (evalInMonad x eval_expr)
+  where
+  opts = CodeGenOptions { cgoCompositeReferences = b }
 
-write_example :: String -> Expr ExprF CodeGen Val s t -> IO ()
-write_example fp expr = codeGenToFile fp (evalInMonad expr eval_expr)
+write_example :: String -> Bool -> Expr ExprF CodeGen Val s t -> IO ()
+write_example fp b expr = codeGenToFile fp opts (evalInMonad expr eval_expr)
+  where
+  opts = CodeGenOptions { cgoCompositeReferences = b }
 
 example_1 :: Expr ExprF f val s (Pair UInt8 Int8)
 example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
@@ -931,26 +991,31 @@ eval_intro_product
   -> CodeGen s (Val s ('Product types))
 eval_intro_product trep AllF = type_rep_val trep cNULL
 eval_intro_product trep (AndF t ts) = do
+  ctt <- defaultCompoundTypeTreatment
   -- This will ensure the composite type is in the code gen state
-  typeSpec <- product_type_spec trep
+  typeSpec <- product_type_spec ctt trep
   let typeName = C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
   initList <- product_field_inits 0 t ts
   let pexpr = C.PostfixInits typeName initList
-  type_rep_val trep (postfixExprIsCondExpr pexpr)
+      expr = case ctt of
+        NotShared -> postfixExprIsCondExpr pexpr
+        Shared    -> unaryExprIsCondExpr$ C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
+  type_rep_val trep expr
 
--- | Product elimination: an indirect field accessor (->).
---
--- NB: this cannot be an empty product, the 'Selector' GADT does not allow it.
+-- | Product elimination is just a field accessor.
 eval_elim_product
   :: TypeRep ('Product types)
   -> Selector CodeGen Val s types r
   -> Expr ExprF CodeGen Val s ('Product types)
   -> CodeGen s (Val s r)
 eval_elim_product trep selector cgt = do
-  typeSpec <- product_type_spec trep
+  ctt <- defaultCompoundTypeTreatment
+  -- We don't need the type spec itself, but we do need to ensure that it is
+  -- declared.
+  _typeSpec <- product_type_spec ctt trep
   cgtVal <- eval_expr' cgt
   let pexpr = condExprIsPostfixExpr (getVal cgtVal)
-  eval_elim_product_with_selector 0 pexpr selector
+  eval_elim_product_with_selector ctt 0 pexpr selector
 
 -- |
 --
@@ -960,17 +1025,20 @@ eval_elim_product trep selector cgt = do
 --   object-language selector and struct
 --
 eval_elim_product_with_selector
-  :: Natural
+  :: CompoundTypeTreatment
+  -> Natural
   -> C.PostfixExpr -- ^ The C expression giving the product struct.
   -> Selector CodeGen Val s types r
   -> CodeGen s (Val s r)
-eval_elim_product_with_selector n pexpr (OrC sel) =
-  eval_elim_product_with_selector (n+1) pexpr sel
-eval_elim_product_with_selector n pexpr (AnyC trep k) = do
+eval_elim_product_with_selector ctt n pexpr (OrC sel) =
+  eval_elim_product_with_selector ctt (n+1) pexpr sel
+eval_elim_product_with_selector ctt n pexpr (AnyC trep k) = do
   fieldIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_product_with_selector bad field " ++ show n)
     (pure (stringIdentifier ("field_" ++ show n)))
-  let expr = postfixExprIsCondExpr $ C.PostfixDot pexpr fieldIdent
+  let expr = postfixExprIsCondExpr $ case ctt of
+        NotShared -> C.PostfixDot   pexpr fieldIdent
+        Shared    -> C.PostfixArrow pexpr fieldIdent
   val <- type_rep_val trep expr
   eval_expr' (k (value val))
 
@@ -988,11 +1056,15 @@ eval_intro_sum
 eval_intro_sum (Sum_t All) it = case it of
   {}
 eval_intro_sum trep@(Sum_t (And _ _)) anyt = do
-  typeSpec <- sum_type_spec trep
+  ctt <- defaultCompoundTypeTreatment
+  typeSpec <- sum_type_spec ctt trep
   let typeName = C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
   initList <- sum_field_inits anyt
   let pexpr = C.PostfixInits typeName initList
-  type_rep_val trep (postfixExprIsCondExpr pexpr)
+      expr = case ctt of
+        NotShared -> postfixExprIsCondExpr pexpr
+        Shared    -> unaryExprIsCondExpr$ C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
+  type_rep_val trep expr
 
 product_field_inits
   :: Natural
@@ -1068,7 +1140,10 @@ eval_elim_sum
   -> Expr ExprF CodeGen Val s ('Sum types)
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
-  typeSpec <- sum_type_spec trep
+  ctt <- defaultCompoundTypeTreatment
+  -- We don't need the type spec itself, but we do need to ensure that it is
+  -- declared.
+  _typeSpec <- sum_type_spec ctt trep
   cgtVal <- eval_expr' cgt
   -- Our two declarations: scrutinee and result.
   -- Declaring the scrutinee is important, so that we don't _ever_ have a case
@@ -1080,12 +1155,12 @@ eval_elim_sum trep rrep cases cgt = do
   -- of the indirect accessor. The union, however, will be accessed using the
   -- direct dot accessor, for the struct itself contains the union directly.
   let tagPostfixExpr :: C.PostfixExpr
-      tagPostfixExpr = C.PostfixDot
+      tagPostfixExpr = (case ctt of { NotShared -> C.PostfixDot ; Shared -> C.PostfixArrow })
         (condExprIsPostfixExpr (getVal scrutineeVal))
         ident_tag
       tagExpr :: C.Expr
       tagExpr = postfixExprIsExpr tagPostfixExpr
-      variantExpr = C.PostfixDot
+      variantExpr = (case ctt of { NotShared -> C.PostfixDot ; Shared -> C.PostfixArrow })
         (condExprIsPostfixExpr (getVal scrutineeVal))
         ident_variant
   -- If the sum is empty, the result is a switch statement with no cases behind
@@ -1094,7 +1169,7 @@ eval_elim_sum trep rrep cases cgt = do
   -- be reachable.
   caseBlockItems :: [C.BlockItem] <- case trep of
     Sum_t All       -> pure []
-    Sum_t (And _ _) -> NE.toList <$> eval_elim_sum_cases 0 rrep
+    Sum_t (And _ _) -> NE.toList <$> eval_elim_sum_cases ctt 0 rrep
       (postfixExprIsEqExpr tagPostfixExpr)
       variantExpr
       resultIdent
@@ -1142,13 +1217,13 @@ declare_initialized prefix val = do
   pure (ident, val')
 
 -- | Make a declaration without initializing it.
--- If it's a pointer type we make sure it's not declared const.
--- See 'declare_initialized', which is defined similarly.
+-- Unlike 'declare_initialized', this one will not be a const declaration.
 declare_uninitialized :: String -> TypeRep t -> CodeGen s (C.Ident, Val s t)
 declare_uninitialized prefix trep = do
   ident <- fresh_binder prefix
-  let ptr = type_ptr trep
-  typeSpec <- type_spec trep
+  ctt <- defaultCompoundTypeTreatment
+  let ptr = type_ptr ctt trep
+  typeSpec <- type_spec ctt trep
   let declnSpecs = C.DeclnSpecsType typeSpec Nothing
       declr :: C.Declr
       declr = C.Declr ptr (C.DirectDeclrIdent ident)
@@ -1168,14 +1243,15 @@ declare_uninitialized prefix trep = do
 
 -- | Makes the cases in a switch statement for a sum elimination.
 eval_elim_sum_cases
-  :: Natural
+  :: CompoundTypeTreatment
+  -> Natural
   -> TypeRep r
   -> C.EqExpr -- ^ The tag of the sum
   -> C.PostfixExpr -- ^ The variant of the sum
   -> C.Ident -- ^ Identifier of the place to assign the result.
   -> Cases CodeGen Val s (ty ': tys) r
   -> CodeGen s (NonEmpty C.BlockItem)
-eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) = do
+eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (AndC trep k cases) = do
   -- We need the identifiers for the enum tag, and the union variant, at this
   -- case.
   tagIdent <- maybeError
@@ -1196,6 +1272,9 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
   --
   -- To get the block item list to put before the result and the break, we
   -- have to run the code gen behind the continuation k, with a new scope.
+  --
+  -- This is always (.) rather than (->) since sum structs always hold their
+  -- variants (and their tags) directly.
   let valueSelector :: C.PostfixExpr
       valueSelector = C.PostfixDot variantExpr variantIdent
   valInThisCase <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
@@ -1221,7 +1300,7 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
   case cases of
     AllC -> pure $ blockItem NE.:| []
     cases'@(AndC _ _ _) -> do
-      items <- eval_elim_sum_cases (n+1) rrep tagExpr variantExpr resultIdent cases'
+      items <- eval_elim_sum_cases ctt (n+1) rrep tagExpr variantExpr resultIdent cases'
       pure $ NE.cons blockItem items
 
 condExprIsAddExpr :: C.CondExpr -> C.AddExpr
@@ -1414,6 +1493,22 @@ fresh_binder prefix = do
   CodeGen $ Trans.lift $ put st'
   pure ident
 
+data CodeGenOptions = CodeGenOptions
+  { -- | Set to True to do the "composite-reference" optimization. This means
+    -- that whenever possible, composite types (sums and products) will be
+    -- referenced by const restrict pointer, to allow for sharing.
+    cgoCompositeReferences :: !Bool
+  }
+
+optimizeCompositeReferences :: CodeGen s Bool
+optimizeCompositeReferences = CodeGen $ Trans.lift $ gets
+  (cgoCompositeReferences . cgsOptions)
+
+defaultCompoundTypeTreatment :: CodeGen s CompoundTypeTreatment
+defaultCompoundTypeTreatment = do
+  b <- optimizeCompositeReferences
+  if b then pure Shared else pure NotShared
+
 -- | Code generation modifies a `CodeGenState` from an initial empty state.
 --
 -- This state is relative to some C expression which is being built-up (see
@@ -1424,7 +1519,8 @@ fresh_binder prefix = do
 -- information is contained here in the code generation state.
 --
 data CodeGenState = CodeGenState
-  { -- | C declarations in reverse order. This includes enum, union, and struct
+  { cgsOptions :: !CodeGenOptions
+  , -- | C declarations in reverse order. This includes enum, union, and struct
     -- declarations induced by compound types encountered during code
     -- generation.
     cgsDeclns :: ![C.Decln]
@@ -1438,9 +1534,9 @@ data CodeGenState = CodeGenState
     -- | Scope information for making variable names.
   , cgsScope      :: !(NonEmpty Scope)
     -- | Product types encountered.
-  , cgsProducts   :: !(Map TypeIdentifier ProductDeclr)
+  , cgsProducts   :: !(Map CompoundTypeIdentifier ProductDeclr)
     -- | Sum types encountered.
-  , cgsSums       :: !(Map TypeIdentifier SumDeclr)
+  , cgsSums       :: !(Map CompoundTypeIdentifier SumDeclr)
   }
 
 -- | The C translation unit for a CodeGenState. This is the type declarations,
@@ -1483,7 +1579,18 @@ data SumDeclr = SumDeclr { sdTypeSpec :: !C.TypeSpec }
 data NonEmptyFields where
   NonEmptyFields :: All TypeRep (ty ': tys) -> NonEmptyFields
 
-type TypeIdentifier = SomeTypeRep
+-- | The Haskell TypeRep of a composite type's fields, and whether it is to be
+-- shared or not shared, determines its C representation.
+data CompoundTypeIdentifier = CompoundTypeIdentifier
+  { -- | Haskell TypeRep of the _fields_ of the composite type (info about
+    -- whether it's a product or a sum is not present in this definition).
+    ctiHaskellTypeRep :: SomeTypeRep
+    -- | The "treatment" of this composite type: sharing or no sharing.
+  , ctiTreatment      :: CompoundTypeTreatment
+  }
+
+deriving instance Eq CompoundTypeIdentifier
+deriving instance Ord CompoundTypeIdentifier
 
 -- | Represents an object-language value within a 'CodeGen' context (the `s`
 -- type parameter, the ST/STRef trick).
@@ -1537,11 +1644,12 @@ addBlockItem !bitem = CodeGen $ do
       !st' = st { cgsBlockItems = bitem : bitems }
   Trans.lift $ put st'
 
-evalCodeGen :: CodeGen s t -> (Either CodeGenError t, CodeGenState)
-evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
+evalCodeGen :: CodeGenOptions -> CodeGen s t -> (Either CodeGenError t, CodeGenState)
+evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
   initialState = CodeGenState
-    { cgsDeclns     = []
+    { cgsOptions    = opts
+    , cgsDeclns     = []
     , cgsBlockItems = []
     , cgsScope      = scope_init NE.:| []
     , cgsProducts   = mempty
@@ -1553,10 +1661,10 @@ evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialSt
 -- `Val s t` and returns it. That C value will be completely standalone: no
 -- pointers in it. The translation unit includes everything that is needed in
 -- order to compute that value, nothing more.
-codeGen :: CodeGen s (Val s t) -> Either CodeGenError C.TransUnit
-codeGen cg = fmap mkTransUnit outcome
+codeGen :: CodeGenOptions -> CodeGen s (Val s t) -> Either CodeGenError C.TransUnit
+codeGen opts cg = fmap mkTransUnit outcome
   where
-  (outcome, cgs) = evalCodeGen cg
+  (outcome, cgs) = evalCodeGen opts cg
   mkTransUnit :: Val s t -> C.TransUnit
   mkTransUnit val = codeGenTransUnit cgs (mainFun val cgs) 
   -- This function computes the expression.
@@ -1593,8 +1701,8 @@ dereference (Just (C.PtrBase _))     cexpr = unaryExprIsCondExpr $
 dereference (Just (C.PtrCons _ ptr)) cexpr = unaryExprIsCondExpr $
   C.UnaryOp C.UODeref (condExprIsCastExpr (dereference (Just ptr) cexpr))
 
-codeGenToFile :: String -> CodeGen s (Val s t) -> IO ()
-codeGenToFile fp cg = case codeGen cg of
+codeGenToFile :: String -> CodeGenOptions -> CodeGen s (Val s t) -> IO ()
+codeGenToFile fp opts cg = case codeGen opts cg of
   Left  err       -> throwIO (userError (show err))
   Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
   where
@@ -1617,7 +1725,7 @@ assertValidIdentifier _   (Just i) = i
 
 -- | Make a C identifier from a string. Will fail if the string is malformed
 -- w.r.t. valid C identifiers.
-stringIdentifier :: forall s . String -> Maybe C.Ident
+stringIdentifier :: String -> Maybe C.Ident
 stringIdentifier []       = Nothing
 stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
   where
@@ -1636,7 +1744,7 @@ stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
             let !mRest = go (d NE.:| cs')
             in  fmap (\rest -> C.IdentConsNonDigit rest (C.IdentNonDigit nonDigit)) mRest
 
-symbolIdentifier :: forall name s . KnownSymbol name => Proxy name -> Maybe C.Ident
+symbolIdentifier :: forall name . KnownSymbol name => Proxy name -> Maybe C.Ident
 symbolIdentifier p = stringIdentifier (symbolVal p)
 
 cDigitOrNonDigit :: Char -> Maybe (Either C.Digit C.NonDigit)
@@ -1803,9 +1911,9 @@ hexDigits n = m NE.:| ms
     _ -> error "hexDigits impossible case"
 
 append_ident :: C.Ident -> C.Ident -> C.Ident
-append_ident left (C.IdentBase idnd) = C.IdentConsNonDigit left idnd
-append_ident left (C.IdentConsNonDigit right idnd) = C.IdentConsNonDigit (append_ident left right) idnd
-append_ident left (C.IdentCons right idd) = C.IdentCons (append_ident left right) idd
+append_ident lft (C.IdentBase idnd) = C.IdentConsNonDigit lft idnd
+append_ident lft (C.IdentConsNonDigit rgt idnd) = C.IdentConsNonDigit (append_ident lft rgt) idnd
+append_ident lft (C.IdentCons rgt idd) = C.IdentCons (append_ident lft rgt) idd
 
 -- | "uint8_t"
 ident_uint8_t :: C.Ident
@@ -2066,9 +2174,9 @@ ident_variant =
     )
     (C.IdentNonDigit C.NDt)
 
--- | "_static"
-ident__static :: C.Ident
-ident__static =
+-- | "_shared"
+ident__shared :: C.Ident
+ident__shared =
   C.IdentConsNonDigit
     (C.IdentConsNonDigit
       (C.IdentConsNonDigit
@@ -2078,12 +2186,12 @@ ident__static =
               (C.IdentBase (C.IdentNonDigit C.NDUnderscore))
               (C.IdentNonDigit C.NDs)
             )
-            (C.IdentNonDigit C.NDt)
+            (C.IdentNonDigit C.NDh)
           )
           (C.IdentNonDigit C.NDa)
         )
-        (C.IdentNonDigit C.NDt)
+        (C.IdentNonDigit C.NDr)
       )
-      (C.IdentNonDigit C.NDi)
+      (C.IdentNonDigit C.NDe)
     )
-    (C.IdentNonDigit C.NDc)
+    (C.IdentNonDigit C.NDd)
