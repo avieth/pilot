@@ -23,6 +23,7 @@ Portability : non-portable (GHC only)
 
 module Pilot.C where
 
+import Control.Monad (unless, void)
 import qualified Control.Monad.Trans.Class as Trans (lift)
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
@@ -50,6 +51,111 @@ import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
 --
+-- - Streams.
+--   - "pure" streams (made from pointwise functions through the stream functor/
+--     applicative/monad interfaces) compile to points.
+--   - "memory" streams: generate a new name for the stream, and a static
+--
+--       struct <ty_name> {
+--         <type> values[<size>];
+--         <size_type> index;
+--       };
+--       struct <ty_name> <stream_name>;
+--
+--     where <size> is statically known (from the Nat type parameter), <type>
+--     as well, and <size_type> is chosen so that it fits <size> and is
+--     unsigned. A stream is represented by something which is a pointer to
+--     this static struct. We can run the continuation with &<stream_name> to
+--     come up with the expression which computes the next value in the stream,
+--     and use that to implement an update function or macro
+--
+--       void <stream_name>_update(<type> value) {
+--         <stream_name>.index += 1;
+--         <stream_name>.index %= <size>;
+--         <stream_name>.values[<stream_name>.index] = value;
+--       }
+--
+--     Care must be taken to ensure that stack-allocated compound types are
+--     taken by value, but static stream types (which can also be held in
+--     streams) are taken by reference.
+--
+--     Then, at the end of the step function, for each stream we compute the
+--     expression of the next element and then copy it in, in blocks
+--
+--       stream_1_val = <stream_1_expr>;
+--       stream_2_val = <stream_2_expr>;
+--       stream_1_update(stream_1_val);
+--       stream_2_update(stream_2_val);
+--
+--     this way, if stream 1 uses stream 2 or vice versa, we still get the
+--     expected result (no destructive updates mid-computation). All writes
+--     happen at the end, after all reads.
+--
+--     TODO IMPORTANT since pure streams can have any type index, we'll need
+--     to know from the Val type whether it's a pure stream or not, so that
+--     we can correctly implement drop: if it's pure, then drop x = x.
+--
+--   - "impure" streams are simply extern declarations with a type annotation.
+--     Actually, 2 types here: the extern type (any syntactically valid C), and
+--     the EDSL type. The programmer must then say how to convert from the
+--     extern to the intern. This will be done at the start of each step, to
+--     copy the extern to a local static variable of the intern type.
+--     This is of course C CodeGen-specific, unlike memory streams.
+--
+-- PROBLEM: how to represent streams of streams. Case study: a memory stream
+-- which has streams as its elements. Some of these may be other memory streams,
+-- some may be external streams, some may be pure streams. For pure streams,
+-- we can just evaluate them and put in the value. For externals, we have to
+-- just keep a pointer (is ok because they are extern). For memory streams,
+-- pointer as well, to the struct holding index and array (is ok because these
+-- are static). So conceptually it is
+--
+--   StreamRep t = Value t | Extern (Ptr t) | Memory (Ptr (MemoryStruct t))
+--
+--   union stream_variant_t {
+--     t value;
+--     // const restrict OK here since we copy all foreign things over at the
+--     // start of each step. Even if we didn't do that, this would be read
+--     // only anyway... although, no not really, since the harness program
+--     // certainly will write to it.
+--     t *const restrict foreign;
+--     // Problem here is that each memory stream gets its own _type_. We have
+--     // to use a function pointer instead.
+--     // No sense in the struct then is there? Just create for each memory
+--     // stream a function which gets its value, and a function which writes
+--     // its value. 
+--     // Ah but no, this can't work. Getting the _latest_ value may involve
+--     // scope.
+--     t (*memory)(void);
+--   };
+--
+--   NB: a memory stream which has all of its memory dropped is the same as a
+--   pure stream. For that we can just drop it in as we would for any other
+--   pure stream. For memory streams which have not been dropped to 0 we should
+--   take a pointer to an array index pair... so if we want this to wor
+--
+--   Oh but there is a much bigger problem here. Imagine we take a composition
+--   over a memory stream and try to use that as an initial value?
+--
+--     stateful1 = ...
+--     composite = (+) <$> stateful1 <*> pure 1
+--     stateful2 = hold (VCons composite VNil) $ \_ -> pure 42
+--
+--   could it be just that the initial values must not use any bindings?
+--   Yeah, we need that anyway. That means that they can be made into functions
+--   and we can just store function pointers?
+--
+--   Yeah this is a problem, since streams are a lot like functions in that
+--   they have a closure.
+--   All of this would go away if we could eliminate streams of streams, i.e.
+--   make Stream a special "add on" type.
+--
+--   Yeah, that was the original idea anyway. 
+--
+--
+--
+--
+--
 -- - C backend specific externs:
 --   - values of any EDSL type
 --   - Also, functions? Yeah, that's probably the way forward. This can express
@@ -60,32 +166,6 @@ import Control.Exception (throwIO)
 --   So, the programmer expresses as much as possible without specifying f or
 --   val, then when the backend is decided upon, these externs are dropped in.
 --   It should be very nice.
---
--- - The lifted EDSL, so we can have nominal Haskell types for sums and
---   products.
---
--- - Then, the streamwise EDSL functor
---   We're interested in Haskell functions in which every non-function type is
---   a `val s` thing. Take for instance `just`. If we can automatically infer
---   the  TypeRep then we have
---
---     just :: val s t -> Expr f val s (val s (Maybe t))
---
---   which could be fit into our streamwise EDSL as
---
---     just' :: Point expr f val s (t :-> Maybe t)
---
---   ah no it should be
---
---     just :: Expr f val s (val s t) -> Expr f val s (val s (Maybe t))
---
---   so that the thing that all non-functions are wrapped in is
---
---     Expr f val s . val s
---
---   Yeah that looks to be the way forward. Haskell functions which are based
---   over that type `Expr f val s . val s` are akin to meta-programming:
---   constructing object-language things within the meta-language Haskell.
 --
 -- - Use of NULL for void and unit.
 --   Given that unit cannot be eliminated, and void cannot be introduced, we're
@@ -123,16 +203,13 @@ prettyPrint = render . pretty
 --   one constructor for each disjunct, and the variant is a union with one
 --   constructor for each disjunct.
 --
--- - If a sum or product contains another compound type, it appears as a
---   const restrict pointer in the union (for sum) or struct (for product).
---   By doing so, we finesse the problem of declaration order: all compound
---   types are forward-declared, so that their actual definitions may appear in
---   any order.
+-- - If a sum or product contains another compound type, it appears directly,
+--   not behind a pointer.
 --
 -- - Introducing a sum or product means initializing the entire compound
---   structure and then taking its address (&).
+--   structure.
 --
--- - Eliminating a product is a simple C indirect field accessor (->).
+-- - Eliminating a product is a direct field access (.)
 --
 -- - Eliminating a sum is a switch/case construction, because each branch needs
 --   its own scope. Each of the branches will assign once to an uninitialized
@@ -151,6 +228,12 @@ prettyPrint = render . pretty
 -- To introducing such a sum, just give the enum constructor. To eliminate, do
 -- the usual switch/case construction but instead of giving the union variant
 -- accessor, give the representation of 0 or 1 (i.e. NULL).
+--
+-- Moving forward, we may want to offer a potential optimization: compound
+-- types could be shared by way of const restrict pointers within the evaluation
+-- function block (i.e. whenever we know they do not need to hang around after
+-- this function returns).
+
 
 -- | Identifies sum types of the form a_1 + ... + a_n where each a_i is either
 -- 1 or 0 (unit or void).
@@ -181,316 +264,294 @@ integer_ident Unsigned_t Eight_t     = ident_uint8_t
 integer_ident Unsigned_t Sixteen_t   = ident_uint16_t
 integer_ident Unsigned_t ThirtyTwo_t = ident_uint32_t
 integer_ident Unsigned_t SixtyFour_t = ident_uint64_t
-integer_ident Signed_t Eight_t       = ident_int8_t
-integer_ident Signed_t Sixteen_t     = ident_int16_t
-integer_ident Signed_t ThirtyTwo_t   = ident_int32_t
-integer_ident Signed_t SixtyFour_t   = ident_int64_t
+integer_ident Signed_t   Eight_t     = ident_int8_t
+integer_ident Signed_t   Sixteen_t   = ident_int16_t
+integer_ident Signed_t   ThirtyTwo_t = ident_int32_t
+integer_ident Signed_t   SixtyFour_t = ident_int64_t
+
+-- | The C type specifier, and whether it should be taken through a pointer.
+data CTypeInfo = CTypeInfo
+  { ctypeSpec :: !C.TypeSpec
+  , ctypePtr  :: !(Maybe C.Ptr)
+  }
+
+-- | Get the C type information for a given TypeRep. This includes not only
+-- the type specifier but also info about whether it should be taken as a
+-- pointer, which is often an important thing to know... Weird that in,
+-- "pointer" is not a type specifier, as we might expect from experience in
+-- functional languages.
+type_info :: TypeRep t -> CodeGen s CTypeInfo
+type_info trep = do
+  typeSpec <- type_spec trep
+  pure $ CTypeInfo { ctypeSpec = typeSpec, ctypePtr = type_ptr trep }
 
 -- | Use the type rep to fill in the specs and pointer properties of the
 -- val record.
 type_rep_val :: TypeRep ty -> C.CondExpr -> CodeGen s (Val s ty)
 type_rep_val tr cexpr = do
-  dspecs <- decln_specs tr
+  typeSpec <- type_spec tr
   pure $ Val
     { getVal = cexpr
-    , valSpecs = dspecs
-    , valPtr = type_rep_ptr tr
+    , valSpecs = typeSpec
+    , valPtr = type_ptr tr
     }
 
--- | The C pointer annotations for a type.
--- We always use pointers to products and sums, that's all.
-type_rep_ptr :: TypeRep ty -> Maybe C.Ptr
-type_rep_ptr (Integer_t _ _) = Nothing
-type_rep_ptr Rational_t      = Nothing
--- Products and sums are constant restricted pointers.
--- Why? This language is pure-functional, we never write to sums or
--- products, so restrict is OK. Further, we never re-assign a pointer, except
--- in the case of a sum elimination block in which the return value is a
--- compound type, in which case it begins uninitialized.
-type_rep_ptr (Product_t _)   = Just $ C.PtrBase $ Just const_restrict
-type_rep_ptr (Sum_t _)       = Just $ C.PtrBase $ Just const_restrict
+-- | C pointer information for a given type. If its representation is to be
+-- taken always behind a pointer, then this will be Just.
+--
+-- At the moment, only empty products and sums are represented using pointers
+-- (they are void *).
+type_ptr :: TypeRep ty -> Maybe C.Ptr
+type_ptr (Sum_t All)     = Just $ C.PtrBase $ Just const_restrict
+type_ptr (Product_t All) = Just $ C.PtrBase $ Just const_restrict
+type_ptr _               = Nothing
 
 const_restrict :: C.TypeQualList
 const_restrict = C.TypeQualCons
   (C.TypeQualBase C.QConst)
   C.QRestrict
 
-decln_specs :: TypeRep ty -> CodeGen s C.DeclnSpecs
-
-decln_specs t@(Integer_t _ _) = do
-  typeSpec <- type_spec t
-  pure $ C.DeclnSpecsType typeSpec Nothing
-
-decln_specs t@Rational_t = do
-  typeSpec <- type_spec t
-  pure $ C.DeclnSpecsType typeSpec Nothing
-
-decln_specs p@(Product_t _) = do
-  typeSpec <- type_spec p
-  pure $ C.DeclnSpecsType typeSpec Nothing
-
-decln_specs s@(Sum_t _) = do
-  typeSpec <- type_spec s
-  pure $ C.DeclnSpecsType typeSpec Nothing
-
--- | The C type name for a type in the EDSL.
-type_name :: TypeRep ty -> CodeGen s C.TypeName
-
-type_name t@(Integer_t _ _) = do
-  typeSpec <- type_spec t
-  pure $ C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
-
--- TODO support float and double?
-type_name Rational_t = codeGenError $
-  CodeGenInternalError "fractional numbers not supported at the moment"
-
-type_name p@(Product_t _) = do
-  -- Declare is idempotent; ensures there is a C declaration for the
-  -- representation of this product, if necessary.
-  product_declare p
-  product_type_name p
-
-type_name p@(Sum_t _) = do
-  sum_declare p
-  sum_type_name p
-
+-- | The C type specifier. This doesn't include pointer information.
 type_spec :: TypeRep ty -> CodeGen s C.TypeSpec
 
+-- Integer types use the standard sized variants like uint8_t. These are
+-- typedefs.
 type_spec (Integer_t sr wr) =
   pure $ C.TTypedef $ C.TypedefName (integer_ident sr wr)
 
+-- TODO develop support for rational numbers.
 type_spec Rational_t = codeGenError $
   CodeGenInternalError "fractional numbers not supported at the moment"
 
-type_spec p@(Product_t _) = do
-  product_declare p
-  product_type_spec p
+type_spec p@(Product_t _) = product_type_spec p
 
-type_spec s@(Sum_t _) = do
-  sum_declare s
-  sum_type_spec s
+type_spec s@(Sum_t _)     = sum_type_spec s
 
--- | Just like 'product_type_name'. Sums and products are both, at the
--- top-level, represented by structs.
-sum_type_name :: TypeRep ('Sum tys) -> CodeGen s C.TypeName
-sum_type_name (Sum_t All) = pure $ C.TypeName
-  (C.SpecQualType C.TVoid Nothing)
-  (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-sum_type_name trep@(Sum_t (And _ _)) = do
-  specQual <- sum_spec_qual trep
-  pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
+-- TODO
+-- refactoring of the product_type_spec and sum_type_spec motifs. All we need to
+-- do here is put the fields of the type rep into the map, along with the
+-- identifier. We only generate the actual declarations at generation time; the
+-- identifiers are all we need prior to that.
 
--- | The type to use for a product.
--- For empty products we use void*.
--- For non-empty products we use the name of the corresponding struct (found
--- in the state). The type is a pointer to it.
-product_type_name :: TypeRep ('Product tys) -> CodeGen s C.TypeName
-product_type_name (Product_t All) = pure $ C.TypeName
-  (C.SpecQualType C.TVoid Nothing)
-  (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-product_type_name trep@(Product_t (And _ _)) = do
-  specQual <- product_spec_qual trep
-  pure $ C.TypeName specQual (Just (C.AbstractDeclr (C.PtrBase Nothing)))
-
-product_type_spec :: TypeRep ('Product ts) -> CodeGen s C.TypeSpec
-product_type_spec (Product_t All) = pure C.TVoid
-product_type_spec trep@(Product_t (And _ _)) = do
-  -- We use the Haskell TypeRep as a key in a map to get the name.
-  let someTypeRep :: SomeTypeRep
-      someTypeRep = SomeTypeRep trep
-  prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
-  case Map.lookup someTypeRep prodMap of
-    Just pdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
-      C.Struct
-      (pdStructIdent pdeclr)
-    Nothing -> codeGenError $ CodeGenInternalError $
-      "product_spec_qual_type not found " ++ show someTypeRep
-
--- | The product type for use with initialization of its struct.
-product_spec_qual :: TypeRep ('Product (t ': ts)) -> CodeGen s C.SpecQualList
-product_spec_qual trep = do
-  typeSpec <- product_type_spec trep
-  pure $ C.SpecQualType typeSpec Nothing
-
-sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
-sum_type_spec (Sum_t All) = pure C.TVoid
-sum_type_spec trep@(Sum_t (And _ _)) = do
-  -- We use the Haskell TypeRep as a key in a map to get the name.
-  let someTypeRep :: SomeTypeRep
-      someTypeRep = SomeTypeRep trep
-  sumMap <- CodeGen $ Trans.lift $ gets cgsSums
-  case Map.lookup someTypeRep sumMap of
-    Just sdeclr -> pure $ C.TStructOrUnion $ C.StructOrUnionForwDecln
-      C.Struct
-      (sdStructIdent sdeclr)
-    Nothing -> codeGenError $ CodeGenInternalError $
-      "sum_spec_qual_type not found " ++ show someTypeRep
-
--- | The sum type for use with initialization of its struct. The enum and
--- union inside it do not need to be named (the C compiler can infer them).
-sum_spec_qual :: TypeRep ('Sum (t ': ts)) -> CodeGen s C.SpecQualList
-sum_spec_qual trep = do
-  typeSpec <- sum_type_spec trep
-  pure $ C.SpecQualType typeSpec Nothing
 
 -- | Stateful CodeGen term to declare a product. If it has already been
 -- declared (something with the same 'Haskell.TypeRep' was declared) then
--- nothing happens. Otherwise, we generate a new identifier, and include its
--- struct declaration.
-product_declare :: TypeRep ('Product tys) -> CodeGen s ()
--- Unit type: nothing to do, it's void*
-product_declare (Product_t All) = pure ()
-product_declare trep@(Product_t (And t ts)) = do
-  let someTypeRep :: SomeTypeRep
-      someTypeRep = SomeTypeRep trep
-  prodMap <- CodeGen $ Trans.lift $ gets cgsProducts
-  case Map.lookup someTypeRep prodMap of
-    -- Already there; good to go.
-    Just _pdeclr -> pure ()
-    -- This signature has not been seen yet. Generate a new name and compute
-    -- its signature. We can do this because we know there is at least one
-    -- conjunct in the product (`AndF t ts`).
-    Nothing -> do
-      prodDeclns <- field_declns "field_" 0 t ts
-      -- NB: map may have changed as a result of field_declns.
-      st <- CodeGen $ Trans.lift get
-      prodIdent <- maybeError
-        -- We know this can't happen.
-        (CodeGenInternalError $ "product_declare bad identifier for " ++ show someTypeRep)
-        (stringIdentifier ("product_" ++ show (Map.size (cgsProducts st))))
-      let pdeclr = ProductDeclr
-            { pdStructDeclnList = prodDeclns
-            , pdStructIdent     = prodIdent
-            }
-          prodMap' = Map.insert someTypeRep pdeclr (cgsProducts st)
-          st' = st { cgsProducts = prodMap' }
-      CodeGen $ Trans.lift $ put st'
-
--- | Create and include in state the declarations required for a sum
--- representation. Empty sums are void pointers. Non-empty sums are represented
--- by enum tags, union variants, and a struct containing these two things.
+-- nothing happens.
 --
--- TODO moving forward, we can special case this for more efficient
--- representations. The boolean type, for instance, could indeed be represented
--- by a byte. Indeed any disjunct that has no fields can be removed from the
--- union declaration, and if the resulting union declaration is empty we can
--- represent the sum directly by the enum.
-sum_declare :: TypeRep ('Sum tys) -> CodeGen s ()
--- No declaration; it's void*
-sum_declare (Sum_t All) = pure ()
-sum_declare trep@(Sum_t (And t ts)) = do
+-- Otherwise, we generate a new identifier, and include its struct declaration
+-- in the CodeGen declarations list.
+product_type_spec :: TypeRep ('Product tys) -> CodeGen s C.TypeSpec
+product_type_spec (Product_t All) = pure $ C.TVoid
+product_type_spec trep@(Product_t fields@(And t ts)) = do
+  st <- CodeGen $ Trans.lift get
   let someTypeRep :: SomeTypeRep
       someTypeRep = SomeTypeRep trep
-  sumMap <- CodeGen $ Trans.lift $ gets cgsSums
-  case Map.lookup someTypeRep sumMap of
-    Just _sdeclr -> pure ()
+  case Map.lookup someTypeRep (cgsProducts st) of
+    -- TODO should store the TypeRep the map and do a sanity check that that
+    -- it is equal to what we expect?
+    Just pdeclr -> pure $ pdTypeSpec pdeclr
     Nothing -> do
-
-      unionDeclns <- field_declns "variant_" 0 t ts
-      enumrList   <- enum_tag_declns 0 t ts
-
-      -- NB: sumMap may have changed as a result of field_declns.
+      declnList <- field_declns "field_" 0 (NonEmptyFields fields)
+      -- NB: map may have changed as a result of fields_declare, in case there
+      -- are composite types in there which have not yet been seen.
       st <- CodeGen $ Trans.lift get
-      let sumMap' = cgsSums st
 
-      sumStructIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad struct identifier for " ++ show someTypeRep)
-        (stringIdentifier ("sum_" ++ show (Map.size sumMap')))
-      sumUnionIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad union identifier for " ++ show someTypeRep)
-        (stringIdentifier ("sum_variant_" ++ show (Map.size sumMap')))
-      sumEnumIdent <- maybeError
-        (CodeGenInternalError $ "sum_declare bad enum identifier for " ++ show someTypeRep)
-        (stringIdentifier ("sum_tag_" ++ show (Map.size sumMap')))
+      -- Create the product's declaration.
+      let !ident = assertValidIdentifier
+            ("product_type_spec bad identifier for " ++ show someTypeRep)
+            (stringIdentifier ("product_" ++ show (Map.size (cgsProducts st))))
 
-      -- The sum is
-      --
-      --   struct sum_n {
-      --     enum tag_n tag;
-      --     union variant_n variant;
-      --   }
-      --
-      -- NB: they are not pointers.
-      let structDeclns = C.StructDeclnCons
-            (C.StructDeclnBase $ C.StructDecln
-              (C.SpecQualQual C.QConst $ Just (C.SpecQualType (C.TEnum (C.EnumSpecForw sumEnumIdent)) Nothing))
-              (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_tag))))
-            )
-            (C.StructDecln
-              (C.SpecQualQual C.QConst $ Just (C.SpecQualType (C.TStructOrUnion (C.StructOrUnionForwDecln C.Union sumUnionIdent)) Nothing))
-              (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_variant))))
-            )
+      let typeSpecs = product_decln_type_spec ident declnList
+          decln = C.Decln (C.DeclnSpecsType (ctDef typeSpecs) Nothing) Nothing
 
-      let sdeclr = SumDeclr
-            { sdStructIdent     = sumStructIdent
-            , sdUnionIdent      = sumUnionIdent
-            , sdEnumIdent       = sumEnumIdent
-            , sdStructDeclnList = structDeclns
-            , sdUnionDeclnList  = unionDeclns
-            , sdEnumrList       = enumrList
-            }
-          sumMap'' = Map.insert someTypeRep sdeclr (cgsSums st)
-          st' = st { cgsSums = sumMap'' }
+      let !pdeclr = ProductDeclr { pdTypeSpec = ctDec typeSpecs }
+          !prodMap' = Map.insert someTypeRep pdeclr (cgsProducts st)
+          !declns' = decln : cgsDeclns st
+          !st' = st { cgsDeclns = declns', cgsProducts = prodMap' }
       CodeGen $ Trans.lift $ put st'
+      pure $ ctDec typeSpecs
+
+-- | The type spec for the definition of a product, given a name and its fields.
+product_decln_type_spec :: C.Ident -> C.StructDeclnList -> CompTypeSpec
+product_decln_type_spec ident declnList = CompTypeSpec
+  { ctDef = definition
+  , ctDec = declaration
+  }
+  where
+  definition  = C.TStructOrUnion $ C.StructOrUnionDecln C.Struct (Just ident) declnList
+  declaration = C.TStructOrUnion $ C.StructOrUnionForwDecln C.Struct ident
+
+-- | Exactly like 'product_type_spec' but on a different part of the CodeGen
+-- state.
+sum_type_spec :: TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
+sum_type_spec (Sum_t All) = pure $ C.TVoid
+sum_type_spec trep@(Sum_t variants@(And t ts)) = do
+  st <- CodeGen $ Trans.lift get
+  let someTypeRep :: SomeTypeRep
+      someTypeRep = SomeTypeRep trep
+  case Map.lookup someTypeRep (cgsSums st) of
+    Just sdeclr -> pure $ sdTypeSpec sdeclr
+    Nothing -> do
+      declnList <- field_declns "variant_" 0 (NonEmptyFields variants)
+      st <- CodeGen $ Trans.lift get
+
+      let !ident = assertValidIdentifier
+            ("sum_type_spec bad identifier for " ++ show someTypeRep)
+            (stringIdentifier ("sum_" ++ show (Map.size (cgsSums st))))
+          !tagIdent = assertValidIdentifier
+            ("sum_type_spec bad enum identifier for " ++ show someTypeRep)
+            (stringIdentifier ("sum_tag_" ++ show (Map.size (cgsSums st))))
+          !variantIdent = assertValidIdentifier
+            ("sum_type_spec bad union identifier for " ++ show someTypeRep)
+            (stringIdentifier ("sum_variant_" ++ show (Map.size (cgsSums st))))
+
+      let tagSpecs = sum_tag_decln_type_spec tagIdent (NonEmptyFields variants)
+          variantSpecs = sum_variant_decln_type_spec variantIdent declnList
+          typeSpecs = sum_decln_type_spec ident (ctDec tagSpecs) (ctDec variantSpecs) declnList
+          tagDecln = C.Decln (C.DeclnSpecsType (ctDef tagSpecs) Nothing) Nothing
+          variantDecln = C.Decln (C.DeclnSpecsType (ctDef variantSpecs) Nothing) Nothing
+          decln = C.Decln (C.DeclnSpecsType (ctDef typeSpecs) Nothing) Nothing
+
+      let !sdeclr = SumDeclr { sdTypeSpec = ctDec typeSpecs }
+          !sumMap' = Map.insert someTypeRep sdeclr (cgsSums st)
+          !declns' = decln : variantDecln : tagDecln : cgsDeclns st
+          !st' = st { cgsDeclns = declns', cgsSums = sumMap' }
+      CodeGen $ Trans.lift $ put st'
+      pure $ ctDec typeSpecs
+
+-- | For composite types (structs, unions, enums) we have their definitions
+-- as well as their declarations.
+data CompTypeSpec = CompTypeSpec
+  { ctDef :: C.TypeSpec
+  , ctDec :: C.TypeSpec
+  }
+
+-- | The type spec for the definition of a sum, given a name, and the type
+-- specs for its tag and variant fields.
+--
+-- Also gives the forward declaration for reference in other types.
+--
+--   struct <ident> {
+--     <tag_spec> tag;
+--     <variant_spec> variant;
+--   };
+sum_decln_type_spec
+  :: C.Ident
+  -> C.TypeSpec -- ^ Type for the tag.
+  -> C.TypeSpec -- ^ Type for the variant.
+  -> C.StructDeclnList
+  -> CompTypeSpec
+sum_decln_type_spec ident tagSpec variantSpec decln = CompTypeSpec
+  { ctDef = definition
+  , ctDec = declaration
+  }
+  where
+  definition = C.TStructOrUnion $ C.StructOrUnionDecln C.Struct (Just ident)
+    (sum_struct_decln_list tagSpec variantSpec)
+  declaration = C.TStructOrUnion $ C.StructOrUnionForwDecln C.Struct ident
+
+-- | A struct is represented by
+--
+--   struct <name> {
+--     enum <tag_name> tag;
+--     union <variant_name> variant;
+--   };
+--
+-- Here we define the declaration list (tag and variant) given identifiers for
+-- the tag enum and variant union.
+sum_struct_decln_list
+  :: C.TypeSpec -- ^ Of the tag.
+  -> C.TypeSpec -- ^ Of the variant.
+  -> C.StructDeclnList
+sum_struct_decln_list tagSpec variantSpec = C.StructDeclnCons
+  (C.StructDeclnBase $ C.StructDecln
+    (C.SpecQualQual C.QConst $ Just (C.SpecQualType tagSpec Nothing))
+    (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_tag))))
+  )
+  (C.StructDecln
+    (C.SpecQualQual C.QConst $ Just (C.SpecQualType variantSpec Nothing))
+    (C.StructDeclrBase (C.StructDeclr (C.Declr Nothing (C.DirectDeclrIdent ident_variant))))
+  )
+
+-- | The type spec for the declaration of a tag for a sum. It's an enum with
+-- one variant for each field.
+sum_tag_decln_type_spec :: C.Ident -> NonEmptyFields -> CompTypeSpec
+sum_tag_decln_type_spec ident neFields = CompTypeSpec
+  { ctDef = definition
+  , ctDec = declaration
+  }
+  where
+  definition  = C.TEnum $ C.EnumSpec (Just ident) $ sum_enum_tag_declns 0 neFields
+  declaration = C.TEnum $ C.EnumSpecForw ident
 
 -- | Make enum declarations to serve as the tags for a sum representation.
-enum_tag_declns :: Natural -> TypeRep ty -> All TypeRep tys -> CodeGen s C.EnumrList
-enum_tag_declns n _ All = do
-  ident <- maybeError
-    (CodeGenInternalError $ "enum_tag_declns bad identifier")
-    (stringIdentifier ("tag_" ++ show n))
-  pure $ C.EnumrBase $ C.Enumr $ C.Enum ident
-enum_tag_declns n _t (And t' ts) = do
-  ident <- maybeError
-    (CodeGenInternalError $ "enum_tag_declns bad identifier")
-    (stringIdentifier ("tag_" ++ show n))
-  subList <- enum_tag_declns (n+1) t' ts
-  pure $ C.EnumrCons subList $ C.Enumr $ C.Enum ident
+sum_enum_tag_declns :: Natural -> NonEmptyFields -> C.EnumrList
+sum_enum_tag_declns n (NonEmptyFields (And _ All)) =
+  let !ident = assertValidIdentifier
+        ("sum_enum_tag_declns bad identifier")
+        (stringIdentifier ("tag_" ++ show n))
+  in  C.EnumrBase $ C.Enumr $ C.Enum ident
+sum_enum_tag_declns n (NonEmptyFields (And _ ts@(And _ _))) =
+  let !ident = assertValidIdentifier
+        ("sum_enum_tag_declns bad identifier")
+        (stringIdentifier ("tag_" ++ show n))
+      !subList = sum_enum_tag_declns (n+1) (NonEmptyFields ts)
+  in  C.EnumrCons subList $ C.Enumr $ C.Enum ident
+
+-- | The type spec for the declaration of the variant for a sum. It's a union
+-- with one item for each sum variant.
+--
+-- Just like 'product_decln_type_spec'
+sum_variant_decln_type_spec :: C.Ident -> C.StructDeclnList -> CompTypeSpec
+sum_variant_decln_type_spec ident declnList = CompTypeSpec
+  { ctDef = definition
+  , ctDec = declaration
+  }
+  where
+  definition  = C.TStructOrUnion $ C.StructOrUnionDecln C.Union (Just ident) declnList
+  declaration = C.TStructOrUnion $ C.StructOrUnionForwDecln C.Union ident
 
 -- | The struct/union declaration list for product and sum types. For products,
--- thsi will give the struct fields; for sums, the union variants.
+-- this will give the struct fields; for sums, the union variants.
+--
+-- They will all be qualified with const.
 --
 -- This will put the fields in reverse order, since the C declaration list
 -- type is defines like a snoc-list. Doesn't really matter though.
+--
+-- TODO consider factoring this: given NonEmptyFields, get CTypeInfo for each,
+-- in the CodeGen monad, then another function which takes a NonEmpty CTypeInfo
+-- and String and Natural and generates the StructDeclnList.
 field_declns
   :: String  -- ^ Prefix for the fields/variants
   -> Natural -- ^ Initial disambiguator. Call this will 0.
-  -> TypeRep ty
-  -> All TypeRep tys
+  -> NonEmptyFields
   -> CodeGen s C.StructDeclnList
 
-field_declns name n t All = do
-  ident <- maybeError
-    (CodeGenInternalError $ "field_declns bad identifier")
-    (stringIdentifier (name ++ show n))
-  typeSpec <- type_spec t
-  let -- We use the type spec, qualified by const: struct fields and union
+field_declns name n (NonEmptyFields (And t All)) = do
+  info <- type_info t
+  let !ident = assertValidIdentifier 
+        ("field_declns bad identifier")
+        (stringIdentifier (name ++ show n))
+      -- We use the type spec, qualified by const: struct fields and union
       -- variants are set on initialization and are never changed.
       qualList :: C.SpecQualList
-      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType typeSpec $ Nothing
-      -- We want the field to be a pointer iff the type of t is a pointer.
-      mPtr :: Maybe C.Ptr
-      mPtr = type_rep_ptr t
+      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType (ctypeSpec info) $ Nothing
       declrList :: C.StructDeclrList
-      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $
+      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr (ctypePtr info) $
         C.DirectDeclrIdent ident
   pure $ C.StructDeclnBase $ C.StructDecln qualList declrList
 
-field_declns name n t (And t' ts) = do
-  subList <- field_declns name (n+1) t' ts
-  ident <- maybeError
-    (CodeGenInternalError $ "field_declns bad identifier")
-    (stringIdentifier (name ++ show n))
-  typeSpec <- type_spec t
-  let -- We use the type spec, qualified by const: struct fields and union
-      -- variants are set on initialization and are never changed.
+field_declns name n (NonEmptyFields (And t (And t' ts))) = do
+  subList <- field_declns name (n+1) (NonEmptyFields (And t' ts))
+  info <- type_info t
+  let !ident = assertValidIdentifier
+        ("field_declns bad identifier")
+        (stringIdentifier (name ++ show n))
       qualList :: C.SpecQualList
-      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType typeSpec $ Nothing
-      -- We want the field to be a pointer iff the type of t is a pointer.
-      mPtr :: Maybe C.Ptr
-      mPtr = type_rep_ptr t
+      qualList = C.SpecQualQual C.QConst $ Just $ C.SpecQualType (ctypeSpec info) $ Nothing
       declrList :: C.StructDeclrList
-      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr mPtr $
+      declrList = C.StructDeclrBase $ C.StructDeclr $ C.Declr (ctypePtr info) $
         C.DirectDeclrIdent ident
   pure $ C.StructDeclnCons subList $ C.StructDecln qualList declrList
 
@@ -507,9 +568,6 @@ write_example fp expr = codeGenToFile fp (evalInMonad expr eval_expr)
 
 example_1 :: Expr ExprF f val s (Pair UInt8 Int8)
 example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
-
-example_1_1 :: Expr ExprF f val s (Pair UInt8 Int8)
-example_1_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
 
 example_2 :: Expr ExprF f val s (Point.Either UInt8 Int8)
 example_2 = right uint8_t int8_t (int8 (-42))
@@ -566,7 +624,8 @@ example_12 =
   -- Bind the pair from example_1
   local (pair_t uint8_t int8_t) uint8_t example_1 $ \p ->
     -- Bind a maybe of this
-    local (maybe_t (typeOf p)) uint8_t (nothing (typeOf p)) $ \s ->
+    --local (maybe_t (typeOf p)) uint8_t (nothing (typeOf p)) $ \s ->
+    local (maybe_t (typeOf p)) uint8_t (just (typeOf p) p) $ \s ->
       elim_maybe (typeOf p) uint8_t s
         (\_ -> uint8 1)
         (\x -> Point.fst uint8_t int8_t x)
@@ -832,42 +891,6 @@ eval_shiftr_bitwise tr bx by = do
         (condExprIsAddExpr   (getVal y))
   type_rep_val tr expr
 
--- TODO is wrong
-eval_and_bool
-  :: Expr ExprF CodeGen Val s Boolean
-  -> Expr ExprF CodeGen Val s Boolean
-  -> CodeGen s (Val s Boolean)
-eval_and_bool vx vy = do
-  x <- eval_expr' vx
-  y <- eval_expr' vy
-  let expr = landExprIsCondExpr $ C.LAnd
-        (condExprIsLAndExpr (getVal x))
-        (condExprIsOrExpr   (getVal y))
-  type_rep_val boolean_t expr
-
--- TODO is wrong
-eval_or_bool
-  :: Expr ExprF CodeGen Val s Boolean
-  -> Expr ExprF CodeGen Val s Boolean
-  -> CodeGen s (Val s Boolean)
-eval_or_bool vx vy = do
-  x <- eval_expr' vx
-  y <- eval_expr' vy
-  let expr = lorExprIsCondExpr $ C.LOr
-        (condExprIsLOrExpr  (getVal x))
-        (condExprIsLAndExpr (getVal y))
-  type_rep_val boolean_t expr
-
--- TODO is wrong
-eval_not_bool
-  :: Expr ExprF CodeGen Val s Boolean
-  -> CodeGen s (Val s Boolean)
-eval_not_bool vx = do
-  x <- eval_expr' vx
-  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UONot
-        (condExprIsCastExpr (getVal x))
-  type_rep_val boolean_t expr
-
 -- | The comparison is expressed using 2 C ternary expressions.
 -- Relies on the assumption of a total order (that if x is neither than than nor
 -- greater than y then x is equal to y). Would not work for float/double, for
@@ -899,13 +922,6 @@ eval_cmp _tr vx vy = do
 -- structs, this corresponds to a struct initializer with a field for each
 -- conjunct.
 --
--- For non-empty products, this is a reference to a struct literal, i.e.
--- something like &(struct product_1){.field_0 ... };
--- Why? Because this way we can put any product literal inside another product
--- or sum by default without having to special case at product construction
--- time.
--- Are there significant downsides to this?
---
 -- Special case for the empty product introduction, which is simply NULL.
 -- TODO there is no way to eliminate an empty product, so we could probably
 -- get away with simply erasing an intro of an empty product.
@@ -916,15 +932,11 @@ eval_intro_product
 eval_intro_product trep AllF = type_rep_val trep cNULL
 eval_intro_product trep (AndF t ts) = do
   -- This will ensure the composite type is in the code gen state
-  () <- product_declare trep
-  -- We don't want the product's type name, because that's a pointer. Instead
-  -- we just want its type spec and qual list.
-  specQual <- product_spec_qual trep
-  let typeName = C.TypeName specQual Nothing
+  typeSpec <- product_type_spec trep
+  let typeName = C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
   initList <- product_field_inits 0 t ts
   let pexpr = C.PostfixInits typeName initList
-      uexpr = C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
-  type_rep_val trep (unaryExprIsCondExpr uexpr)
+  type_rep_val trep (postfixExprIsCondExpr pexpr)
 
 -- | Product elimination: an indirect field accessor (->).
 --
@@ -935,7 +947,7 @@ eval_elim_product
   -> Expr ExprF CodeGen Val s ('Product types)
   -> CodeGen s (Val s r)
 eval_elim_product trep selector cgt = do
-  () <- product_declare trep
+  typeSpec <- product_type_spec trep
   cgtVal <- eval_expr' cgt
   let pexpr = condExprIsPostfixExpr (getVal cgtVal)
   eval_elim_product_with_selector 0 pexpr selector
@@ -957,8 +969,8 @@ eval_elim_product_with_selector n pexpr (OrC sel) =
 eval_elim_product_with_selector n pexpr (AnyC trep k) = do
   fieldIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_product_with_selector bad field " ++ show n)
-    (stringIdentifier ("field_" ++ show n))
-  let expr = postfixExprIsCondExpr $ C.PostfixArrow pexpr fieldIdent
+    (pure (stringIdentifier ("field_" ++ show n)))
+  let expr = postfixExprIsCondExpr $ C.PostfixDot pexpr fieldIdent
   val <- type_rep_val trep expr
   eval_expr' (k (value val))
 
@@ -966,6 +978,7 @@ eval_elim_product_with_selector n pexpr (AnyC trep k) = do
 --
 -- Like for empty products, empty sums are also void* so that we can just use
 -- NULL and not allocate anything.
+--
 eval_intro_sum
   :: TypeRep ('Sum types)
   -> Variant CodeGen Val s types
@@ -975,13 +988,11 @@ eval_intro_sum
 eval_intro_sum (Sum_t All) it = case it of
   {}
 eval_intro_sum trep@(Sum_t (And _ _)) anyt = do
-  () <- sum_declare trep
-  specQual <- sum_spec_qual trep
-  let typeName = C.TypeName specQual Nothing
+  typeSpec <- sum_type_spec trep
+  let typeName = C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
   initList <- sum_field_inits anyt
   let pexpr = C.PostfixInits typeName initList
-      uexpr = C.UnaryOp C.UORef (postfixExprIsCastExpr pexpr)
-  type_rep_val trep (unaryExprIsCondExpr uexpr)
+  type_rep_val trep (postfixExprIsCondExpr pexpr)
 
 product_field_inits
   :: Natural
@@ -1018,7 +1029,7 @@ sum_tag_expr n (OrV there) = sum_tag_expr (n+1) there
 sum_tag_expr n (AnyV _) = do
   ident <- maybeError
     (CodeGenInternalError $ "sum_tag_expr invalid tag field " ++ show n)
-    (stringIdentifier ("tag_" ++ show n))
+    (pure (stringIdentifier ("tag_" ++ show n)))
   pure $ primExprIsCondExpr $ C.PrimIdent ident
 
 -- | The variant expression for a sum: it's a union literal, _without_ a
@@ -1057,7 +1068,7 @@ eval_elim_sum
   -> Expr ExprF CodeGen Val s ('Sum types)
   -> CodeGen s (Val s r)
 eval_elim_sum trep rrep cases cgt = do
-  () <- sum_declare trep
+  typeSpec <- sum_type_spec trep
   cgtVal <- eval_expr' cgt
   -- Our two declarations: scrutinee and result.
   -- Declaring the scrutinee is important, so that we don't _ever_ have a case
@@ -1069,12 +1080,12 @@ eval_elim_sum trep rrep cases cgt = do
   -- of the indirect accessor. The union, however, will be accessed using the
   -- direct dot accessor, for the struct itself contains the union directly.
   let tagPostfixExpr :: C.PostfixExpr
-      tagPostfixExpr = C.PostfixArrow
+      tagPostfixExpr = C.PostfixDot
         (condExprIsPostfixExpr (getVal scrutineeVal))
         ident_tag
       tagExpr :: C.Expr
       tagExpr = postfixExprIsExpr tagPostfixExpr
-      variantExpr = C.PostfixArrow
+      variantExpr = C.PostfixDot
         (condExprIsPostfixExpr (getVal scrutineeVal))
         ident_variant
   -- If the sum is empty, the result is a switch statement with no cases behind
@@ -1109,7 +1120,7 @@ declare_initialized prefix val = do
   --      declnSpecs     decln     init
   --
   let declnSpecs :: C.DeclnSpecs
-      declnSpecs = C.DeclnSpecsQual C.QConst $ Just (valSpecs val)
+      declnSpecs = C.DeclnSpecsQual C.QConst $ Just $ C.DeclnSpecsType (valSpecs val) Nothing
       declr :: C.Declr
       declr = C.Declr (valPtr val) (C.DirectDeclrIdent ident)
       cexpr :: C.CondExpr
@@ -1136,13 +1147,9 @@ declare_initialized prefix val = do
 declare_uninitialized :: String -> TypeRep t -> CodeGen s (C.Ident, Val s t)
 declare_uninitialized prefix trep = do
   ident <- fresh_binder prefix
-  let ptr = type_rep_ptr trep
-  declnSpecs <- decln_specs trep
-  let --declnSpecs = C.DeclnSpecsType C.TVoid Nothing
-      --ident = ident_eval
-      --ptr = Nothing
-      -- 'declare_initialized' puts a const here, but since this one is not
-      -- initialized, putting a const would be rather silly.
+  let ptr = type_ptr trep
+  typeSpec <- type_spec trep
+  let declnSpecs = C.DeclnSpecsType typeSpec Nothing
       declr :: C.Declr
       declr = C.Declr ptr (C.DirectDeclrIdent ident)
       initDeclr :: C.InitDeclr
@@ -1154,7 +1161,7 @@ declare_uninitialized prefix trep = do
   addBlockItem blockItem
   let val = Val
         { getVal   = identIsCondExpr ident
-        , valSpecs = declnSpecs
+        , valSpecs = typeSpec
         , valPtr   = ptr
         }
   pure (ident, val)
@@ -1173,10 +1180,10 @@ eval_elim_sum_cases n rrep tagExpr variantExpr resultIdent (AndC trep k cases) =
   -- case.
   tagIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
-    (stringIdentifier ("tag_" ++ show n))
+    (pure (stringIdentifier ("tag_" ++ show n)))
   variantIdent <- maybeError
     (CodeGenInternalError $ "eval_elim_sum_with_cases bad identifier")
-    (stringIdentifier ("variant_" ++ show n))
+    (pure (stringIdentifier ("variant_" ++ show n)))
   -- This block item is
   --
   --   case tagIdent:
@@ -1358,7 +1365,7 @@ simple_designator :: String -> CodeGen s C.Design
 simple_designator str = do
   ident <- maybeError
     (CodeGenInternalError $ "simple_designator bad identifier")
-    (stringIdentifier str)
+    (pure (stringIdentifier str))
   pure $ C.Design $ C.DesigrBase $ C.DesigrIdent ident
 
 -- | All numbers are put out in hex. C decimals are just harder to work with,
@@ -1403,7 +1410,7 @@ fresh_binder prefix = do
       bindName = prefix ++ "_" ++ show major ++ "_" ++ show minor
   ident <- maybeError
     (CodeGenInternalError $ "fresh_binder invalid " ++ show bindName)
-    (stringIdentifier bindName)
+    (pure (stringIdentifier bindName))
   CodeGen $ Trans.lift $ put st'
   pure ident
 
@@ -1417,98 +1424,42 @@ fresh_binder prefix = do
 -- information is contained here in the code generation state.
 --
 data CodeGenState = CodeGenState
-  { -- | C block items composing a compound statement which must be evaluated
+  { -- | C declarations in reverse order. This includes enum, union, and struct
+    -- declarations induced by compound types encountered during code
+    -- generation.
+    cgsDeclns :: ![C.Decln]
+    -- | C block items composing a compound statement which must be evaluated
     -- before the expression. It's in reverse order: head of list is the last
     -- to be evaluated.
     --
     -- In good faith this should be in a writer monad. CodeGen terms will never
     -- remove anything from this list.
-    cgsBlockItems :: ![C.BlockItem]
+  , cgsBlockItems :: ![C.BlockItem]
     -- | Scope information for making variable names.
   , cgsScope      :: !(NonEmpty Scope)
+    -- | Product types encountered.
   , cgsProducts   :: !(Map TypeIdentifier ProductDeclr)
+    -- | Sum types encountered.
   , cgsSums       :: !(Map TypeIdentifier SumDeclr)
   }
 
--- | Get all of the C enum, struct, and union declarations.
--- Order is important. Enums go first, then forward declarations of structs
--- and unions, then declarations. Since all structs and unions are referenced
--- through pointers, this corresponds to legit valid C (all sizes can be known
--- at compile time).
--- For structs representing sums, they must be declared only _after_ the union
--- for the variant, since these structs reference those unions directly (not
--- through a pointer). That invariant is maintained in this list, so respect
--- the order when generating concrete syntax.
-codeGenCompoundTypes :: CodeGenState -> [C.TypeSpec]
-codeGenCompoundTypes cgs =
-       fmap C.TEnum enums
-    ++ fmap C.TStructOrUnion forwardDeclns
-    ++ fmap C.TStructOrUnion declns
-  where
-  enums = concatMap sumEnum sums
-  forwardDeclns = concatMap productForw products ++ concatMap sumForw sums
-  declns = concatMap productDeclns products ++ concatMap sumDeclns sums
-  products = Map.elems (cgsProducts cgs)
-  sums = Map.elems (cgsSums cgs)
-  sumEnum :: SumDeclr -> [C.EnumSpec]
-  sumEnum sdeclr = [C.EnumSpec (Just (sdEnumIdent sdeclr)) (sdEnumrList sdeclr)]
-  productDeclns :: ProductDeclr -> [C.StructOrUnionSpec]
-  productDeclns pdeclr =
-    [ C.StructOrUnionDecln C.Struct (Just (pdStructIdent pdeclr)) (pdStructDeclnList pdeclr) ]
-  sumDeclns :: SumDeclr -> [C.StructOrUnionSpec]
-  sumDeclns sdeclr =
-    -- NB: order is actually crucial here. Since the struct references the union
-    -- directly (not through a pointer) we must declare the union first.
-    [ C.StructOrUnionDecln C.Union  (Just (sdUnionIdent  sdeclr)) (sdUnionDeclnList  sdeclr)
-    , C.StructOrUnionDecln C.Struct (Just (sdStructIdent sdeclr)) (sdStructDeclnList sdeclr)
-    ]
-  productForw :: ProductDeclr -> [C.StructOrUnionSpec]
-  productForw pdeclr = [C.StructOrUnionForwDecln C.Struct (pdStructIdent pdeclr)]
-  sumForw :: SumDeclr -> [C.StructOrUnionSpec]
-  sumForw sdeclr =
-    [ C.StructOrUnionForwDecln C.Struct (sdStructIdent sdeclr)
-    , C.StructOrUnionForwDecln C.Union (sdUnionIdent sdeclr)
-    ]
-
--- | Top-level declarations (types, externs, etc.)
---
--- TODO fix up when we have externs included
---
--- NB: we reverse the list because the C AST types are ordered as snoc lists.
-codeGenDeclns :: CodeGenState -> [C.Decln]
-codeGenDeclns = fmap mkDecln . reverse . codeGenCompoundTypes
-  where
-  mkDecln :: C.TypeSpec -> C.Decln
-  mkDecln ts = C.Decln (C.DeclnSpecsType ts Nothing) Nothing
-
--- | Top-level function definitions. Since we don't have an expression in
--- scope here, this obviously does not include the function which evaluates the
--- expression built by a CodeGen.
--- TODO will there be anything here ever? i.e. do we want/need to allow for
--- defining auxiliary functions?
-codeGenFunDefs :: CodeGenState -> [C.FunDef]
-codeGenFunDefs _ = []
-
 -- | The C translation unit for a CodeGenState. This is the type declarations,
+--
+-- Must give a function definition which serves as the "main" function for
+-- this CodeGen. This ensures we always have at least one declaration and
+-- therefore do indeed get a translation unit.
+--
 -- TODO extern declarations, followed by function definitions.
--- Of course, the unit could be empty, if there are no declarations.
-codeGenTransUnit :: CodeGenState -> Maybe C.TransUnit
-codeGenTransUnit cgs = mkTransUnit extDeclns
+codeGenTransUnit :: CodeGenState -> C.FunDef -> C.TransUnit
+codeGenTransUnit cgs mainFunDef = mkTransUnit (C.ExtFun mainFunDef NE.:| extDeclns)
   where
 
-  mkTransUnit :: [C.ExtDecln] -> Maybe C.TransUnit
-  mkTransUnit []     = Nothing
-  mkTransUnit (t:ts) = Just $ mkTransUnit' t ts
-
-  mkTransUnit' :: C.ExtDecln -> [C.ExtDecln] -> C.TransUnit
-  mkTransUnit' t []        = C.TransUnitBase t
-  mkTransUnit' t (t' : ts) = C.TransUnitCons (mkTransUnit' t' ts) t
+  mkTransUnit :: NonEmpty C.ExtDecln -> C.TransUnit
+  mkTransUnit (t NE.:| [])      = C.TransUnitBase t
+  mkTransUnit (t NE.:| (t':ts)) = C.TransUnitCons (mkTransUnit (t' NE.:| ts)) t
 
   extDeclns :: [C.ExtDecln]
-  extDeclns = fmap C.ExtDecln (codeGenDeclns cgs)
-
-  _funDefs :: [C.ExtDecln]
-  _funDefs = fmap C.ExtFun (codeGenFunDefs cgs)
+  extDeclns = fmap C.ExtDecln (cgsDeclns cgs)
 
 codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
 codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
@@ -1523,22 +1474,14 @@ blockItemList :: [C.BlockItem] -> Maybe C.BlockItemList
 blockItemList []             = Nothing
 blockItemList (item : items) = Just (blockItemListNE (item NE.:| items))
 
--- | A nonempty product is represented by a struct.
-data ProductDeclr = ProductDeclr
-  { pdStructDeclnList :: !C.StructDeclnList
-  , pdStructIdent     :: !C.Ident
-  }
+-- | The C declaration (not definition) of the type representing this product.
+data ProductDeclr = ProductDeclr { pdTypeSpec :: !C.TypeSpec }
 
--- | A nonempty sum is represented by a struct with a union and an enum to
--- disambiguate that union.
-data SumDeclr = SumDeclr
-  { sdStructIdent :: !C.Ident
-  , sdUnionIdent  :: !C.Ident
-  , sdEnumIdent   :: !C.Ident
-  , sdStructDeclnList :: !C.StructDeclnList
-  , sdUnionDeclnList  :: !C.StructDeclnList
-  , sdEnumrList       :: !C.EnumrList
-  }
+-- | The C declaration (not definition) of the type representing this sum.
+data SumDeclr = SumDeclr { sdTypeSpec :: !C.TypeSpec }
+
+data NonEmptyFields where
+  NonEmptyFields :: All TypeRep (ty ': tys) -> NonEmptyFields
 
 type TypeIdentifier = SomeTypeRep
 
@@ -1557,7 +1500,8 @@ type TypeIdentifier = SomeTypeRep
 --
 data Val (s :: Haskell.Type) (t :: Type) = Val
   { getVal   :: !C.CondExpr
-  , valSpecs :: !C.DeclnSpecs
+  -- TODO use CTypeInfo rather than these 2 fields.
+  , valSpecs :: !C.TypeSpec
   , valPtr   :: !(Maybe C.Ptr)
   }
 
@@ -1597,34 +1541,33 @@ evalCodeGen :: CodeGen s t -> (Either CodeGenError t, CodeGenState)
 evalCodeGen cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
   initialState = CodeGenState
-    { cgsBlockItems = []
+    { cgsDeclns     = []
+    , cgsBlockItems = []
     , cgsScope      = scope_init NE.:| []
     , cgsProducts   = mempty
     , cgsSums       = mempty
     }
 
+-- | Run a CodeGen term and generate a translation unit.
+-- It contains a function eval which evaluates the expression behind the
+-- `Val s t` and returns it. That C value will be completely standalone: no
+-- pointers in it. The translation unit includes everything that is needed in
+-- order to compute that value, nothing more.
 codeGen :: CodeGen s (Val s t) -> Either CodeGenError C.TransUnit
 codeGen cg = fmap mkTransUnit outcome
   where
   (outcome, cgs) = evalCodeGen cg
   mkTransUnit :: Val s t -> C.TransUnit
-  mkTransUnit val = case codeGenTransUnit cgs of
-    Nothing -> C.TransUnitBase (C.ExtFun (mainFun val cgs))
-    Just tu -> C.TransUnitCons tu (C.ExtFun (mainFun val cgs))
+  mkTransUnit val = codeGenTransUnit cgs (mainFun val cgs) 
   -- This function computes the expression.
-  -- We must take care to never return a pointer (we do not heap allocate
-  -- anything). In case the resulting thing is a compound type, we dereference
-  -- it as many times as necessary to make it not a pointer.
   -- TODO we'll want to factor this out and re-use it if we decide to allow
   -- for the expression of subroutines.
   mainFun :: Val s t -> CodeGenState -> C.FunDef
   mainFun val cgs' =
     let declnSpecs :: C.DeclnSpecs
-        declnSpecs = valSpecs val
+        declnSpecs = C.DeclnSpecsType (valSpecs val) Nothing
         expr :: C.CondExpr
-        expr = dereference (valPtr val) (getVal val)
-        -- second argument is Nothing: it's _never_ a pointer, even if the
-        -- returned thing is a pointer (we dereference it).
+        expr = getVal val
         declr :: C.Declr
         declr = C.Declr Nothing $ C.DirectDeclrFun2
           (C.DirectDeclrIdent ident_eval)
@@ -1640,6 +1583,9 @@ codeGen cg = fmap mkTransUnit outcome
           Just bil -> C.BlockItemCons bil exprBlockItem
     in  C.FunDef declnSpecs declr args compoundStmt
 
+-- | Dereferences a CondExpr as many times as necessary according to the ptr
+-- argument (assumes the CondExpr represents something of type with that many
+-- pointers).
 dereference :: Maybe C.Ptr -> C.CondExpr -> C.CondExpr
 dereference Nothing cexpr = cexpr
 dereference (Just (C.PtrBase _))     cexpr = unaryExprIsCondExpr $
@@ -1650,7 +1596,12 @@ dereference (Just (C.PtrCons _ ptr)) cexpr = unaryExprIsCondExpr $
 codeGenToFile :: String -> CodeGen s (Val s t) -> IO ()
 codeGenToFile fp cg = case codeGen cg of
   Left  err       -> throwIO (userError (show err))
-  Right transUnit -> writeFile fp (prettyPrint transUnit)
+  Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
+  where
+  includes = mconcat
+    [ "#include <stdint.h>\n"
+    , "#include <stdio.h>\n"
+    ]
 
 codeGenError :: CodeGenError -> CodeGen s x
 codeGenError err = CodeGen (throwE err)
@@ -1660,107 +1611,111 @@ maybeError err act = do
   x <- act
   maybe (codeGenError err) pure x
 
+assertValidIdentifier :: String -> Maybe C.Ident -> C.Ident
+assertValidIdentifier msg Nothing  = error msg
+assertValidIdentifier _   (Just i) = i
+
 -- | Make a C identifier from a string. Will fail if the string is malformed
 -- w.r.t. valid C identifiers.
-stringIdentifier :: forall s . String -> CodeGen s (Maybe C.Ident)
-stringIdentifier [] = pure Nothing
+stringIdentifier :: forall s . String -> Maybe C.Ident
+stringIdentifier []       = Nothing
 stringIdentifier (c : cs) = go (NE.reverse (c NE.:| cs))
   where
-  go :: NonEmpty Char -> CodeGen s (Maybe C.Ident)
+  go :: NonEmpty Char -> Maybe C.Ident
   -- First character (end of list) must not be a digit).
-  go (c' NE.:| []) = (fmap . fmap) (C.IdentBase . C.IdentNonDigit) (cNonDigit c')
+  go (c' NE.:| []) = fmap (C.IdentBase . C.IdentNonDigit) (cNonDigit c')
   -- Any other character (not the first) can be a digit or non digit.
-  go (c' NE.:| (d : cs')) = do
-    it <- cDigitOrNonDigit c'
-    case it of
-      Nothing -> pure Nothing
-      Just (Left digit) -> do
-        mRest <- go (d NE.:| cs')
-        pure $ fmap (\rest -> C.IdentCons rest digit) mRest
-      Just (Right nonDigit) -> do
-        mRest <- go (d NE.:| cs')
-        pure $ fmap (\rest -> C.IdentConsNonDigit rest (C.IdentNonDigit nonDigit)) mRest
+  go (c' NE.:| (d : cs')) =
+    let !it = cDigitOrNonDigit c'
+    in  case it of
+          Nothing -> Nothing
+          Just (Left digit) ->
+            let !mRest = go (d NE.:| cs')
+            in  fmap (\rest -> C.IdentCons rest digit) mRest
+          Just (Right nonDigit) ->
+            let !mRest = go (d NE.:| cs')
+            in  fmap (\rest -> C.IdentConsNonDigit rest (C.IdentNonDigit nonDigit)) mRest
 
-symbolIdentifier :: forall name s . KnownSymbol name => Proxy name -> CodeGen s (Maybe C.Ident)
+symbolIdentifier :: forall name s . KnownSymbol name => Proxy name -> Maybe C.Ident
 symbolIdentifier p = stringIdentifier (symbolVal p)
 
-cDigitOrNonDigit :: Char -> CodeGen s (Maybe (Either C.Digit C.NonDigit))
-cDigitOrNonDigit c = do
-  mDigit <- (fmap . fmap) Left (cDigit c)
-  case mDigit of
-    Just d -> pure (Just d)
-    Nothing -> (fmap . fmap) Right (cNonDigit c)
+cDigitOrNonDigit :: Char -> Maybe (Either C.Digit C.NonDigit)
+cDigitOrNonDigit c =
+  let !mDigit = fmap Left (cDigit c)
+  in  case mDigit of
+        Just d -> Just d
+        Nothing -> fmap Right (cNonDigit c)
 
-cNonDigit :: Char -> CodeGen s (Maybe C.NonDigit)
+cNonDigit :: Char -> Maybe C.NonDigit
 cNonDigit c = case c of
-  '_' -> pure . pure $ C.NDUnderscore
-  'a' -> pure . pure $ C.NDa
-  'b' -> pure . pure $ C.NDb
-  'c' -> pure . pure $ C.NDc
-  'd' -> pure . pure $ C.NDd
-  'e' -> pure . pure $ C.NDe
-  'f' -> pure . pure $ C.NDf
-  'g' -> pure . pure $ C.NDg
-  'h' -> pure . pure $ C.NDh
-  'i' -> pure . pure $ C.NDi
-  'j' -> pure . pure $ C.NDj
-  'k' -> pure . pure $ C.NDk
-  'l' -> pure . pure $ C.NDl
-  'm' -> pure . pure $ C.NDm
-  'n' -> pure . pure $ C.NDn
-  'o' -> pure . pure $ C.NDo
-  'p' -> pure . pure $ C.NDp
-  'q' -> pure . pure $ C.NDq
-  'r' -> pure . pure $ C.NDr
-  's' -> pure . pure $ C.NDs
-  't' -> pure . pure $ C.NDt
-  'u' -> pure . pure $ C.NDu
-  'v' -> pure . pure $ C.NDv
-  'w' -> pure . pure $ C.NDw
-  'x' -> pure . pure $ C.NDx
-  'y' -> pure . pure $ C.NDy
-  'z' -> pure . pure $ C.NDz
-  'A' -> pure . pure $ C.NDA
-  'B' -> pure . pure $ C.NDB
-  'C' -> pure . pure $ C.NDC
-  'D' -> pure . pure $ C.NDD
-  'E' -> pure . pure $ C.NDE
-  'F' -> pure . pure $ C.NDF
-  'G' -> pure . pure $ C.NDG
-  'H' -> pure . pure $ C.NDH
-  'I' -> pure . pure $ C.NDI
-  'J' -> pure . pure $ C.NDJ
-  'K' -> pure . pure $ C.NDK
-  'L' -> pure . pure $ C.NDL
-  'M' -> pure . pure $ C.NDM
-  'N' -> pure . pure $ C.NDN
-  'O' -> pure . pure $ C.NDO
-  'P' -> pure . pure $ C.NDP
-  'Q' -> pure . pure $ C.NDQ
-  'R' -> pure . pure $ C.NDR
-  'S' -> pure . pure $ C.NDS
-  'T' -> pure . pure $ C.NDT
-  'U' -> pure . pure $ C.NDU
-  'V' -> pure . pure $ C.NDV
-  'W' -> pure . pure $ C.NDW
-  'X' -> pure . pure $ C.NDx
-  'Y' -> pure . pure $ C.NDZ
-  'Z' -> pure . pure $ C.NDZ
-  _   -> pure Nothing
+  '_' -> pure $ C.NDUnderscore
+  'a' -> pure $ C.NDa
+  'b' -> pure $ C.NDb
+  'c' -> pure $ C.NDc
+  'd' -> pure $ C.NDd
+  'e' -> pure $ C.NDe
+  'f' -> pure $ C.NDf
+  'g' -> pure $ C.NDg
+  'h' -> pure $ C.NDh
+  'i' -> pure $ C.NDi
+  'j' -> pure $ C.NDj
+  'k' -> pure $ C.NDk
+  'l' -> pure $ C.NDl
+  'm' -> pure $ C.NDm
+  'n' -> pure $ C.NDn
+  'o' -> pure $ C.NDo
+  'p' -> pure $ C.NDp
+  'q' -> pure $ C.NDq
+  'r' -> pure $ C.NDr
+  's' -> pure $ C.NDs
+  't' -> pure $ C.NDt
+  'u' -> pure $ C.NDu
+  'v' -> pure $ C.NDv
+  'w' -> pure $ C.NDw
+  'x' -> pure $ C.NDx
+  'y' -> pure $ C.NDy
+  'z' -> pure $ C.NDz
+  'A' -> pure $ C.NDA
+  'B' -> pure $ C.NDB
+  'C' -> pure $ C.NDC
+  'D' -> pure $ C.NDD
+  'E' -> pure $ C.NDE
+  'F' -> pure $ C.NDF
+  'G' -> pure $ C.NDG
+  'H' -> pure $ C.NDH
+  'I' -> pure $ C.NDI
+  'J' -> pure $ C.NDJ
+  'K' -> pure $ C.NDK
+  'L' -> pure $ C.NDL
+  'M' -> pure $ C.NDM
+  'N' -> pure $ C.NDN
+  'O' -> pure $ C.NDO
+  'P' -> pure $ C.NDP
+  'Q' -> pure $ C.NDQ
+  'R' -> pure $ C.NDR
+  'S' -> pure $ C.NDS
+  'T' -> pure $ C.NDT
+  'U' -> pure $ C.NDU
+  'V' -> pure $ C.NDV
+  'W' -> pure $ C.NDW
+  'X' -> pure $ C.NDx
+  'Y' -> pure $ C.NDZ
+  'Z' -> pure $ C.NDZ
+  _   -> Nothing
 
-cDigit :: Char -> CodeGen s (Maybe C.Digit)
+cDigit :: Char -> Maybe C.Digit
 cDigit c = case c of
-  '0' -> pure . pure $ C.DZero
-  '1' -> pure . pure $ C.DOne
-  '2' -> pure . pure $ C.DTwo
-  '3' -> pure . pure $ C.DThree
-  '4' -> pure . pure $ C.DFour
-  '5' -> pure . pure $ C.DFive
-  '6' -> pure . pure $ C.DSix
-  '7' -> pure . pure $ C.DSeven
-  '8' -> pure . pure $ C.DEight
-  '9' -> pure . pure $ C.DNine
-  _   -> pure Nothing
+  '0' -> pure $ C.DZero
+  '1' -> pure $ C.DOne
+  '2' -> pure $ C.DTwo
+  '3' -> pure $ C.DThree
+  '4' -> pure $ C.DFour
+  '5' -> pure $ C.DFive
+  '6' -> pure $ C.DSix
+  '7' -> pure $ C.DSeven
+  '8' -> pure $ C.DEight
+  '9' -> pure $ C.DNine
+  _   -> Nothing
 
 -- TODO
 -- making decimal digits is surprising difficult to do without partial
@@ -1846,6 +1801,11 @@ hexDigits n = m NE.:| ms
     14 -> C.HexE
     15 -> C.HexF
     _ -> error "hexDigits impossible case"
+
+append_ident :: C.Ident -> C.Ident -> C.Ident
+append_ident left (C.IdentBase idnd) = C.IdentConsNonDigit left idnd
+append_ident left (C.IdentConsNonDigit right idnd) = C.IdentConsNonDigit (append_ident left right) idnd
+append_ident left (C.IdentCons right idd) = C.IdentCons (append_ident left right) idd
 
 -- | "uint8_t"
 ident_uint8_t :: C.Ident
@@ -2106,3 +2066,24 @@ ident_variant =
     )
     (C.IdentNonDigit C.NDt)
 
+-- | "_static"
+ident__static :: C.Ident
+ident__static =
+  C.IdentConsNonDigit
+    (C.IdentConsNonDigit
+      (C.IdentConsNonDigit
+        (C.IdentConsNonDigit
+          (C.IdentConsNonDigit
+            (C.IdentConsNonDigit
+              (C.IdentBase (C.IdentNonDigit C.NDUnderscore))
+              (C.IdentNonDigit C.NDs)
+            )
+            (C.IdentNonDigit C.NDt)
+          )
+          (C.IdentNonDigit C.NDa)
+        )
+        (C.IdentNonDigit C.NDt)
+      )
+      (C.IdentNonDigit C.NDi)
+    )
+    (C.IdentNonDigit C.NDc)
