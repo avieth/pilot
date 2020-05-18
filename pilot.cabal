@@ -13,7 +13,8 @@ maintainer:          aovieth@gmail.com
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Pilot.EDSL.Lifted
+  exposed-modules:     Pilot.EDSL.Expr
+                       Pilot.EDSL.Lifted
                        Pilot.EDSL.Fun
                        Pilot.EDSL.Point
 
