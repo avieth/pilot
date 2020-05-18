@@ -26,7 +26,10 @@ module Pilot.EDSL.Point
   ( Expr (..)
   , exprF
   , value
+  , valueF
   , evalInMonad
+
+  , Static (..)
 
   , Type (..)
   , TypeRep (..)
@@ -36,10 +39,20 @@ module Pilot.EDSL.Point
 
   , ExprF (..)
   , All (..)
-  , Fields (..)
-  , Variant (..)
+  , mapAll
+  , traverseAll
+  , zipAll
+  , anyOfAll
+  , Any (..)
+  , mapAny
+  , traverseAny
+  , Field (..)
   , Selector (..)
-  , Cases (..)
+  , Case (..)
+  , forAll
+  , allFields
+  , allSelectors
+  , allCases
 
   , IntegerLiteral (..)
 
@@ -97,12 +110,6 @@ module Pilot.EDSL.Point
   , cmp
 
   , local
-  , lift
-  , constant
-  , join
-  , drop
-  , shift
-  , memory
 
   , Unit
   , unit_t
@@ -148,9 +155,7 @@ import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
-import Pilot.Types.Nat
 import Pilot.Types.Represented
-import Pilot.EDSL.Fun as Fun
 
 -- | The user-facing DSL.
 --
@@ -204,11 +209,17 @@ newtype Expr
             -> f s (val s t)
   }
 
+newtype Static (f :: Haskell.Type -> k -> Haskell.Type) (t :: k) = Static
+  { getStatic :: forall x . f x t }
+
 -- | Put an existing value into an expression. Note the `s` parameter, which
 -- ensures the value came from within the same expression context, for instance
 -- from a `local` binding.
 value :: val s t -> Expr exprF f val s t
 value v = Expr $ \_interp _map pure' _join -> pure' v
+
+valueF :: f s (val s t) -> Expr exprF f val s t
+valueF v = Expr $ \_ _ _ _ -> v
 
 -- TODO TBD whether we actually would want Expr to be a
 -- functor/applicative/monad. I don't think it's useful at all.
@@ -254,7 +265,6 @@ data Type where
   Rational :: Type
   Product  :: [Type] -> Type
   Sum      :: [Type] -> Type
-  Stream   :: Nat -> Type -> Type
 
 instance Represented Type where
   type Rep Type = TypeRep
@@ -356,8 +366,6 @@ data TypeRep (t :: Type) where
   Product_t :: All TypeRep tys -> TypeRep ('Product tys)
   Sum_t     :: All TypeRep tys -> TypeRep ('Sum tys)
 
-  Stream_t  :: NatRep nat -> TypeRep ty -> TypeRep ('Stream nat ty)
-
 -- | Analagous to GHC Haskell's SomeTypeRep from Data.Typeable.
 -- We're interested in having this because it's Eq and Ord (i.e. you can put
 -- it into a Map).
@@ -404,12 +412,7 @@ instance Ord SomeTypeRep where
   SomeTypeRep (Product_t _) `compare` _ = GT
 
   SomeTypeRep (Sum_t s) `compare` SomeTypeRep (Sum_t r) = compare_compound s r
-  SomeTypeRep (Sum_t _) `compare` SomeTypeRep (Stream_t _ _) = LT
   SomeTypeRep (Sum_t _) `compare` _ = GT
-
-  SomeTypeRep (Stream_t n s) `compare` SomeTypeRep (Stream_t n' s') =
-    (SomeNatRep n, SomeTypeRep s) `compare` (SomeNatRep n', SomeTypeRep s')
-  SomeTypeRep (Stream_t _ _) `compare` _ = GT
 
 -- | An ordering on lists of 'TypeRep's.
 --
@@ -466,9 +469,6 @@ instance (KnownType t, KnownType ('Sum ts))
   typeRep _ =
     let Sum_t theRest = typeRep (Proxy :: Proxy ('Sum ts))
     in  Sum_t (And (typeRep (Proxy :: Proxy t)) theRest)
-
-instance (KnownNat n, KnownType t) => KnownType ('Stream n t) where
-  typeRep _ = Stream_t (natRep (Proxy :: Proxy n)) (typeRep (Proxy :: Proxy t))
 
 data PrimOpF
   (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
@@ -586,26 +586,29 @@ data ExprF
 
   -- Compound data: algebraic datatypes
 
-  -- TODO intro should take `Expr f val s . val s` rather than `val s`.
+  IntroProduct :: TypeRep ('Product fields)
+               -> All (Field (Expr ExprF f val s)) fields
+               -> ExprF f val s ('Product fields)
 
-  IntroProduct :: TypeRep ('Product types)
-               -> Fields f val s types
-               -> ExprF f val s ('Product types)
+  -- IntroSum and ElimProduct have good symmetry. Not so much for IntroProduct
+  -- and ElimSum.
 
-  IntroSum     :: TypeRep ('Sum types)
-               -> Variant f val s types
-               -> ExprF f val s ('Sum types)
+  IntroSum     :: TypeRep ('Sum variants)
+               -> TypeRep variant
+               -> Any (Selector (Expr ExprF f val s)) variants variant
+               -> Expr ExprF f val s variant
+               -> ExprF f val s ('Sum variants)
 
-  ElimProduct :: TypeRep ('Product types)
+  ElimProduct :: TypeRep ('Product fields)
+              -> TypeRep field
+              -> Any (Selector (Expr ExprF f val s)) fields field
+              -> Expr ExprF f val s ('Product fields)
+              -> ExprF f val s field
+
+  ElimSum     :: TypeRep ('Sum variants)
               -> TypeRep r
-              -> Selector f val s types r
-              -> Expr ExprF f val s ('Product types)
-              -> ExprF f val s r
-
-  ElimSum     :: TypeRep ('Sum types)
-              -> TypeRep r
-              -> Cases f val s types r
-              -> Expr ExprF f val s ('Sum types)
+              -> All (Case (Expr ExprF f val s) r) variants
+              -> Expr ExprF f val s ('Sum variants)
               -> ExprF f val s r
 
   -- Explicit binding, so that the programmer may control sharing.
@@ -615,113 +618,90 @@ data ExprF
         -> (Expr ExprF f val s t -> Expr ExprF f val s r)
         -> ExprF f val s r
 
-  -- NB: no NatRep needed; this stream has a prefix of arbitrary size, since it
-  -- is "pure"/"timeless".
-  ConstantStream :: TypeRep t
-                 -> Expr ExprF f val s t
-                 -> ExprF f val s ('Stream n t)
-
-  -- | Any first-order function within expr can be "lifted" so that all of its
-  -- arguments and its results are now streams. It must be fully applied, since
-  -- this language does not have functions. Makes sense: all of the other
-  -- expressions which take parameters are fully applied (intro/elim,
-  -- arithmetic, etc).
-  --
-  -- NB: this also expresses "pure" or constant streams, when the argument list
-  -- is empty.
-  -- TODO maybe that's not a good idea though?
-  LiftStream :: NatRep n
-             -> Args TypeRep args
-             -> (Args (Expr ExprF f val s) args -> Expr ExprF f val s r)
-             -- ^ The function being lifted.
-             -> Args (Expr ExprF f val s) (MapArgs ('Stream n) args)
-             -- ^ The arguments to the lifted function, but their types now have
-             -- Stream n applied out front.
-             -- An interpretation of this term therefore must be able to
-             -- use `Stream n t` wherever `t` is required, so long as the result
-             -- also has `Stream n` in front. This is like applicative functor
-             -- style.
-             -> ExprF f val s ('Stream n r)
-
-  JoinStream :: TypeRep t
-             -> NatRep n
-             -> Expr ExprF f val s ('Stream n ('Stream n t))
-             -> ExprF f val s ('Stream n t)
-
-  DropStream :: TypeRep t
-             -> NatRep n
-             -> Expr ExprF f val s ('Stream ('S n) t)
-             -> ExprF f val s ('Stream n t)
-
-  -- Like DropStream it lowers the nat index, but the value at an instant of the
-  -- stream doesn't change. This just says that a stream with more memory can
-  -- stand in for a stream with less memory, whereas DropStream says that we
-  -- can forget memory.
-  ShiftStream :: TypeRep t
-              -> NatRep ('S n)
-              -> Expr ExprF f val s ('Stream ('S n) t)
-              -> ExprF f val s ('Stream n t)
-
-  -- | This is how memory is introduced into a program: give 1 or more initial
-  -- values, then define the rest of the stream (possibly using those values).
-  -- Notice that the stream given in the continuation is 1 less than the number
-  -- of values given. That's because the latest/current value of the stream
-  -- must not be used there, else it would be circular. If, for example, 1
-  -- initial value is given, then DropStream allows us to take the latest value
-  -- (not the one in memory), but we wouldn't want to be able to do that within
-  -- the definition of the current value itself (i.e. the continuation here).
-  MemoryStream :: TypeRep t
-               -> NatRep ('S n)
-               -> Vec ('S n) (Expr ExprF f val s t)
-               -> (Expr ExprF f val s ('Stream n t) -> Expr ExprF f val s ('Stream 'Z t))
-               -> ExprF f val s ('Stream ('S n) t)
-
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
   All :: All f '[]
   And :: f t -> All f ts -> All f (t ': ts)
 
-data Fields
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> k -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (ts :: [k])
-  where
-  AllF :: Fields f val s '[]
-  AndF :: Expr ExprF f val s t -> Fields f val s ts -> Fields f val s (t ': ts)
+mapAll :: (forall t . f t -> g t) -> All f ts -> All g ts
+mapAll _ All = All
+mapAll h (And t as) = And (h t) (mapAll h as)
 
-data Variant
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> k -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (ts :: [k])
-  where
-  AnyV :: Expr ExprF f val s t -> Variant f val s (t ': ts)
-  OrV  :: Variant f val s ts -> Variant f val s (t ': ts)
+traverseAll :: Applicative m => (forall t . f t -> m (g t)) -> All f ts -> m (All g ts)
+traverseAll h All = pure All
+traverseAll h (And t ts) = And <$> h t <*> traverseAll h ts
 
-data Selector
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> k -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (ts  :: [k])
-  (r   :: k)
-  where
-  AnyC :: TypeRep t
-       -> (Expr ExprF f val s t -> Expr ExprF f val s r)
-       -> Selector f val s (t ': ts) r
-  OrC  :: Selector f val s ts r -> Selector f val s (t ': ts) r
+zipAll
+  :: (forall x . f x -> g x -> h x)
+  -> All f ts
+  -> All g ts
+  -> All h ts
+zipAll _ All All = All
+zipAll f (And fx fs) (And gx gs) = And (f fx gx) (zipAll f fs gs)
 
-data Cases
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> k -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (ts  :: [k])
-  (r   :: k)
+anyOfAll :: (forall t . f t -> Bool) -> All f ts -> Bool
+anyOfAll p All = False
+anyOfAll p (And t ts) = p t || anyOfAll p ts
+
+data Any (f :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
+  Any :: f t -> Any f (t ': ts) t
+  Or  :: Any f ts r -> Any f (t ': ts) r
+
+mapAny :: (forall t . f t -> g t) -> Any f ts r -> Any g ts r
+mapAny h (Any t) = Any (h t)
+mapAny h (Or as) = Or (mapAny h as)
+
+traverseAny :: Functor m => (forall t . f t -> m (g t)) -> Any f ts r -> m (Any g ts r)
+traverseAny h (Any t) = Any <$> h t
+traverseAny h (Or as) = Or <$> traverseAny h as
+
+data Field (f :: k -> Haskell.Type) (t :: k) where
+  Field :: TypeRep t -> f t -> Field f t
+
+data Selector (f :: k -> Haskell.Type) (t :: k) where
+  Selector :: Selector f t
+
+data Case (f :: k -> Haskell.Type) (r :: k) (t :: k) where
+  Case :: TypeRep t -> (f t -> f r) -> Case f r t
+
+-- | For each of the conjuncts, pick out that conjunct in a disjunction.
+--
+-- This is useful for getting all of the eliminators of a given product, or
+-- all of the introducers of a given sum.
+--
+-- TODO better name?
+forAll
+  :: forall f g ts .
+     (forall x . f x -> g x)
+  -> All f ts
+  -> All (Any g ts) ts
+forAll h alls = go alls id
   where
-  AllC :: Cases f val s '[] r
-  AndC :: TypeRep t
-       -> (Expr ExprF f val s t -> Expr ExprF f val s r)
-       -> Cases f val s ts r
-       -> Cases f val s (t ': ts) r
+  go :: forall ts' .
+        All f ts'
+     -> (forall r . Any g ts' r -> Any g ts r)
+     -> All (Any g ts) ts'
+  go All        _ = All
+  go (And t ts) k = And (k (Any (h t))) (go ts (\a -> k (Or a)))
+
+allFields
+  :: forall f ts .
+     (forall x . TypeRep x -> f x)
+  -> All TypeRep ts
+  -> All (Any (Field f) ts) ts
+allFields f = forAll (\trep -> Field trep (f trep))
+
+allSelectors
+  :: forall f ts .
+     All TypeRep ts
+  -> All (Any (Selector f) ts) ts
+allSelectors = forAll (\_ -> Selector)
+
+allCases
+  :: forall f ts r .
+     (forall x . TypeRep x -> f x -> f r)
+  -> All TypeRep ts
+  -> All (Any (Case f r) ts) ts
+allCases f = forAll (\trep -> Case trep (f trep))
 
 -- Some examples of 'Type's and 'TypeRep's
 
@@ -766,7 +746,7 @@ unit_t = Product_t All
 
 -- | An empty product can be introduced, but it cannot be eliminated.
 unit :: Expr ExprF f val s Unit
-unit = exprF $ IntroProduct unit_t AllF
+unit = exprF $ IntroProduct unit_t All
 
 type Void = 'Sum '[]
 
@@ -775,7 +755,7 @@ void_t = Sum_t All
 
 -- | An empty sum can be eliminated, but it cannot be introduced.
 absurd :: TypeRep x -> Expr ExprF f val s Void -> Expr ExprF f val s x
-absurd x_t void = exprF $ ElimSum void_t x_t AllC void
+absurd x_t void = exprF $ ElimSum void_t x_t All void
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
 -- stands for true. An interpreter may need to know that. A C backend could,
@@ -786,10 +766,10 @@ boolean_t :: TypeRep Boolean
 boolean_t = Sum_t (And unit_t $ And unit_t $ All)
 
 true :: Expr ExprF f val s Boolean
-true = exprF $ IntroSum boolean_t (AnyV unit)
+true = exprF $ IntroSum boolean_t unit_t (Any $ Selector) unit
 
 false :: Expr ExprF f val s Boolean
-false = exprF $ IntroSum boolean_t (OrV $ AnyV unit)
+false = exprF $ IntroSum boolean_t unit_t (Or $ Any $ Selector) unit
 
 elim_boolean
   :: forall val f s r .
@@ -799,7 +779,7 @@ elim_boolean
   -> Expr ExprF f val s r
   -> Expr ExprF f val s r
 elim_boolean trep vb cTrue cFalse = exprF $ ElimSum boolean_t trep
-  (AndC unit_t (\_ -> cTrue) $ AndC unit_t (\_ -> cFalse) $ AllC)
+  (And (Case unit_t (\_ -> cTrue)) $ And (Case unit_t (\_ -> cFalse)) $ All)
   vb
 
 if_else
@@ -823,13 +803,13 @@ cmp :: TypeRep ('Integer signedness width)
 cmp tr x y = exprF $ PrimOp $ Relative $ Cmp tr x y
 
 lt :: Expr ExprF f val s Ordering
-lt = exprF $ IntroSum ordering_t (AnyV unit)
+lt = exprF $ IntroSum ordering_t unit_t (Any $ Selector) unit
 
 eq :: Expr ExprF f val s Ordering
-eq = exprF $ IntroSum ordering_t (OrV $ AnyV unit)
+eq = exprF $ IntroSum ordering_t unit_t (Or $ Any $ Selector) unit
 
 gt :: Expr ExprF f val s Ordering
-gt = exprF $ IntroSum ordering_t (OrV $ OrV $ AnyV unit)
+gt = exprF $ IntroSum ordering_t unit_t (Or $ Or $ Any $ Selector) unit
 
 elim_ordering
   :: forall val f s r .
@@ -840,7 +820,7 @@ elim_ordering
   -> Expr ExprF f val s r
   -> Expr ExprF f val s r
 elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
-  (AndC unit_t (\_ -> cLt) $ AndC unit_t (\_ -> cEq) $ AndC unit_t (\_ -> cGt) $ AllC)
+  (And (Case unit_t (\_ -> cLt)) $ And (Case unit_t (\_ -> cEq)) $ And (Case unit_t (\_ -> cGt)) $ All)
   vo
 
 type Pair (s :: Type) (t :: Type) = 'Product '[ s, t]
@@ -853,14 +833,15 @@ pair :: TypeRep a
      -> Expr ExprF f val s a
      -> Expr ExprF f val s b
      -> Expr ExprF f val s (Pair a b)
-pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb) (AndF va $ AndF vb $ AllF)
+pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb)
+  (And (Field ta va) $ And (Field tb vb) $ All)
 
 fst :: TypeRep a
     -> TypeRep b
     -> Expr ExprF f val s (Pair a b)
     -> Expr ExprF f val s a
 fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta
-  (AnyC ta (\it -> it))
+  (Any Selector)
   vp
 
 snd :: TypeRep a
@@ -868,7 +849,7 @@ snd :: TypeRep a
     -> Expr ExprF f val s (Pair a b)
     -> Expr ExprF f val s b
 snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb
-  (OrC $ AnyC tb (\it -> it))
+  (Or $ Any Selector)
   vp
 
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
@@ -877,10 +858,10 @@ maybe_t :: TypeRep t -> TypeRep (Maybe t)
 maybe_t t = Sum_t (And unit_t $ And t $ All)
 
 just :: TypeRep t -> Expr ExprF f val s t -> Expr ExprF f val s (Maybe t)
-just tt t = exprF $ IntroSum (maybe_t tt) (OrV (AnyV t))
+just tt t = exprF $ IntroSum (maybe_t tt) tt (Or (Any Selector)) t
 
 nothing :: TypeRep t -> Expr ExprF f val s (Maybe t)
-nothing tt = exprF $ IntroSum (maybe_t tt) (AnyV unit)
+nothing tt = exprF $ IntroSum (maybe_t tt) unit_t (Any Selector) unit
 
 elim_maybe
   :: forall val f s t r .
@@ -891,7 +872,7 @@ elim_maybe
   -> (Expr ExprF f val s t    -> Expr ExprF f val s r)
   -> Expr ExprF f val s r
 elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
-  (AndC unit_t cNothing $ AndC trt cJust $ AllC)
+  (And (Case unit_t cNothing) $ And (Case trt cJust) $ All)
   v
   where
   trs = maybe_t trt
@@ -909,14 +890,14 @@ left
   -> TypeRep b
   -> Expr ExprF f val s a
   -> Expr ExprF f val s (Either a b)
-left ta tb va = exprF $ IntroSum (either_t ta tb) (AnyV va)
+left ta tb va = exprF $ IntroSum (either_t ta tb) ta (Any Selector) va
 
 right
   :: TypeRep a
   -> TypeRep b
   -> Expr ExprF f val s b
   -> Expr ExprF f val s (Either a b)
-right ta tb vb = exprF $ IntroSum (either_t ta tb) (OrV (AnyV vb))
+right ta tb vb = exprF $ IntroSum (either_t ta tb) tb (Or (Any (Selector))) vb
 
 elim_either
   :: forall a b c f val s .
@@ -927,9 +908,9 @@ elim_either
   -> (Expr ExprF f val s a -> Expr ExprF f val s c)
   -> (Expr ExprF f val s b -> Expr ExprF f val s c)
   -> Expr ExprF f val s c
-elim_either tra trb trc val cLeft cRight = exprF $ ElimSum (either_t tra trb) trc
-  (AndC tra cLeft $ AndC trb cRight $ AllC)
-  val
+elim_either tra trb trc v cLeft cRight = exprF $ ElimSum (either_t tra trb) trc
+  (And (Case tra cLeft) $ And (Case trb cRight) $ All)
+  v
 
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
@@ -1034,64 +1015,4 @@ local
   -> Expr ExprF f val s t
   -> (Expr ExprF f val s t -> Expr ExprF f val s r)
   -> Expr ExprF f val s r
-local trt trr val k = exprF (Local trt trr val k)
-
--- TODO remove? probably not useful. 'lift' seems like a better type from a
--- usability perspective.
-lift_ :: NatRep n
-      -> Args TypeRep ts
-      -> (Args (Expr ExprF f val s) ts -> Expr ExprF f val s r)
-      -> Args (Expr ExprF f val s) (MapArgs ('Stream n) ts)
-      -> Expr ExprF f val s ('Stream n r)
-lift_ nrep argsrep f args = exprF $ LiftStream nrep argsrep f args
-
--- | Any first-order function over expressions can be "lifted" over streams:
--- all of the arguments and the result become streams.
---
--- This is like typical applicative functor style in Haskell. Such things cannot
--- be done directly in this EDSL, because it doesn't have functions.
-lift :: NatRep n
-     -> Args TypeRep ts
-     -> Fun (Expr ExprF f val s) ('Sig ts r)
-     -> Fun (Expr ExprF f val s) (Fun.Lift ('Stream n) ('Sig ts r))
-lift nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
-  exprF $ LiftStream nrep argsrep (Fun.apply f) sargs
-
--- | "Lift" the argument type reps into streams for a given prefix length.
-mkStreamRep :: NatRep n -> Args TypeRep ts -> Args TypeRep (MapArgs ('Stream n) ts)
-mkStreamRep _    Args            = Args
-mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
-
-constant :: TypeRep t
-         -> Expr ExprF f val s t
-         -> Expr ExprF f val s ('Stream n t)
--- NB if we had a NatRep we could do this:
---   constant trep t = Fun.unval (lift nrep Args (Val t))
--- but it wouldn't be good to have to specify a prefix size for constant
--- streams.
-constant trep t = exprF $ ConstantStream trep t
-
-join :: TypeRep t
-     -> NatRep n
-     -> Expr ExprF f val s ('Stream n ('Stream n t))
-     -> Expr ExprF f val s ('Stream n t)
-join trep nrep ss = exprF $ JoinStream trep nrep ss
-
-drop :: TypeRep t
-     -> NatRep n
-     -> Expr ExprF f val s ('Stream ('S n) t)
-     -> Expr ExprF f val s ('Stream n t)
-drop trep nrep s = exprF $ DropStream trep nrep s
-
-shift :: TypeRep t
-      -> NatRep ('S n)
-      -> Expr ExprF f val s ('Stream ('S n) t)
-      -> Expr ExprF f val s ('Stream n t)
-shift trep nrep s = exprF $ ShiftStream trep nrep s
-
-memory :: TypeRep t
-       -> NatRep ('S n)
-       -> Vec ('S n) (Expr ExprF f val s t)
-       -> (Expr ExprF f val s ('Stream n t) -> Expr ExprF f val s ('Stream 'Z t))
-       -> Expr ExprF f val s ('Stream ('S n) t)
-memory trep nrep inits k = exprF $ MemoryStream trep nrep inits k
+local trt trr v k = exprF (Local trt trr v k)
