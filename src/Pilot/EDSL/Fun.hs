@@ -32,6 +32,7 @@ module Pilot.EDSL.Fun
   , fun
   , at
   , Args (..)
+  , mapArgs
   , apply
   , unapply
   , Saturated (..)
@@ -100,6 +101,10 @@ at (Fun k) t = k t
 data Args (expr :: domain -> Haskell.Type) (ts :: [domain]) where
   Args :: Args expr '[]
   Arg  :: expr t -> Args expr ts -> Args expr (t ': ts)
+
+mapArgs :: (forall x . f x -> g x) -> Args f ts -> Args g ts
+mapArgs _ Args         = Args
+mapArgs h (Arg t args) = Arg (h t) (mapArgs h args)
 
 -- | Full application (all arguments)
 apply :: Fun expr ('Sig ts r) -> Args expr ts -> expr r

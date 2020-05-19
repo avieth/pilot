@@ -35,6 +35,12 @@ data NatRep (n :: Nat) where
 instance Represented Nat where
   type Rep Nat = NatRep
 
+instance Auto 'Z where
+  repVal _ = Z_t
+
+instance Auto n => Auto ('S n) where
+  repVal _ = S_t (repVal (Proxy :: Proxy n))
+
 data SomeNatRep where
   SomeNatRep :: NatRep n -> SomeNatRep
 
@@ -78,6 +84,29 @@ type family Min (n :: Nat) (m :: Nat) :: Nat where
 type family Minimum (ns :: [Nat]) :: Nat where
   Minimum (n ': ns) = Min n (Minimum ns)
 
+-- | A number less than or equal to some number (see also 'Index').
+data Offset (n :: Nat) where
+  Current :: Offset n
+  Next    :: Offset n -> Offset ('S n)
+
+-- | A function which expects a wider range of offsets can be made into one
+-- which expects a smaller range, by calling the original with 1 + the given
+-- offset.
+withNextOffset :: (Offset (S n) -> t) -> Offset n -> t
+withNextOffset k = \offset -> k (Next offset)
+
+-- | A function which expects a wider range of offsets can be made into one
+-- which expects a smaller range, by calling the original with the same offset,
+-- because we know it always fits.
+withSameOffset :: (Offset (S n) -> t) -> Offset n -> t
+withSameOffset k = \offset -> k (smallerOffset offset)
+  where
+  -- proof that a smaller offset fits into a wider offset.
+  smallerOffset :: Offset n -> Offset (S n)
+  smallerOffset Current = Current
+  smallerOffset (Next n) = Next (smallerOffset n)
+
+-- | A number strictly less than some number (see also 'Offset').
 data Index (n :: Nat) where
   Here  :: Index (S n)
   There :: Index n -> Index (S n)

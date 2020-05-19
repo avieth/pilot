@@ -27,7 +27,7 @@ module Pilot.EDSL.Lifted
   ) where
 
 import qualified Data.Kind as Haskell (Type)
-import Pilot.EDSL.Point (Expr (..))
+import Pilot.EDSL.Expr (Expr (..))
 import Pilot.Types.Represented
 
 -- | "Lift" an EDSL's domain into "Hask". This is any expression in some EDSL
@@ -42,17 +42,14 @@ import Pilot.Types.Represented
 -- this is sort of analagous to Haskell's notion of "lifted" types but doesn't
 -- carry the same _|_ semantics. Maybe a better name is needed?
 newtype Lifted
-  (exprF)
-  (f   :: Haskell.Type -> Haskell.Type -> Haskell.Type)
-  (val :: Haskell.Type -> domain -> Haskell.Type)
-  (s   :: Haskell.Type)
-  (t   :: Haskell.Type) = Lifted
-  { getLifted :: Expr exprF f val s (EmbedT domain t) }
+  (exprF :: (domain -> Haskell.Type) -> domain -> Haskell.Type)
+  (f :: domain -> Haskell.Type)
+  (t :: Haskell.Type) = Lifted { getLifted :: Expr exprF f (EmbedT domain t) }
 
-lift :: Expr exprF f val s (EmbedT domain t) -> Lifted exprF f val s t
+lift :: Expr exprF f (EmbedT domain t) -> Lifted exprF f t
 lift = Lifted
 
-unlift :: Lifted exprF f val s t -> Expr exprF f val s (EmbedT domain t)
+unlift :: Lifted exprF f t -> Expr exprF f (EmbedT domain t)
 unlift = getLifted
 
 -- | Gives a representation in `domain` for a Haskell type.

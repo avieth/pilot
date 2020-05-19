@@ -17,6 +17,7 @@ library
                        Pilot.EDSL.Lifted
                        Pilot.EDSL.Fun
                        Pilot.EDSL.Point
+                       Pilot.EDSL.Stream
 
                        Pilot.C
 

@@ -12,13 +12,18 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Pilot.Types.Represented
   ( Represented (..)
+  , Auto (..)
+  , auto
   ) where
 
 import qualified Data.Kind as Haskell (Type)
 import Data.Functor.Identity (Identity)
+
+import Data.Proxy (Proxy (..))
 
 -- | A kind is "represented" if there is a GADT parameterized on it giving its
 -- singleton type. For example
@@ -34,3 +39,9 @@ class Represented (k :: Haskell.Type) where
 
 instance Represented Haskell.Type where
   type Rep Haskell.Type = Identity
+
+class Represented k => Auto (t :: k) where
+  repVal :: proxy t -> Rep k t
+
+auto :: forall k (t :: k) . Auto t => Rep k t
+auto = repVal (Proxy :: Proxy t)
