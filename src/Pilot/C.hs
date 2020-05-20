@@ -1500,13 +1500,12 @@ declare_initialized prefix val = do
       --declnSpecs = C.DeclnSpecsQual C.QConst $ Just $ C.DeclnSpecsType (valSpec val) Nothing
       declnSpecs = C.DeclnSpecsType (valSpec val) Nothing
       -- Pointer types in initialized bindings are const restrict.
-      --
-      -- Apparently it's fine to use a const restrict pointer, but it's _not_
-      -- ok to use a const _binding_ because the possibility of an
-      -- uninitialized variable (for sum elimination) means that the struct
-      -- members cannot be const, means that no bindings can be const, for we
-      -- may want to use a binder in a struct thereby stripping the const and
-      -- getting a warning.
+      -- This is OK because indeed the pointers themselves will never change.
+      -- However, we can't put const out front (on the thing behind the pointer),
+      -- because the possibility of an uninitialized variable (for sum
+      -- elimination) means that the struct members cannot be const, means that
+      -- no bindings can be const, for we may want to use a binder in a struct
+      -- thereby stripping the const and getting a warning.
       --
       -- It may be possible to infer from a completely generated program which
       -- things can be const, but is it worth the effort? Do const annotations
