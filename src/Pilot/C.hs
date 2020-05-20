@@ -44,6 +44,7 @@ import qualified Language.C99.AST as C
 import Language.C99.Pretty (Pretty, pretty)
 import Text.PrettyPrint (render)
 
+import qualified Pilot.EDSL.Expr as Expr (known)
 -- TODO these should not be in the Point module.
 import Pilot.EDSL.Point (All (..), Any (..), Field (..), Selector (..),
   Case (..), anyOfAll, forAll, mapAll)
@@ -51,13 +52,20 @@ import Pilot.EDSL.Point hiding (Either, Maybe)
 import qualified Pilot.EDSL.Point as Point
 import Pilot.EDSL.Stream
 import qualified Pilot.EDSL.Stream as Stream
+
+import Pilot.Types.Fun
 import Pilot.Types.Nat
+import Pilot.Types.Represented
 
 import System.IO (writeFile)
 import System.IO.Error (userError)
 import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
+--
+-- [ ] "local" bindings for the stream EDSL!?
+--     Ought to be possible.
+--
 -- [ ] StreamTarget and streamwise values.
 --     For constant streams, the function is a constant function. There is a
 --     trivial way to lift the point value to a stream value for any n in this
@@ -69,6 +77,26 @@ import Control.Exception (throwIO)
 --     For shift streams, call the original with the same offset `withSameOffset`
 --     For function streams, call each of the arguments with the same offset
 --     (i.e. the one that's given).
+--
+-- [ ] Generating code for a stream-valued thing?
+--     We could offer a way to just "demote" it using a given offset (we already
+--     have that basically) and then generate it like we would for a point.
+--     That can be good for running examples, demos, and debugging.
+--     NB: this would give a program which, at each call to the eval function,
+--     returns the next value of the stream, so it's definitely a legit thing
+--     to have around.
+--
+--     But ultimately, what we want is an analog of the Haskell main with IO
+--     monad: you construct a `Trigger`. However, note that this is _backend
+--     specific_ just like external inputs. A trigger will be constructed from
+--     0 or more streams and will generate an extern function declaration
+--     and that function shall be called _at every eval_ with the current
+--     values of those things. Then, `Trigger`s can be combined as a monoid.
+--
+--       nop :: Trigger
+--       (<>) :: Trigger -> Trigger -> Trigger
+--       trigger :: TriggerCInfo -> TriggerStreams -> CodeGen s Trigger
+--
 --
 -- [ ] Use Lifted over stream expressions. Will require a generic `Stream n t`
 --     type with an embed instance that embeds t.
@@ -180,9 +208,13 @@ data ValTypeRep (t :: ValType) where
 -- Points correspond exactly to C expressions (CondExpr is chosen arbitrarily,
 -- should probably be Expr instead). Streams, on the other hand, are families
 -- of C expressions depending upon the offset into the stream.
-data CVal (t :: ValType) where
-  CValPoint  :: !C.CondExpr               -> CVal ('ValPoint t)
-  CValStream :: !(Offset n -> C.CondExpr) -> CVal ('ValStream ('Stream n t))
+data CVal s (t :: ValType) where
+  CValPoint  :: !C.CondExpr                         -> CVal s ('ValPoint t)
+  -- TODO FIXME this _seems_ really weird, that the stream evaluation function
+  -- would be in CodeGen. I would have thought that we'd already have everything
+  -- we need up-front, but that's not the case and we need this representation
+  -- in order to defined function lifting.
+  CValStream :: !(Offset n -> CodeGen s C.CondExpr) -> CVal s ('ValStream ('Stream n t))
 
 -- | Represents an object-language value within a 'CodeGen' context (the `s`
 -- type parameter, the ST/STRef trick).
@@ -193,7 +225,7 @@ data CVal (t :: ValType) where
 -- function which generates a `C.CondExpr` depending on an offset. Streams with
 -- non-zero memory define more than one such expression.
 data Val (s :: Haskell.Type) (t :: ValType) = Val
-  { getVal      :: !(CVal t)
+  { getVal      :: !(CVal s t)
   , valType     :: !(ValTypeRep t)
   , valTypeInfo :: !CTypeInfo
   }
@@ -212,11 +244,109 @@ valSpec = ctypeSpec . valTypeInfo
 valPtr :: Val s t -> Bool
 valPtr = ctypePtr . valTypeInfo
 
--- For streamwise, we shall need this
-eval_expr_stream
-  :: Stream.ExprF Point.ExprF (PointTarget s) (StreamTarget s) t
-  -> StreamTarget s t
-eval_expr_stream = error "eval_expr_stream not yet defined"
+-- | Use a stream value as a point value by forgetting the stream information
+-- and taking the C.CondExpr at the given stream offset.
+sampleStreamValAt
+  :: Offset n
+  -> Val s ('ValStream ('Stream n t))
+  -> CodeGen s (Val s ('ValPoint t))
+sampleStreamValAt offset sval = case (getVal sval, valType sval) of
+  (CValStream k, ValStream_t (Stream_t _ prep)) -> do
+    cexpr <- k offset
+    pure $ Val
+      { getVal      = CValPoint cexpr
+      , valType     = ValPoint_t prep
+      , valTypeInfo = valTypeInfo sval
+      }
+
+streamArgsToPointArgs
+  :: Offset n
+  -> NatRep n
+  -> Args (Rep Point.Type) args
+  -> Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args)
+  -> Args (Expr Point.ExprF (PointTarget s)) args
+streamArgsToPointArgs offset nrep Args Args = Args
+streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg (Compose arg) args) = Arg
+  (streamArgToPointArg   offset nrep arg)
+  (streamArgsToPointArgs offset nrep argsrep args)
+
+streamArgToPointArg
+  :: Offset n
+  -> NatRep n
+  -> Val s ('ValStream ('Stream n t))
+  -> Expr Point.ExprF (PointTarget s) t
+streamArgToPointArg offset nrep sval = case (getVal sval, valType sval) of
+  (CValStream k, ValStream_t (Stream_t _ prep)) -> Expr.known $ PointTarget $ do
+    cexpr <- k offset
+    pure $ Val
+      { getVal      = CValPoint cexpr
+      , valType     = ValPoint_t prep
+      , valTypeInfo = valTypeInfo sval
+      }
+
+-- | A point val can be made into a stream val, giving a constant, or "pure"
+-- stream. This is done by substituting exactly the C expression for the point,
+-- to stand for the stream.
+--
+-- NB: the natural number index must be given, since we need it in order to
+-- construct the TypeRep.
+--
+constantStreamVal :: NatRep n -> Val s ('ValPoint t) -> Val s ('ValStream ('Stream n t))
+constantStreamVal nrep pval = case valType pval of
+  ValPoint_t prep -> Val
+    { getVal      = CValStream (\_ -> pure (valPointCondExpr pval))
+    , valType     = ValStream_t (Stream_t nrep prep)
+    -- As far as C types are concerned, the point and stream are the same.
+    , valTypeInfo = valTypeInfo pval
+    }
+
+-- | Is in CodeGen s because it must potentially generate type info for the
+-- result type. The other functions realting to stream Vals do not have
+-- to do this because they are given existing Vals.
+liftStreamVal
+  :: Args (Rep Point.Type) args
+  -> Rep Point.Type r
+  -> NatRep n
+  -> Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args)
+  -> (Args (Expr Point.ExprF (PointTarget s)) args -> Expr Point.ExprF (PointTarget s) r)
+  -> CodeGen s (Val s ('ValStream ('Stream n r)))
+liftStreamVal argsrep prep nrep sargs k = do
+  ctt <- compoundTypeTreatment
+  info <- type_info ctt (ValPoint_t prep)
+  pure $ Val
+    { getVal      = CValStream $ \offset -> do
+        pval <- elim_point_expr (k (streamArgsToPointArgs offset nrep argsrep sargs))
+        pure $ valPointCondExpr pval
+    , valType     = ValStream_t (Stream_t nrep prep)
+    , valTypeInfo = info
+    }
+
+-- | Given a Val representing a stream with nonzero memory, we can "drop" it,
+-- i.e. advance it one place, simply by changing the continuation to bump the
+-- offset by one.
+dropStreamVal :: NatRep n
+              -> Val s ('ValStream ('Stream ('S n) t))
+              -> Val s ('ValStream ('Stream     n  t))
+dropStreamVal nrep val =  case (getVal val, valType val) of
+  (CValStream k, ValStream_t (Stream_t _ prep)) -> val
+    { getVal      = CValStream (withNextOffset k)
+    , valType     = ValStream_t (Stream_t nrep prep)
+    -- C type info does not change.
+    , valTypeInfo = valTypeInfo val
+    }
+
+-- | Just like 'dropStreamVal' except we do not actually change the offset in
+-- the continuation, we only change its index.
+shiftStreamVal :: NatRep n
+              -> Val s ('ValStream ('Stream ('S n) t))
+              -> Val s ('ValStream ('Stream     n  t))
+shiftStreamVal nrep val =  case (getVal val, valType val) of
+  (CValStream k, ValStream_t (Stream_t _ prep)) -> val
+    { getVal      = CValStream (withSameOffset k)
+    , valType     = ValStream_t (Stream_t nrep prep)
+    -- C type info does not change.
+    , valTypeInfo = valTypeInfo val
+    }
 
 -- |
 -- = Type names and type declarations
@@ -876,8 +1006,40 @@ write_example fp b expr = codeGenToFile fp opts (runPointTarget (evalExpr eval_e
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
 
+-- | Evaluates the stream expression at offset 0 and writes it out.
+-- Good for demo and debug.
+write_stream_example
+  :: String
+  -> Bool
+  -> Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) ('Stream n t)
+  -> IO ()
+write_stream_example fp b expr = codeGenToFile fp opts $ do
+  sval <- elim_stream_expr expr
+  sampleStreamValAt Current sval
+  where
+  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
+
 example_1 :: Expr Point.ExprF f (Pair UInt8 Int8)
 example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
+
+-- Want to say: take the pair in example_1 and add its first and second
+-- components _in a stream_.
+
+lifted_plus
+  :: forall g f n .
+     NatRep n
+  -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
+         ('Stream n UInt8 :-> 'Stream n UInt8 :-> V ('Stream n UInt8))
+lifted_plus nrep = Stream.liftF argsrep auto nrep point_add
+  where
+  point_add = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
+  argsrep = Arg auto $ Arg auto $ Args
+
+example_1_1 :: Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) ('Stream 'Z UInt8)
+example_1_1 = local auto auto example_1 $ \p ->
+  local auto auto (Point.fst auto auto p) $ \x ->
+  local auto auto (Point.snd auto auto p) $ \y ->
+
 
 example_2 :: Expr Point.ExprF f (Point.Either UInt8 Int8)
 example_2 = right uint8_t int8_t (int8 (-42))
@@ -939,6 +1101,123 @@ example_12 =
       elim_maybe (typeOf p) uint8_t s
         (\_ -> uint8 1)
         (\x -> Point.fst uint8_t int8_t x)
+
+-- | TODO doc
+eval_expr_stream
+  :: Stream.ExprF Point.ExprF (PointTarget s) (StreamTarget s) t
+  -> StreamTarget s t
+eval_expr_stream (ConstantStream trep nrep pexpr)       = eval_constant_stream trep nrep pexpr
+eval_expr_stream (LiftStream pargsrep trep nrep k args) = eval_lift_stream pargsrep trep nrep k args
+eval_expr_stream (DropStream trep nrep stream)          = eval_drop_stream trep nrep stream
+eval_expr_stream (ShiftStream trep nrep stream)         = eval_shift_stream trep nrep stream
+eval_expr_stream (MemoryStream trep nrep vec k)         = eval_memory_stream trep nrep vec k
+
+elim_point_expr :: Expr Point.ExprF (PointTarget s) t -> CodeGen s (Val s ('ValPoint t))
+elim_point_expr = runPointTarget . evalExpr eval_expr_point
+
+elim_stream_expr :: Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) t
+                 -> CodeGen s (Val s ('ValStream t))
+elim_stream_expr = runStreamTarget . evalExpr eval_expr_stream
+
+-- |
+eval_constant_stream
+  :: forall n s t .
+     Rep Point.Type t
+  -> NatRep n
+  -> Expr Point.ExprF (PointTarget s) t
+  -> StreamTarget s ('Stream n t)
+eval_constant_stream trep nrep expr = StreamTarget $ do
+  pval <- elim_point_expr expr
+  pure $ constantStreamVal nrep pval 
+
+eval_lift_stream
+  :: forall args n r s .
+     Args (Rep Point.Type) args
+  -> Rep Point.Type r
+  -> NatRep n
+  -> (Args (Expr Point.ExprF (PointTarget s)) args -> Expr Point.ExprF (PointTarget s) r)
+  -> Args (StreamTarget s) (MapArgs ('Stream n) args)
+  -> StreamTarget s ('Stream n r)
+eval_lift_stream argsrep trep nrep k args = StreamTarget $ do
+  -- For all of the stream arguments, we must make them into
+  --
+  --   Expr Point.ExprF (PointTarget s)
+  --
+  -- values so that we can call the continuation.
+  --
+  -- Hm, but that should happen inside the ValStream continuation, no?
+  -- Yes, for each argument we produce a `Val s ('ValStream yadayada)`.
+  -- Then we run them all with the same offset, thereby producing a C.CondExpr
+  -- for each, which can be made into an
+  --
+  --   Expr Point.ExprF (PointTarget s) t
+  --
+  -- for our choosing of t.
+  --
+  -- Ok so I think the crux of it may be
+  --
+  --   StreamTarget s ('Stream n t) -> Expr Point.ExprF (PointTarget s) t
+  --
+  -- Problem though: surely we want to run those StreamTargets right here,
+  -- rather that whenever _this_ value is sampled, no? 
+  --
+  -- The MapStream is going to be a problem... unless, no it may be fine once
+  -- we pattern match on the Args...
+  -- Ah yes, the argsrep!
+  -- svals <- 
+ 
+
+  -- Here we run all of the stream target code generation for the args.
+  (svalargs :: Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args))
+    <- traverseArgs runArgStream args
+
+  -- And the rest of the story happens whenever the Val which we construct
+  -- here is given an offset at which to evaluate.
+  liftStreamVal argsrep trep nrep svalargs k
+
+  where
+
+  runArgStream
+    :: forall s t .
+       StreamTarget s t
+    -> CodeGen s (Compose (Val s) 'ValStream t)
+  runArgStream stream = do
+    sval <- runStreamTarget stream
+    pure $ Compose sval
+
+eval_drop_stream
+  :: forall n s t .
+     Rep Point.Type t
+  -> NatRep n
+  -> StreamTarget s ('Stream ('S n) t)
+  -> StreamTarget s ('Stream     n  t)
+eval_drop_stream trep nrep stream = StreamTarget $ do
+  sval <- runStreamTarget stream
+  pure $ dropStreamVal nrep sval
+
+eval_shift_stream
+  :: forall n s t .
+     Rep Point.Type t
+  -> NatRep n
+  -> StreamTarget s ('Stream ('S n) t)
+  -> StreamTarget s ('Stream     n  t)
+eval_shift_stream trep nrep stream = StreamTarget $ do
+  sval <- runStreamTarget stream
+  pure $ shiftStreamVal nrep sval
+
+-- TODO this is by far the most complicated case, as it requires dealing with
+-- CodeGen state in order to ensure the right declarations are made. Each
+-- memory stream corresponds to one static declaration of an array and index.
+-- This also has to take care of marshalling between shared and not-shared
+-- types treatments if necessary.
+eval_memory_stream
+  :: forall n s t .
+     Rep Point.Type t
+  -> NatRep ('S n)
+  -> Vec ('S n) (Expr Point.ExprF (PointTarget s) t)
+  -> (StreamTarget s ('Stream n t) -> StreamTarget s ('Stream 'Z t))
+  -> StreamTarget s ('Stream ('S n) t)
+eval_memory_stream = error "eval_memory_stream not defined"
 
 -- | Generate a C value representation for an expression, assuming any/all of
 -- its sub-expressions are already generated.
