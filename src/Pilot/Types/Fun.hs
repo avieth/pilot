@@ -1,5 +1,5 @@
 {-|
-Module      : Pilot.EDSL.Fun
+Module      : Pilot.Types.Fun
 Description : Type for first-order functions.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
@@ -20,7 +20,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Pilot.EDSL.Fun
+module Pilot.Types.Fun
   ( Sig (..)
   , type (:->)
   , type V

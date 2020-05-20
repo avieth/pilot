@@ -15,12 +15,12 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Pilot.EDSL.Expr
                        Pilot.EDSL.Lifted
-                       Pilot.EDSL.Fun
                        Pilot.EDSL.Point
                        Pilot.EDSL.Stream
 
                        Pilot.C
 
+                       Pilot.Types.Fun
                        Pilot.Types.Nat
                        Pilot.Types.Represented
 

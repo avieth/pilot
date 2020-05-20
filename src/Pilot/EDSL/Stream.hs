@@ -38,7 +38,7 @@ import Prelude hiding (drop)
 import qualified Data.Kind as Haskell (Type)
 
 import Pilot.EDSL.Expr as Expr
-import Pilot.EDSL.Fun as Fun
+import Pilot.Types.Fun as Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
@@ -184,9 +184,10 @@ data ExprF
   (t :: Type a)
   where
 
-  -- NB: no NatRep needed; this stream has a prefix of arbitrary size, since it
-  -- is "pure"/"timeless".
+  -- NB: a NatRep must be given, but it can be freely chosen without any other
+  -- obligations.
   ConstantStream :: Rep a t
+                 -> NatRep n
                  -> Expr point g t
                  -- ^ NB: this is not `point t`. That's because `point`
                  -- represents a different EDSL, and the embedding of that one
@@ -207,8 +208,8 @@ data ExprF
   -- NB: this also expresses "pure" or constant streams, when the argument list
   -- is empty.
   -- TODO maybe that's not a good idea though?
-  LiftStream :: NatRep n
-             -> Args (Rep a) args
+  LiftStream :: Args (Rep a) args
+             -> NatRep n
              -- ^ The type reps are for the args as points... maybe would be
              -- better to take them as streams?
              -> (Args (Expr point g) args -> Expr point g r)
@@ -267,13 +268,14 @@ data ExprF
 
 constant :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
             Rep p t
+         -> NatRep n
          -> Expr point g t
          -> Expr (ExprF point g) f ('Stream n t)
 -- NB if we had a NatRep we could do this:
 --   constant trep t = Fun.unval (lift nrep Args (Val t))
 -- but it wouldn't be good to have to specify a prefix size for constant
 -- streams.
-constant trep point = exprF_ $ ConstantStream trep point
+constant trep nrep point = exprF_ $ ConstantStream trep nrep point
 
 drop :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
         Rep p t
@@ -307,7 +309,7 @@ liftF_ :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haske
        -> (Args (Expr point g) args -> Expr point g r)
        -> Args (Expr (ExprF point g) f) (MapArgs ('Stream n) args)
        -> Expr (ExprF point g) f ('Stream n r)
-liftF_ nrep argsrep f args = exprF $ \interp -> LiftStream nrep argsrep f
+liftF_ nrep argsrep f args = exprF $ \interp -> LiftStream argsrep nrep f
   (mapArgs interp args)
 
 -- | Any first-order function over expressions can be "lifted" over streams:
@@ -321,7 +323,7 @@ liftF :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskel
      -> Fun (Expr point g) ('Sig args r)
      -> Fun (Expr (ExprF point g) f) (Fun.Lift ('Stream n) ('Sig args r))
 liftF nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
-  exprF $ \interp -> LiftStream nrep argsrep (Fun.apply f) (mapArgs interp sargs)
+  exprF $ \interp -> LiftStream argsrep nrep (Fun.apply f) (mapArgs interp sargs)
 
 -- | "Lift" the argument type reps into streams for a given prefix length.
 mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)

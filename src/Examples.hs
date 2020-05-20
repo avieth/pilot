@@ -34,7 +34,7 @@ import qualified Pilot.EDSL.Point as Point
 import Pilot.EDSL.Stream
 import qualified Pilot.EDSL.Stream as Stream
 import Pilot.EDSL.Lifted
-import Pilot.EDSL.Fun
+import Pilot.Types.Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
@@ -52,11 +52,17 @@ import qualified Pilot.C as C
 
 type Streamwise n t = forall f g . Expr (Stream.ExprF Point.ExprF g) f ('Stream n t)
 
-constant_42 :: forall n . Streamwise n Point.UInt8
-constant_42 = Stream.constant auto (Point.uint8 42)
+-- NB: for these constant streams we do not choose a particular index on their
+-- prefix size. It's not clear whether we can get away with using Haskell's
+-- universal quantification to get quantification in the object language...
+-- should maybe look into that later, but for now, each constant stream must
+-- be given a particular explicit prefix size (but it can be anything).
 
-constant_true :: forall n . Streamwise n Point.Boolean
-constant_true = Stream.constant auto Point.true
+constant_42 :: forall n . NatRep n -> Streamwise n Point.UInt8
+constant_42 nrep = Stream.constant auto nrep (Point.uint8 42)
+
+constant_true :: forall n . NatRep n -> Streamwise n Point.Boolean
+constant_true nrep = Stream.constant auto nrep Point.true
 
 mk_pair :: Fun (Expr Point.ExprF f) (Point.UInt8 :-> Point.Boolean :-> V (Point.Pair Point.UInt8 Point.Boolean))
 mk_pair = fun $ \a -> fun $ \b -> val $ Point.pair auto auto a b
@@ -70,7 +76,7 @@ mk_pair = fun $ \a -> fun $ \b -> val $ Point.pair auto auto a b
 --   S n for memory impure streams
 constant_pair :: forall n . NatRep n -> Streamwise n (Point.Pair Point.UInt8 Point.Boolean)
 constant_pair nrep = unval $ Stream.liftF nrep argsrep mk_pair
-  `at` constant_42 `at` constant_true
+  `at` constant_42 nrep `at` constant_true nrep
   where
   argsrep = Arg auto $ Arg auto $ Args
 
@@ -103,7 +109,7 @@ mono_integral = Stream.memory auto auto (VCons (Point.uint8 0) VNil) $ \sums ->
   -- continuation of Stream.memory, the parameter (`sums` in this case) is
   -- given a memory index 1 less than it actually has, to ensure that circular
   -- definitions cannot happen (you can't drop the whole known memory segment).
-  unval $ lifted_plus auto `at` constant_42 `at` sums
+  unval $ lifted_plus auto `at` constant_42 auto `at` sums
 
 -- | Lifts (&&) over streams.
 lifted_and
