@@ -33,6 +33,7 @@ module Pilot.Types.Fun
   , at
   , Args (..)
   , mapArgs
+  , traverseArgs
   , apply
   , unapply
   , Saturated (..)
@@ -105,6 +106,14 @@ data Args (expr :: domain -> Haskell.Type) (ts :: [domain]) where
 mapArgs :: (forall x . f x -> g x) -> Args f ts -> Args g ts
 mapArgs _ Args         = Args
 mapArgs h (Arg t args) = Arg (h t) (mapArgs h args)
+
+traverseArgs
+  :: (Applicative m)
+  => (forall t . f t -> m (g t))
+  -> Args f ts
+  -> m (Args g ts)
+traverseArgs h Args         = pure Args
+traverseArgs h (Arg t args) = Arg <$> h t <*> traverseArgs h args
 
 -- | Full application (all arguments)
 apply :: Fun expr ('Sig ts r) -> Args expr ts -> expr r
