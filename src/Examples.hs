@@ -65,7 +65,7 @@ constant_true :: forall n . NatRep n -> Streamwise n Point.Boolean
 constant_true nrep = Stream.constant auto nrep Point.true
 
 mk_pair :: Fun (Expr Point.ExprF f) (Point.UInt8 :-> Point.Boolean :-> V (Point.Pair Point.UInt8 Point.Boolean))
-mk_pair = fun $ \a -> fun $ \b -> val $ Point.pair auto auto a b
+mk_pair = fun $ \a -> fun $ \b -> lit $ Point.pair auto auto a b
 
 -- Here's an unfortunate thing: we have to give a NatRep in order to lift a
 -- function over, but we want it to be forall n.
@@ -75,7 +75,7 @@ mk_pair = fun $ \a -> fun $ \b -> val $ Point.pair auto auto a b
 --   Z for no-memory impure streams
 --   S n for memory impure streams
 constant_pair :: forall n . NatRep n -> Streamwise n (Point.Pair Point.UInt8 Point.Boolean)
-constant_pair nrep = unval $ Stream.liftF argsrep auto nrep mk_pair
+constant_pair nrep = unlit $ Stream.liftF argsrep auto nrep mk_pair
   `at` constant_42 nrep `at` constant_true nrep
   where
   argsrep = Arg auto $ Arg auto $ Args
@@ -89,7 +89,7 @@ lifted_plus
      ('Stream n Point.UInt8 :-> 'Stream n Point.UInt8 :-> V ('Stream n Point.UInt8))
 lifted_plus nrep = Stream.liftF argsrep auto nrep point_add
   where
-  point_add = fun $ \a -> fun $ \b -> val $ Point.add auto a b
+  point_add = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
   argsrep = Arg auto $ Arg auto $ Args
 
 -- | The integral of constant_42 (yes it's in UInt8 and will overflow fast but
@@ -109,7 +109,7 @@ mono_integral = Stream.memory auto auto (VCons (Point.uint8 0) VNil) $ \sums ->
   -- continuation of Stream.memory, the parameter (`sums` in this case) is
   -- given a memory index 1 less than it actually has, to ensure that circular
   -- definitions cannot happen (you can't drop the whole known memory segment).
-  unval $ lifted_plus auto `at` constant_42 auto `at` sums
+  unlit $ lifted_plus auto `at` constant_42 auto `at` sums
 
 -- | Lifts (&&) over streams.
 lifted_and
@@ -119,7 +119,7 @@ lifted_and
      ('Stream n Point.Boolean :-> 'Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
 lifted_and nrep = Stream.liftF argsrep auto nrep point_and
   where
-  point_and = fun $ \a -> fun $ \b -> val $ Point.and a b
+  point_and = fun $ \a -> fun $ \b -> lit $ Point.and a b
   argsrep = Arg auto $ Arg auto $ Args
 
 lifted_not
@@ -129,7 +129,7 @@ lifted_not
      ('Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
 lifted_not nrep = Stream.liftF argsrep auto nrep point_not
   where
-  point_not = fun $ \a -> val $ Point.not a
+  point_not = fun $ \a -> lit $ Point.not a
   argsrep = Arg auto Args
 
 -- | A rising edge stream. Given a stream of boolean, this stream is true
@@ -148,7 +148,7 @@ rising_edge :: Streamwise 'Z Point.Boolean -> Streamwise 'Z Point.Boolean
 rising_edge bs =
   -- Ideally it would look like this
   --   and <$> shift (not <$> mem) <*> drop 1 mem
-  unval $ lifted_and auto `at` Stream.shift auto auto (unval $ lifted_not auto `at` mem)
+  unlit $ lifted_and auto `at` Stream.shift auto auto (unlit $ lifted_not auto `at` mem)
                           `at` Stream.drop  auto auto mem
   where
   mem = Stream.memory auto auto (VCons Point.true VNil) $ \_ -> bs

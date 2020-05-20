@@ -27,8 +27,8 @@ module Pilot.Types.Fun
   , type Lift
   , type MapArgs
   , Fun (..)
-  , val
-  , unval
+  , lit
+  , unlit
   , fun
   , at
   , Args (..)
@@ -84,14 +84,14 @@ type V x = 'Sig '[] x
 -- corresponding to the first order Haskell function `Bool -> Char -> () -> Int`
 
 data Fun expr sig where
-  Val :: expr r -> Fun expr ('Sig '[] r)
+  Lit :: expr r -> Fun expr ('Sig '[] r)
   Fun :: (expr t -> Fun expr ('Sig ts r)) -> Fun expr ('Sig (t ': ts) r)
 
-val :: expr r -> Fun expr ('Sig '[] r)
-val = Val
+lit :: expr r -> Fun expr ('Sig '[] r)
+lit = Lit
 
-unval :: Fun expr ('Sig '[] r) -> expr r
-unval (Val r) = r
+unlit :: Fun expr ('Sig '[] r) -> expr r
+unlit (Lit r) = r
 
 fun :: (expr t -> Fun expr ('Sig ts r)) -> Fun expr ('Sig (t ': ts) r)
 fun = Fun
@@ -117,14 +117,14 @@ traverseArgs h (Arg t args) = Arg <$> h t <*> traverseArgs h args
 
 -- | Full application (all arguments)
 apply :: Fun expr ('Sig ts r) -> Args expr ts -> expr r
-apply (Val r) Args         = r
+apply (Lit r) Args         = r
 apply (Fun f) (Arg t args) = apply (f t) args
 
 -- | Needs a better name. It's sort of like the inverse of 'apply', except
 -- that you must give a proxy for the arguments, so that we have something to
 -- match on to reveal the structure.
 unapply :: Args proxy ts -> (Args expr ts -> expr r) -> Fun expr ('Sig ts r)
-unapply Args         k = Val (k Args)
+unapply Args         k = Lit (k Args)
 unapply (Arg _ args) k = Fun $ \a -> unapply args (\args' -> k (Arg a args'))
 
 data Saturated expr r where
