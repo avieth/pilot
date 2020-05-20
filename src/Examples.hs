@@ -75,7 +75,7 @@ mk_pair = fun $ \a -> fun $ \b -> val $ Point.pair auto auto a b
 --   Z for no-memory impure streams
 --   S n for memory impure streams
 constant_pair :: forall n . NatRep n -> Streamwise n (Point.Pair Point.UInt8 Point.Boolean)
-constant_pair nrep = unval $ Stream.liftF nrep argsrep mk_pair
+constant_pair nrep = unval $ Stream.liftF argsrep auto nrep mk_pair
   `at` constant_42 nrep `at` constant_true nrep
   where
   argsrep = Arg auto $ Arg auto $ Args
@@ -87,7 +87,7 @@ lifted_plus
      NatRep n
   -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
      ('Stream n Point.UInt8 :-> 'Stream n Point.UInt8 :-> V ('Stream n Point.UInt8))
-lifted_plus nrep = Stream.liftF nrep argsrep point_add
+lifted_plus nrep = Stream.liftF argsrep auto nrep point_add
   where
   point_add = fun $ \a -> fun $ \b -> val $ Point.add auto a b
   argsrep = Arg auto $ Arg auto $ Args
@@ -117,7 +117,7 @@ lifted_and
      NatRep n
   -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
      ('Stream n Point.Boolean :-> 'Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
-lifted_and nrep = Stream.liftF nrep argsrep point_and
+lifted_and nrep = Stream.liftF argsrep auto nrep point_and
   where
   point_and = fun $ \a -> fun $ \b -> val $ Point.and a b
   argsrep = Arg auto $ Arg auto $ Args
@@ -127,7 +127,7 @@ lifted_not
      NatRep n
   -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
      ('Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
-lifted_not nrep = Stream.liftF nrep argsrep point_not
+lifted_not nrep = Stream.liftF argsrep auto nrep point_not
   where
   point_not = fun $ \a -> val $ Point.not a
   argsrep = Arg auto Args

@@ -209,6 +209,7 @@ data ExprF
   -- is empty.
   -- TODO maybe that's not a good idea though?
   LiftStream :: Args (Rep a) args
+             -> Rep a r
              -> NatRep n
              -- ^ The type reps are for the args as points... maybe would be
              -- better to take them as streams?
@@ -304,12 +305,13 @@ memory trep nrep inits k = exprF $ \interp -> MemoryStream trep nrep
 -- TODO remove? probably not useful. 'lift' seems like a better type from a
 -- usability perspective.
 liftF_ :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n args f g r .
-          NatRep n
-       -> Args (Rep p) args
+          Args (Rep p) args
+       -> Rep p r
+       -> NatRep n
        -> (Args (Expr point g) args -> Expr point g r)
        -> Args (Expr (ExprF point g) f) (MapArgs ('Stream n) args)
        -> Expr (ExprF point g) f ('Stream n r)
-liftF_ nrep argsrep f args = exprF $ \interp -> LiftStream argsrep nrep f
+liftF_ argsrep trep nrep f args = exprF $ \interp -> LiftStream argsrep trep nrep f
   (mapArgs interp args)
 
 -- | Any first-order function over expressions can be "lifted" over streams:
@@ -318,12 +320,13 @@ liftF_ nrep argsrep f args = exprF $ \interp -> LiftStream argsrep nrep f
 -- This is like typical applicative functor style in Haskell. Such things cannot
 -- be done directly in this EDSL, because it doesn't have functions.
 liftF :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n args f g r .
-        NatRep n
-     -> Args (Rep p) args
-     -> Fun (Expr point g) ('Sig args r)
-     -> Fun (Expr (ExprF point g) f) (Fun.Lift ('Stream n) ('Sig args r))
-liftF nrep argsrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
-  exprF $ \interp -> LiftStream argsrep nrep (Fun.apply f) (mapArgs interp sargs)
+        Args (Rep p) args
+      -> Rep p r
+      -> NatRep n
+      -> Fun (Expr point g) ('Sig args r)
+      -> Fun (Expr (ExprF point g) f) (Fun.Lift ('Stream n) ('Sig args r))
+liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
+  exprF $ \interp -> LiftStream argsrep trep nrep (Fun.apply f) (mapArgs interp sargs)
 
 -- | "Lift" the argument type reps into streams for a given prefix length.
 mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)
