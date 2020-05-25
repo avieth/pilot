@@ -62,17 +62,18 @@ streamDrop (Prefix _ s) = s
 -- TODO
 -- this is not sufficiently lazy.
 -- Can we improve it?
--- It's a _requirement_ that shifting the stream does not force anything
--- other than the prefix... But apparently we need to match on the suffix.
 streamShift :: Stream f ('S n) t -> Stream f n t
---streamShift (Prefix t ts) = 
 streamShift (Prefix t (Suffix t' ts))  = Suffix t (Suffix t' ts)
 streamShift (Prefix t ts@(Prefix _ _)) = Prefix t (streamShift ts)
 
+-- | Construct a stream using a given list of known prefix points.
 streamFromInitVec :: Vec n (f t) -> Stream f 'Z t -> Stream f n t
 streamFromInitVec VNil         suffix = suffix
 streamFromInitVec (VCons t ts) suffix = Prefix t (streamFromInitVec ts suffix)
 
+-- | Like 'streamFromInitVec' except that the final element of the vector
+-- goes into the suffix of the stream, making it appear as though there is one
+-- fewer known prefix element.
 streamFromInitVec' :: Vec (S n) (f t) -> Stream f 'Z t -> Stream f n t
 streamFromInitVec' (VCons t VNil)           suffix = Suffix t suffix
 streamFromInitVec' (VCons t ts@(VCons _ _)) suffix = Prefix t (streamFromInitVec' ts suffix)
