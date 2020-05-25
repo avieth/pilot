@@ -18,11 +18,13 @@ library
                        Pilot.EDSL.Point
                        Pilot.EDSL.Stream
 
-                       Pilot.C
+                       Pilot.Pure
+                       --Pilot.C
 
                        Pilot.Types.Fun
                        Pilot.Types.Nat
                        Pilot.Types.Represented
+                       Pilot.Types.Stream
 
                        Examples
 
@@ -36,4 +38,3 @@ library
   default-language:    Haskell2010
   ghc-options:         -fwarn-incomplete-patterns
                        -fwarn-unused-imports
-                       -Wall

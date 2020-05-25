@@ -53,6 +53,7 @@ example_2 = Point.right auto auto (Point.int8 (-42))
 example_3 :: Expr Point.ExprF expr f (Point.Maybe Int8)
 example_3 = Point.just auto (Point.int8 (-42))
 
+
 -- NB: even for simple pointwise expressions there is really a difference
 -- between it and a value that we need to maintain
 --   let y = let x = 2 in x + x
@@ -216,6 +217,14 @@ integral c f = Stream.memory auto auto (VCons c VNil) $ \sums ->
   plus :: Fun (Expr Point.ExprF pval f) (Int32 :-> Int32 :-> V Int32)
   plus = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
 
+example_16 :: (Monad f) => StreamExpr pval val f ('Stream ('S 'Z) Int32)
+example_16 = integral c f
+  where
+  c :: (Monad f) => StreamExpr pval val f ('Constant Int32)
+  c = Stream.point auto (Point.int32 0)
+  f :: (Monad f) => StreamExpr pval val f ('Stream 'Z Int32)
+  f = Stream.constant auto auto (Stream.point auto (Point.int32 3))
+
 -- |
 -- = Examples of streamwise expressions
 --
@@ -376,28 +385,28 @@ instance Embed Point.Type ApplicationSpecificType where
 
 variant_A :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
 variant_A = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
-  (Any Selector) Point.unit
+  (Any Point.unit)
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
 variant_B :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
 variant_B = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
-  (Or $ Any Selector) Point.unit
+  (Or $ Any Point.unit)
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
 variant_C :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
 variant_C = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
-  (Or $ Or $ Any Selector) Point.unit
+  (Or $ Or $ Any Point.unit)
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
 variant_D :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
 variant_D = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
-  (Or $ Or $ Or $ Any Selector) Point.unit
+  (Or $ Or $ Or $ Any Point.unit)
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)

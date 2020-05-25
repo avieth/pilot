@@ -20,7 +20,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE QuantifiedConstraints #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Pilot.EDSL.Point
   ( module Expr
@@ -33,18 +33,18 @@ module Pilot.EDSL.Point
 
   , ExprF (..)
   , All (..)
+  , allToList
   , mapAll
   , traverseAll
   , zipAll
   , anyOfAll
   , Any (..)
+  , anyToOne
   , mapAny
   , traverseAny
-  , Field (..)
   , Selector (..)
   , Case (..)
   , forAll
-  , allFields
   , allSelectors
   , allCases
 
@@ -478,16 +478,12 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
   -- Compound data: algebraic datatypes
 
   IntroProduct :: TypeRep ('Product fields)
-               -> All (Field expr) fields
+               -> All expr fields
                -> ExprF expr ('Product fields)
-
-  -- IntroSum and ElimProduct have good symmetry. Not so much for IntroProduct
-  -- and ElimSum.
 
   IntroSum     :: TypeRep ('Sum variants)
                -> TypeRep variant
-               -> Any Selector variants variant
-               -> expr variant
+               -> Any expr variants variant
                -> ExprF expr ('Sum variants)
 
   ElimProduct :: TypeRep ('Product fields)
@@ -499,12 +495,17 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
   ElimSum     :: TypeRep ('Sum variants)
               -> TypeRep r
               -> expr ('Sum variants)
-              -> All (Case expr expr r) variants
+              -> All (Case expr r) variants
               -> ExprF expr r
 
+-- TODO define in a Pilot.Types.* module
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
   All :: All f '[]
   And :: f t -> All f ts -> All f (t ': ts)
+
+allToList :: (forall t . f t -> r) -> All f ts -> [r]
+allToList f All        = []
+allToList f (And x xs) = f x : allToList f xs
 
 mapAll :: (forall t . f t -> g t) -> All f ts -> All g ts
 mapAll _ All = All
@@ -527,9 +528,17 @@ anyOfAll _ All = False
 anyOfAll p (And t ts) = p t || anyOfAll p ts
 
 -- TODO change constructor names to This and That.
+-- TODO define in a Pilot.Types.* module (along with `All`).
 data Any (f :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
   Any :: f t -> Any f (t ': ts) t
   Or  :: Any f ts r -> Any f (t ': ts) r
+
+anyToOne :: forall f ts x r . (forall t . Integer -> f t -> r) -> Any f ts x -> r
+anyToOne f xs = go 0 f xs
+  where
+  go :: forall ts . Integer -> (forall t . Integer -> f t -> r) -> Any f ts x -> r
+  go !n f (Any x) = f n x
+  go !n f (Or xs) = go (n+1) f xs
 
 mapAny :: (forall t . f t -> g t) -> Any f ts r -> Any g ts r
 mapAny h (Any t) = Any (h t)
@@ -539,14 +548,11 @@ traverseAny :: Functor m => (forall t . f t -> m (g t)) -> Any f ts r -> m (Any 
 traverseAny h (Any t) = Any <$> h t
 traverseAny h (Or as) = Or <$> traverseAny h as
 
-data Field (val :: k -> Haskell.Type) (t :: k) where
-  Field :: TypeRep t -> val t -> Field val t
-
 data Selector (t :: k) where
   Selector :: Selector t
 
-data Case (val :: k -> Haskell.Type) (expr :: k -> Haskell.Type) (r :: k) (t :: k) where
-  Case :: TypeRep t -> (val t -> expr r) -> Case val expr r t
+data Case (f :: k -> Haskell.Type) (r :: k) (t :: k) where
+  Case :: TypeRep t -> (f t -> f r) -> Case f r t
 
 -- | For each of the conjuncts, pick out that conjunct in a disjunction.
 forAll
@@ -563,13 +569,6 @@ forAll h alls = go alls id
   go All        _ = All
   go (And t ts) k = And (k (Any (h t))) (go ts (\a -> k (Or a)))
 
-allFields
-  :: forall f ts .
-     (forall x . TypeRep x -> f x)
-  -> All TypeRep ts
-  -> All (Any (Field f) ts) ts
-allFields f = forAll (\trep -> Field trep (f trep))
-
 allSelectors
   :: forall ts .
      All TypeRep ts
@@ -577,10 +576,10 @@ allSelectors
 allSelectors = forAll (\_ -> Selector)
 
 allCases
-  :: forall val expr ts r .
-     (forall x . TypeRep x -> val x -> expr r)
+  :: forall f ts r .
+     (forall x . TypeRep x -> f x -> f r)
   -> All TypeRep ts
-  -> All (Any (Case val expr r) ts) ts
+  -> All (Any (Case f r) ts) ts
 allCases f = forAll (\trep -> Case trep (f trep))
 
 -- Some examples of 'Type's and 'TypeRep's
@@ -674,8 +673,8 @@ pair :: TypeRep a
      -> Expr ExprF expr f b
      -> Expr ExprF expr f (Pair a b)
 pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb)
-  (And (Field ta va) $
-   And (Field tb vb) $
+  (And va $
+   And vb $
    All)
 
 fst :: TypeRep a
@@ -691,10 +690,10 @@ snd :: TypeRep a
 snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb (Or $ Any Selector) vp
 
 just :: TypeRep t -> Expr ExprF expr f t -> Expr ExprF expr f (Maybe t)
-just tt t = exprF $ IntroSum (maybe_t tt) tt (Or (Any Selector)) t
+just tt t = exprF $ IntroSum (maybe_t tt) tt (Or (Any t))
 
 nothing :: TypeRep t -> Expr ExprF expr f (Maybe t)
-nothing tt = exprF $ IntroSum (maybe_t tt) unit_t (Any Selector) unit
+nothing tt = exprF $ IntroSum (maybe_t tt) unit_t (Any unit)
 
 elim_maybe
   :: forall expr f t r .
@@ -717,14 +716,14 @@ left
   -> TypeRep b
   -> Expr ExprF expr f a
   -> Expr ExprF expr f (Either a b)
-left ta tb va = exprF $ IntroSum (either_t ta tb) ta (Any Selector) va
+left ta tb va = exprF $ IntroSum (either_t ta tb) ta (Any va)
 
 right
   :: TypeRep a
   -> TypeRep b
   -> Expr ExprF expr f b
   -> Expr ExprF expr f (Either a b)
-right ta tb vb = exprF $ IntroSum (either_t ta tb) tb (Or (Any (Selector))) vb
+right ta tb vb = exprF $ IntroSum (either_t ta tb) tb (Or (Any vb))
 
 elim_either
   :: forall a b c val f .
@@ -743,10 +742,10 @@ elim_either tra trb trc v cLeft cRight = exprF $ ElimSum
    All)
 
 true :: Expr ExprF expr f Boolean
-true = exprF $ IntroSum boolean_t unit_t (Any $ Selector) unit
+true = exprF $ IntroSum boolean_t unit_t (Any $ unit)
 
 false :: Expr ExprF expr f Boolean
-false = exprF $ IntroSum boolean_t unit_t (Or $ Any $ Selector) unit
+false = exprF $ IntroSum boolean_t unit_t (Or $ Any $ unit)
 
 elim_boolean
   :: forall val r f .
@@ -784,13 +783,13 @@ not :: Expr ExprF val f Boolean -> Expr ExprF val f Boolean
 not a = if_else boolean_t a false true
 
 lt :: Expr ExprF val f Ordering
-lt = exprF $ IntroSum ordering_t unit_t (Any $ Selector) unit
+lt = exprF $ IntroSum ordering_t unit_t (Any $ unit)
 
 eq :: Expr ExprF val f Ordering
-eq = exprF $ IntroSum ordering_t unit_t (Or $ Any $ Selector) unit
+eq = exprF $ IntroSum ordering_t unit_t (Or $ Any $ unit)
 
 gt :: Expr ExprF val f Ordering
-gt = exprF $ IntroSum ordering_t unit_t (Or $ Or $ Any $ Selector) unit
+gt = exprF $ IntroSum ordering_t unit_t (Or $ Or $ Any $ unit)
 
 elim_ordering
   :: forall val r f .

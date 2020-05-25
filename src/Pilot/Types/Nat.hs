@@ -126,6 +126,10 @@ vecMap :: (s -> t) -> Vec n s -> Vec n t
 vecMap _ VNil = VNil
 vecMap f (VCons t vs) = VCons (f t) (vecMap f vs)
 
+vecTraverse :: Applicative f => (s -> f t) -> Vec n s -> f (Vec n t)
+vecTraverse f VNil = pure VNil
+vecTraverse f (VCons t ts) = VCons <$> f t <*> vecTraverse f ts
+
 vecLength :: Vec n t -> Natural
 vecLength VNil = 0
 vecLength (VCons _ vs) = 1 + vecLength vs
