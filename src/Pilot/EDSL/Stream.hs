@@ -25,7 +25,7 @@ module Pilot.EDSL.Stream
   ( Type (..)
   , TypeRep (..)
   , ExprF (..)
-
+  , point
   , constant
   , drop
   , shift
@@ -168,27 +168,32 @@ import Pilot.Types.Represented
 -- -   
 
 data Type t where
-  Stream :: Nat -> t -> Type t
+  Constant :: t -> Type t
+  -- | A stream with a given number of "prefix" values (memory).
+  Stream   :: Nat -> t -> Type t
 
 data TypeRep (t :: Type s) where
-  Stream_t :: NatRep n -> Rep s t -> TypeRep ('Stream n t)
+  Constant_t :: Rep s t -> TypeRep ('Constant t)
+  Stream_t   :: NatRep n -> Rep s t -> TypeRep ('Stream n t)
 
--- The immediate problem here is how to specify an expression in the base
--- language (will be Point) given that it has a different type domain? Just
--- take the entire thing as a type parameter?
-
+-- | TODO document
 data ExprF
-  (point :: (a -> Haskell.Type) -> a -> Haskell.Type)
-  (g :: a -> Haskell.Type)
-  (f :: Type a -> Haskell.Type)
-  (t :: Type a)
+  (pexpr :: a -> Haskell.Type)
+  (expr  :: Type a -> Haskell.Type)
+  (t     :: Type a)
   where
 
-  -- NB: a NatRep must be given, but it can be freely chosen without any other
-  -- obligations.
+  -- | Any expression in the base EDSL may appear in the stream EDSL, with
+  -- the "constant" type
+  ConstantPoint :: Rep a t
+                -> pexpr t
+                -> ExprF pexpr expr ('Constant t)
+
+  -- | Any constant value can be made into a stream by specifying an arbitrary
+  -- prefix. This is like using "pure" on a zip list.
   ConstantStream :: Rep a t
                  -> NatRep n
-                 -> Expr point g t
+                 -> expr ('Constant t)
                  -- ^ NB: this is not `point t`. That's because `point`
                  -- represents a different EDSL, and the embedding of that one
                  -- into this one must be defined as part of the interpretation
@@ -197,7 +202,7 @@ data ExprF
                  -- Ah but this doesn't work because `f` has the wrong kind...
                  --
                  -- Maybe we do need the val type after all???
-                 -> ExprF point g f ('Stream n t)
+                 -> ExprF pexpr expr ('Stream n t)
 
   -- | Any first-order function within expr can be "lifted" so that all of its
   -- arguments and its results are now streams. It must be fully applied, since
@@ -211,122 +216,152 @@ data ExprF
   LiftStream :: Args (Rep a) args
              -> Rep a r
              -> NatRep n
-             -- ^ The type reps are for the args as points... maybe would be
-             -- better to take them as streams?
-             -> (Args (Expr point g) args -> Expr point g r)
+             -> (Args pexpr args -> pexpr r)
              -- ^ The function being lifted. NB: the arguments are all point
-             -- expressions.
-             -> Args f (MapArgs ('Stream n) args)
+             -- _expressions_. Problem? You'd think they should be vals but
+             -- we don't have the point val constructor.
+             -> Args expr (MapArgs ('Stream n) args)
              -- ^ The arguments to the lifted function, but their types now have
              -- Stream n applied out front.
              -- An interpretation of this term therefore must be able to
              -- use `Stream n t` wherever `t` is required, so long as the result
              -- also has `Stream n` in front. This is like applicative functor
              -- style.
-             -> ExprF point g f ('Stream n r)
-
+             -> ExprF pexpr expr ('Stream n r)
 
   -- TODO rename? Drop suggests that we drop x-many things, but the number we
   -- give is (the NatRep) is what the size will be after dropping 1.
+  --
+  -- TODO explain why we use two 'S constructors (it's because of memory
+  -- stream and avoiding circular definitions).
+  -- NB: shift stream can be just one 'S cosntructor.
   DropStream :: Rep a t
-             -> NatRep n
-             -> f ('Stream ('S n) t)
-             -> ExprF point g f ('Stream n t)
+             -> NatRep ('S ('S n))
+             -> expr ('Stream ('S ('S n)) t)
+             -> ExprF pexpr expr ('Stream ('S n) t)
 
   -- Like DropStream it lowers the nat index, but the value at an instant of the
   -- stream doesn't change. This just says that a stream with more memory can
   -- stand in for a stream with less memory, whereas DropStream says that we
   -- can forget memory.
   ShiftStream :: Rep a t
-              -> NatRep n
-              -> f ('Stream ('S n) t)
-              -> ExprF point g f ('Stream n t)
+              -> NatRep ('S n)
+              -> expr ('Stream ('S n) t)
+              -> ExprF pexpr expr ('Stream n t)
 
-  -- | This is how memory is introduced into a program: give 1 or more initial
-  -- values, then define the rest of the stream (possibly using those values).
-  -- Notice that the stream given in the continuation is 1 less than the number
-  -- of values given. That's because the latest/current value of the stream
-  -- must not be used there, else it would be circular. If, for example, 1
-  -- initial value is given, then DropStream allows us to take the latest value
-  -- (not the one in memory), but we wouldn't want to be able to do that within
-  -- the definition of the current value itself (i.e. the continuation here).
-  --
-  -- Note the universal quantification of the binding type variable in the
-  -- vector: the initial values _cannot use any bindings_ from the current
-  -- expression; they must be static.
+{-
+  -- TODO comment/doc
   MemoryStream :: Rep a t
                -> NatRep ('S n)
-               -> Vec ('S n) (Expr point g t)
-               -> (f ('Stream n t) -> f ('Stream 'Z t))
-               -> ExprF point g f ('Stream ('S n) t)
+               -> Vec ('S n) (expr ('Constant t)) -- ^ NB: initial elements must be constants.
+               -> expr ('Stream 'Z t) -- ^ The rest of the stream.
+               -> ExprF pexpr expr ('Stream ('S n) t)
+-}
 
--- See here is a problem: for constant, we want to take an
---   Expr point f t
--- from the pointerwise part, but we have no way to evaluate that to
---   point t
--- do we?
--- So we'd have to take the whole `Expr point f t` there... is that OK?
+  MemoryStream :: Rep a t
+               -> NatRep ('S n)
+               -> Vec ('S n) (expr ('Constant t))
+               -> (expr ('Stream n t) -> expr ('Stream 'Z t))
+               -- ^ The stream itself may be used to determine the rest of
+               -- the stream, but the nat index is one less, so that a cyclic
+               -- definition is not possible (only values already known may
+               -- be used).
+               -> ExprF pexpr expr ('Stream ('S n) t)
 
-constant :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
-            Rep p t
-         -> NatRep n
-         -> Expr point g t
-         -> Expr (ExprF point g) f ('Stream n t)
+{-
+-- This definition of Fix cannot be any good... the stream and the return
+-- value aren't in the same expr.
+
+  FixStream :: Rep a t
+            -> TypeRep r
+            -> NatRep n
+            -> (expr ('Stream n t) -> (expr r, expr ('Stream ('S n) t)))
+            -> ExprF pexpr expr r
+
+fix :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t r .
+       Rep p t
+    -> TypeRep r
+    -> NatRep n
+    -> (Expr (ExprF pexpr) expr f ('Stream n t) -> (Expr (ExprF pexpr) expr f r, Expr (ExprF pexpr) expr f ('Stream ('S n) t)))
+    -> Expr (ExprF pexpr) expr f r
+fix trep rrep nrep k = exprF $ FixStream trep rrep nrep k
+-}
+
+point
+  :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) expr f t .
+     Rep p t
+  -> pexpr t
+  -> Expr (ExprF pexpr) expr f ('Constant t)
+point trep pexpr = exprF $ ConstantPoint trep pexpr
+
+constant
+  :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t .
+     Rep p t
+  -> NatRep n
+  -> Expr (ExprF pexpr) expr f ('Constant t)
+  -> Expr (ExprF pexpr) expr f ('Stream n t)
 -- NB if we had a NatRep we could do this:
 --   constant trep t = Fun.unval (lift nrep Args (Val t))
 -- but it wouldn't be good to have to specify a prefix size for constant
 -- streams.
-constant trep nrep point = exprF_ $ ConstantStream trep nrep point
+constant trep nrep p = exprF $ ConstantStream trep nrep p
 
-drop :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
+drop :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t .
         Rep p t
-     -> NatRep n
-     -> Expr (ExprF point g) f ('Stream ('S n) t)
-     -> Expr (ExprF point g) f ('Stream n t)
-drop trep nrep s = exprF $ \interp -> DropStream trep nrep (interp s)
+     -> NatRep ('S ('S n))
+     -> Expr (ExprF pexpr) expr f ('Stream ('S ('S n)) t)
+     -> Expr (ExprF pexpr) expr f ('Stream ('S n) t)
+drop trep nrep s = exprF $ DropStream trep nrep s
 
-shift :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
+shift :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t .
          Rep p t
-      -> NatRep n
-      -> Expr (ExprF point g) f ('Stream ('S n) t)
-      -> Expr (ExprF point g) f ('Stream n t)
-shift trep nrep s = exprF $ \interp -> ShiftStream trep nrep (interp s)
+      -> NatRep ('S n)
+      -> Expr (ExprF pexpr) expr f ('Stream ('S n) t)
+      -> Expr (ExprF pexpr) expr f ('Stream n t)
+shift trep nrep s = exprF $ ShiftStream trep nrep s
 
-memory :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n f g t .
+{-
+memory :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t .
           Rep p t
        -> NatRep ('S n)
-       -> Vec ('S n) (Expr point g t)
-       -> (Expr (ExprF point g) f ('Stream n t) -> Expr (ExprF point g) f ('Stream 'Z t))
-       -> Expr (ExprF point g) f ('Stream ('S n) t)
-memory trep nrep inits k = exprF $ \interp -> MemoryStream trep nrep
-  inits
-  (interp . k . known)
+       -> Vec ('S n) (Expr (ExprF pexpr) expr f ('Constant t))
+       -> Expr (ExprF pexpr) expr f ('Stream 'Z t)
+       -> Expr (ExprF pexpr) expr f ('Stream ('S n) t)
+memory trep nrep inits rest = exprF $ MemoryStream trep nrep inits rest
+-}
+
+memory :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n expr f t .
+          Rep p t
+       -> NatRep ('S n)
+       -> Vec ('S n) (Expr (ExprF pexpr) expr f ('Constant t))
+       -> (Expr (ExprF pexpr) expr f ('Stream n t) -> Expr (ExprF pexpr) expr f ('Stream 'Z t))
+       -> Expr (ExprF pexpr) expr f ('Stream ('S n) t)
+memory trep nrep inits k = exprF $ MemoryStream trep nrep inits k
 
 -- TODO remove? probably not useful. 'lift' seems like a better type from a
 -- usability perspective.
-liftF_ :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n args f g r .
+liftF_ :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n args expr f r .
           Args (Rep p) args
        -> Rep p r
        -> NatRep n
-       -> (Args (Expr point g) args -> Expr point g r)
-       -> Args (Expr (ExprF point g) f) (MapArgs ('Stream n) args)
-       -> Expr (ExprF point g) f ('Stream n r)
-liftF_ argsrep trep nrep f args = exprF $ \interp -> LiftStream argsrep trep nrep f
-  (mapArgs interp args)
+       -> (Args pexpr args -> pexpr r)
+       -> Args (Expr (ExprF pexpr) expr f) (MapArgs ('Stream n) args)
+       -> Expr (ExprF pexpr) expr f ('Stream n r)
+liftF_ argsrep trep nrep f args = exprF $ LiftStream argsrep trep nrep f args
 
 -- | Any first-order function over expressions can be "lifted" over streams:
 -- all of the arguments and the result become streams.
 --
 -- This is like typical applicative functor style in Haskell. Such things cannot
 -- be done directly in this EDSL, because it doesn't have functions.
-liftF :: forall (p :: Haskell.Type) (point :: (p -> Haskell.Type) -> p -> Haskell.Type) n args f g r .
-        Args (Rep p) args
+liftF :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) n args expr f r .
+         Args (Rep p) args
       -> Rep p r
       -> NatRep n
-      -> Fun (Expr point g) ('Sig args r)
-      -> Fun (Expr (ExprF point g) f) (Fun.Lift ('Stream n) ('Sig args r))
+      -> Fun pexpr ('Sig args r)
+      -> Fun (Expr (ExprF pexpr) expr f) (Fun.Lift ('Stream n) ('Sig args r))
 liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
-  exprF $ \interp -> LiftStream argsrep trep nrep (Fun.apply f) (mapArgs interp sargs)
+  exprF $ LiftStream argsrep trep nrep (Fun.apply f) sargs
 
 -- | "Lift" the argument type reps into streams for a given prefix length.
 mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)

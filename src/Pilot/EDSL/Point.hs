@@ -103,8 +103,6 @@ module Pilot.EDSL.Point
 
   , cmp
 
-  , local
-
   , Unit
   , unit_t
   , unit
@@ -146,7 +144,6 @@ module Pilot.EDSL.Point
 
 import Prelude hiding (Maybe, Either, Ordering, and, fst, snd, div, drop, mod, not, or)
 import qualified Prelude
-import qualified Control.Monad as Monad (join)
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import Data.Proxy (Proxy (..))
@@ -396,84 +393,84 @@ instance (KnownType t, KnownType ('Sum ts))
 typeOf :: forall anything t . KnownType t => anything t -> TypeRep t
 typeOf _ = typeRep (Proxy :: Proxy t)
 
-data PrimOpF (f :: Type -> Haskell.Type) (t :: Type) where
-  Arithmetic :: ArithmeticOpF f t -> PrimOpF f t
-  Bitwise    :: BitwiseOpF f t    -> PrimOpF f t
-  Relative   :: RelativeOpF f t   -> PrimOpF f t
+data PrimOpF (expr :: Type -> Haskell.Type) (t :: Type) where
+  Arithmetic :: ArithmeticOpF expr t -> PrimOpF expr t
+  Bitwise    :: BitwiseOpF    expr t -> PrimOpF expr t
+  Relative   :: RelativeOpF   expr t -> PrimOpF expr t
 
-data ArithmeticOpF (f :: Type -> Haskell.Type) (t :: Type) where
+data ArithmeticOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   AddInteger :: TypeRep ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> ArithmeticOpF f ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> ArithmeticOpF expr ('Integer signedness width)
   SubInteger :: TypeRep ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> ArithmeticOpF f ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> ArithmeticOpF expr ('Integer signedness width)
   MulInteger :: TypeRep ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> ArithmeticOpF f ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> ArithmeticOpF expr ('Integer signedness width)
   DivInteger :: TypeRep ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> ArithmeticOpF f ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> ArithmeticOpF expr ('Integer signedness width)
   ModInteger :: TypeRep ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> f ('Integer signedness width)
-             -> ArithmeticOpF f ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> expr ('Integer signedness width)
+             -> ArithmeticOpF expr ('Integer signedness width)
   NegInteger :: TypeRep ('Integer 'Signed width)
-             -> f ('Integer 'Signed width)
-             -> ArithmeticOpF f ('Integer 'Signed width)
+             -> expr ('Integer 'Signed width)
+             -> ArithmeticOpF expr ('Integer 'Signed width)
 
 -- | Bitwise operations are permitted on all integral types. TODO maybe this
 -- is not ideal. Should we give bit types which do not allow for arithmetic,
 -- and demand explicit type conversions? Would maybe be useful.
-data BitwiseOpF (f :: Type -> Haskell.Type) (t :: Type) where
+data BitwiseOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   AndB :: TypeRep ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> BitwiseOpF f ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> BitwiseOpF expr ('Integer signedness width)
   OrB  :: TypeRep ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> BitwiseOpF f ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> BitwiseOpF expr ('Integer signedness width)
   XOrB :: TypeRep ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> BitwiseOpF f ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> BitwiseOpF expr ('Integer signedness width)
   NotB :: TypeRep ('Integer signedness width)
-       -> f ('Integer signedness width)
-       -> BitwiseOpF f ('Integer signedness width)
+       -> expr ('Integer signedness width)
+       -> BitwiseOpF expr ('Integer signedness width)
   ShiftL :: TypeRep ('Integer signedness width)
-         -> f ('Integer signedness width)
-         -> f ('Integer 'Unsigned 'Eight)
-         -> BitwiseOpF f ('Integer signedness width)
+         -> expr ('Integer signedness width)
+         -> expr ('Integer 'Unsigned 'Eight)
+         -> BitwiseOpF expr ('Integer signedness width)
   ShiftR :: TypeRep ('Integer signedness width)
-         -> f ('Integer signedness width)
-         -> f ('Integer 'Unsigned 'Eight)
-         -> BitwiseOpF f ('Integer signedness width)
+         -> expr ('Integer signedness width)
+         -> expr ('Integer 'Unsigned 'Eight)
+         -> BitwiseOpF expr ('Integer signedness width)
 
-data RelativeOpF (f :: Type -> Haskell.Type) (t :: Type) where
+data RelativeOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   Cmp :: TypeRep ('Integer signedness width)
       -> TypeRep r
-      -> f ('Integer signedness width)
-      -> f ('Integer signedness width)
-      -> f r -- ^ First less than second
-      -> f r -- ^ Equal
-      -> f r -- ^ First greater than second
-      -> RelativeOpF f r
+      -> expr ('Integer signedness width)
+      -> expr ('Integer signedness width)
+      -> expr r -- ^ First less than second
+      -> expr r -- ^ Equal
+      -> expr r -- ^ First greater than second
+      -> RelativeOpF expr r
 
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
 -- representation.
-data ExprF (f :: Type -> Haskell.Type) (t :: Type) where
+data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
 
   IntroInteger :: TypeRep ('Integer signedness width)
                -> IntegerLiteral signedness width
-               -> ExprF f ('Integer signedness width)
+               -> ExprF expr ('Integer signedness width)
 
-  PrimOp :: PrimOpF f t -> ExprF f t
+  PrimOp :: PrimOpF expr t -> ExprF expr t
 
   -- TODO safe upcasts
   -- TODO checked downcasts
@@ -481,36 +478,29 @@ data ExprF (f :: Type -> Haskell.Type) (t :: Type) where
   -- Compound data: algebraic datatypes
 
   IntroProduct :: TypeRep ('Product fields)
-               -> All (Field f) fields
-               -> ExprF f ('Product fields)
+               -> All (Field expr) fields
+               -> ExprF expr ('Product fields)
 
   -- IntroSum and ElimProduct have good symmetry. Not so much for IntroProduct
   -- and ElimSum.
 
   IntroSum     :: TypeRep ('Sum variants)
                -> TypeRep variant
-               -> Any (Selector f) variants variant
-               -> f variant
-               -> ExprF f ('Sum variants)
+               -> Any Selector variants variant
+               -> expr variant
+               -> ExprF expr ('Sum variants)
 
   ElimProduct :: TypeRep ('Product fields)
               -> TypeRep field
-              -> Any (Selector f) fields field
-              -> f ('Product fields)
-              -> ExprF f field
+              -> Any Selector fields field
+              -> expr ('Product fields)
+              -> ExprF expr field
 
   ElimSum     :: TypeRep ('Sum variants)
               -> TypeRep r
-              -> All (Case f r) variants
-              -> f ('Sum variants)
-              -> ExprF f r
-
-  -- Explicit binding, so that the programmer may control sharing.
-  Local :: TypeRep t
-        -> TypeRep r
-        -> f t
-        -> (f t -> f r)
-        -> ExprF f r
+              -> expr ('Sum variants)
+              -> All (Case expr expr r) variants
+              -> ExprF expr r
 
 data All (f :: k -> Haskell.Type) (ts :: [k]) where
   All :: All f '[]
@@ -521,7 +511,7 @@ mapAll _ All = All
 mapAll h (And t as) = And (h t) (mapAll h as)
 
 traverseAll :: Applicative m => (forall t . f t -> m (g t)) -> All f ts -> m (All g ts)
-traverseAll h All = pure All
+traverseAll _ All = pure All
 traverseAll h (And t ts) = And <$> h t <*> traverseAll h ts
 
 zipAll
@@ -533,7 +523,7 @@ zipAll _ All All = All
 zipAll f (And fx fs) (And gx gs) = And (f fx gx) (zipAll f fs gs)
 
 anyOfAll :: (forall t . f t -> Bool) -> All f ts -> Bool
-anyOfAll p All = False
+anyOfAll _ All = False
 anyOfAll p (And t ts) = p t || anyOfAll p ts
 
 -- TODO change constructor names to This and That.
@@ -549,14 +539,14 @@ traverseAny :: Functor m => (forall t . f t -> m (g t)) -> Any f ts r -> m (Any 
 traverseAny h (Any t) = Any <$> h t
 traverseAny h (Or as) = Or <$> traverseAny h as
 
-data Field (f :: k -> Haskell.Type) (t :: k) where
-  Field :: TypeRep t -> f t -> Field f t
+data Field (val :: k -> Haskell.Type) (t :: k) where
+  Field :: TypeRep t -> val t -> Field val t
 
-data Selector (f :: k -> Haskell.Type) (t :: k) where
-  Selector :: Selector f t
+data Selector (t :: k) where
+  Selector :: Selector t
 
-data Case (f :: k -> Haskell.Type) (r :: k) (t :: k) where
-  Case :: TypeRep t -> (f t -> f r) -> Case f r t
+data Case (val :: k -> Haskell.Type) (expr :: k -> Haskell.Type) (r :: k) (t :: k) where
+  Case :: TypeRep t -> (val t -> expr r) -> Case val expr r t
 
 -- | For each of the conjuncts, pick out that conjunct in a disjunction.
 forAll
@@ -581,16 +571,16 @@ allFields
 allFields f = forAll (\trep -> Field trep (f trep))
 
 allSelectors
-  :: forall f ts .
+  :: forall ts .
      All TypeRep ts
-  -> All (Any (Selector f) ts) ts
+  -> All (Any Selector ts) ts
 allSelectors = forAll (\_ -> Selector)
 
 allCases
-  :: forall f ts r .
-     (forall x . TypeRep x -> f x -> f r)
+  :: forall val expr ts r .
+     (forall x . TypeRep x -> val x -> expr r)
   -> All TypeRep ts
-  -> All (Any (Case f r) ts) ts
+  -> All (Any (Case val expr r) ts) ts
 allCases f = forAll (\trep -> Case trep (f trep))
 
 -- Some examples of 'Type's and 'TypeRep's
@@ -635,8 +625,8 @@ unit_t :: TypeRep Unit
 unit_t = Product_t All
 
 -- | An empty product can be introduced, but it cannot be eliminated.
-unit :: Expr ExprF f Unit
-unit = exprF_ $ IntroProduct unit_t All
+unit :: Expr ExprF expr f Unit
+unit = exprF $ IntroProduct unit_t All
 
 type Void = 'Sum '[]
 
@@ -644,8 +634,8 @@ void_t :: TypeRep Void
 void_t = Sum_t All
 
 -- | An empty sum can be eliminated, but it cannot be introduced.
-absurd :: TypeRep x -> Expr ExprF f Void -> Expr ExprF f x
-absurd x_t void = exprF $ \interp -> ElimSum void_t x_t All (interp void)
+absurd :: TypeRep x -> Expr ExprF expr f Void -> Expr ExprF expr f x
+absurd x_t impossible = exprF $ ElimSum void_t x_t impossible All
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
 -- stands for true. An interpreter may need to know that. A C backend could,
@@ -655,144 +645,20 @@ type Boolean = 'Sum '[ Unit, Unit ]
 boolean_t :: TypeRep Boolean
 boolean_t = Sum_t (And unit_t $ And unit_t $ All)
 
-true :: Expr ExprF f Boolean
-true = exprF $ \interp -> IntroSum boolean_t unit_t (Any $ Selector) (interp unit)
-
-false :: Expr ExprF f Boolean
-false = exprF $ \interp -> IntroSum boolean_t unit_t (Or $ Any $ Selector) (interp unit)
-
-elim_boolean
-  :: forall f r .
-     TypeRep r
-  -> Expr ExprF f Boolean
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-elim_boolean trep vb cTrue cFalse = exprF $ \interp -> ElimSum boolean_t trep
-  (And (Case unit_t (\_ -> interp cTrue)) $
-   And (Case unit_t (\_ -> interp cFalse)) $
-   All)
-  (interp vb)
-
-if_else
-  :: forall f r .
-     TypeRep r
-  -> Expr ExprF f Boolean
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-if_else = elim_boolean
-
-and :: Expr ExprF f Boolean -> Expr ExprF f Boolean -> Expr ExprF f Boolean
-and a b = if_else boolean_t a b false
-
-or :: Expr ExprF f Boolean -> Expr ExprF f Boolean -> Expr ExprF f Boolean
-or a b = if_else boolean_t a true b
-
-not :: Expr ExprF f Boolean -> Expr ExprF f Boolean
-not a = if_else boolean_t a false true
-
 type Ordering = 'Sum '[ Unit, Unit, Unit ]
 
 ordering_t :: TypeRep Ordering
 ordering_t = Sum_t (And unit_t $ And unit_t $ And unit_t $ All)
-
-lt :: Expr ExprF f Ordering
-lt = exprF $ \interp -> IntroSum ordering_t unit_t (Any $ Selector) (interp unit)
-
-eq :: Expr ExprF f Ordering
-eq = exprF $ \interp -> IntroSum ordering_t unit_t (Or $ Any $ Selector) (interp unit)
-
-gt :: Expr ExprF f Ordering
-gt = exprF $ \interp -> IntroSum ordering_t unit_t (Or $ Or $ Any $ Selector) (interp unit)
-
-elim_ordering
-  :: forall f r .
-     TypeRep r
-  -> Expr ExprF f Ordering
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-  -> Expr ExprF f r
-elim_ordering trep vo cLt cEq cGt = exprF $ \interp -> ElimSum ordering_t trep
-  (And (Case unit_t (\_ -> interp cLt)) $
-   And (Case unit_t (\_ -> interp cEq)) $ 
-   And (Case unit_t (\_ -> interp cGt)) $
-   All)
-  (interp vo)
-
-cmp :: TypeRep ('Integer signedness width)
-    -> TypeRep r
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f r -- ^ First less than second
-    -> Expr ExprF f r -- ^ Equal
-    -> Expr ExprF f r -- ^ First greater than second
-    -> Expr ExprF f r
-cmp trep trepr x y lt eq gt = exprF $ \interp -> PrimOp $ Relative $ Cmp trep trepr
-  (interp x)
-  (interp y)
-  (interp lt)
-  (interp eq)
-  (interp gt)
 
 type Pair (s :: Type) (t :: Type) = 'Product '[ s, t]
 
 pair_t :: TypeRep s -> TypeRep t -> TypeRep (Pair s t)
 pair_t s t = Product_t (And s $ And t $ All)
 
-pair :: TypeRep a
-     -> TypeRep b
-     -> Expr ExprF f a
-     -> Expr ExprF f b
-     -> Expr ExprF f (Pair a b)
-pair ta tb va vb = exprF $ \interp -> IntroProduct (pair_t ta tb)
-  (And (Field ta (interp va)) $ And (Field tb (interp vb)) $ All)
-
-fst :: TypeRep a
-    -> TypeRep b
-    -> Expr ExprF f (Pair a b)
-    -> Expr ExprF f a
-fst ta tb vp = exprF $ \interp -> ElimProduct (pair_t ta tb) ta
-  (Any Selector)
-  (interp vp)
-
-snd :: TypeRep a
-    -> TypeRep b
-    -> Expr ExprF f (Pair a b)
-    -> Expr ExprF f b
-snd ta tb vp = exprF $ \interp -> ElimProduct (pair_t ta tb) tb
-  (Or $ Any Selector)
-  (interp vp)
-
 type Maybe (t :: Type) = 'Sum '[ Unit, t ]
 
 maybe_t :: TypeRep t -> TypeRep (Maybe t)
 maybe_t t = Sum_t (And unit_t $ And t $ All)
-
-just :: TypeRep t -> Expr ExprF f t -> Expr ExprF f (Maybe t)
-just tt t = exprF $ \interp -> IntroSum (maybe_t tt) tt (Or (Any Selector))
-  (interp t)
-
-nothing :: TypeRep t -> Expr ExprF f (Maybe t)
-nothing tt = exprF $ \interp -> IntroSum (maybe_t tt) unit_t (Any Selector)
-  (interp unit)
-
-elim_maybe
-  :: forall f t r .
-     TypeRep t
-  -> TypeRep r
-  -> Expr ExprF f (Maybe t)
-  -> (Expr ExprF f Unit -> Expr ExprF f r)
-  -> (Expr ExprF f t    -> Expr ExprF f r)
-  -> Expr ExprF f r
-elim_maybe trt trr v cNothing cJust = exprF $ \interp -> ElimSum trs trr
-  (And (Case unit_t (interp . cNothing . known)) $
-   And (Case trt    (interp . cJust    . known)) $
-   All)
-  (interp v)
-  where
-  trs = maybe_t trt
 
 type Either (s :: Type) (t :: Type) = 'Sum '[ s, t ]
 
@@ -802,139 +668,249 @@ either_t
   -> TypeRep (Either s t)
 either_t s t = Sum_t (And s $ And t $ All)
 
+pair :: TypeRep a
+     -> TypeRep b
+     -> Expr ExprF expr f a
+     -> Expr ExprF expr f b
+     -> Expr ExprF expr f (Pair a b)
+pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb)
+  (And (Field ta va) $
+   And (Field tb vb) $
+   All)
+
+fst :: TypeRep a
+    -> TypeRep b
+    -> Expr ExprF expr f (Pair a b)
+    -> Expr ExprF expr f a
+fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta (Any Selector) vp
+
+snd :: TypeRep a
+    -> TypeRep b
+    -> Expr ExprF expr f (Pair a b)
+    -> Expr ExprF expr f b
+snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb (Or $ Any Selector) vp
+
+just :: TypeRep t -> Expr ExprF expr f t -> Expr ExprF expr f (Maybe t)
+just tt t = exprF $ IntroSum (maybe_t tt) tt (Or (Any Selector)) t
+
+nothing :: TypeRep t -> Expr ExprF expr f (Maybe t)
+nothing tt = exprF $ IntroSum (maybe_t tt) unit_t (Any Selector) unit
+
+elim_maybe
+  :: forall expr f t r .
+     TypeRep t
+  -> TypeRep r
+  -> Expr ExprF expr f (Maybe t)
+  -> (Expr ExprF expr f Unit -> Expr ExprF expr f r)
+  -> (Expr ExprF expr f t    -> Expr ExprF expr f r)
+  -> Expr ExprF expr f r
+elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
+  v
+  (And (Case unit_t cNothing) $
+   And (Case trt    cJust   ) $
+   All)
+  where
+  trs = maybe_t trt
+
 left
   :: TypeRep a
   -> TypeRep b
-  -> Expr ExprF f a
-  -> Expr ExprF f (Either a b)
-left ta tb va = exprF $ \interp -> IntroSum (either_t ta tb) ta
-  (Any Selector) (interp va)
+  -> Expr ExprF expr f a
+  -> Expr ExprF expr f (Either a b)
+left ta tb va = exprF $ IntroSum (either_t ta tb) ta (Any Selector) va
 
 right
   :: TypeRep a
   -> TypeRep b
-  -> Expr ExprF f b
-  -> Expr ExprF f (Either a b)
-right ta tb vb = exprF $ \interp -> IntroSum (either_t ta tb) tb
-  (Or (Any (Selector))) (interp vb)
+  -> Expr ExprF expr f b
+  -> Expr ExprF expr f (Either a b)
+right ta tb vb = exprF $ IntroSum (either_t ta tb) tb (Or (Any (Selector))) vb
 
 elim_either
-  :: forall a b c f .
+  :: forall a b c val f .
      TypeRep a
   -> TypeRep b
   -> TypeRep c
-  -> Expr ExprF f (Either a b)
-  -> (Expr ExprF f a -> Expr ExprF f c)
-  -> (Expr ExprF f b -> Expr ExprF f c)
-  -> Expr ExprF f c
-elim_either tra trb trc v cLeft cRight = exprF $ \interp -> ElimSum
+  -> Expr ExprF val f (Either a b)
+  -> (Expr ExprF val f a -> Expr ExprF val f c)
+  -> (Expr ExprF val f b -> Expr ExprF val f c)
+  -> Expr ExprF val f c
+elim_either tra trb trc v cLeft cRight = exprF $ ElimSum
   (either_t tra trb) trc
-  (And (Case tra (interp . cLeft  . known)) $
-   And (Case trb (interp . cRight . known)) $
+  v
+  (And (Case tra cLeft ) $
+   And (Case trb cRight) $
    All)
-  (interp v)
+
+true :: Expr ExprF expr f Boolean
+true = exprF $ IntroSum boolean_t unit_t (Any $ Selector) unit
+
+false :: Expr ExprF expr f Boolean
+false = exprF $ IntroSum boolean_t unit_t (Or $ Any $ Selector) unit
+
+elim_boolean
+  :: forall val r f .
+     TypeRep r
+  -> Expr ExprF val f Boolean
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+elim_boolean trep vb cTrue cFalse = exprF $ ElimSum boolean_t trep
+  vb
+  (And (Case unit_t (\_ -> cTrue)) $
+   And (Case unit_t (\_ -> cFalse)) $
+   All)
+
+if_else
+  :: forall val r f .
+     TypeRep r
+  -> Expr ExprF val f Boolean
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+if_else = elim_boolean
+
+and :: Expr ExprF val f Boolean
+    -> Expr ExprF val f Boolean
+    -> Expr ExprF val f Boolean
+and a b = if_else boolean_t a b false
+
+or :: Expr ExprF val f Boolean
+   -> Expr ExprF val f Boolean
+   -> Expr ExprF val f Boolean
+or a b = if_else boolean_t a true b
+
+not :: Expr ExprF val f Boolean -> Expr ExprF val f Boolean
+not a = if_else boolean_t a false true
+
+lt :: Expr ExprF val f Ordering
+lt = exprF $ IntroSum ordering_t unit_t (Any $ Selector) unit
+
+eq :: Expr ExprF val f Ordering
+eq = exprF $ IntroSum ordering_t unit_t (Or $ Any $ Selector) unit
+
+gt :: Expr ExprF val f Ordering
+gt = exprF $ IntroSum ordering_t unit_t (Or $ Or $ Any $ Selector) unit
+
+elim_ordering
+  :: forall val r f .
+     TypeRep r
+  -> Expr ExprF val f Ordering
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+  -> Expr ExprF val f r
+elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
+  vo
+  (And (Case unit_t (\_ -> cLt)) $
+   And (Case unit_t (\_ -> cEq)) $ 
+   And (Case unit_t (\_ -> cGt)) $
+   All)
+
+cmp :: TypeRep ('Integer signedness width)
+    -> TypeRep r
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f r -- ^ First less than second
+    -> Expr ExprF val f r -- ^ Equal
+    -> Expr ExprF val f r -- ^ First greater than second
+    -> Expr ExprF val f r
+cmp trep trepr x y cLT cEQ cGT = exprF $ PrimOp $ Relative $ Cmp trep trepr x y
+  cLT cEQ cGT
 
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
 
-uint8 :: Haskell.Word8 -> Expr ExprF f ('Integer 'Unsigned 'Eight)
-uint8 w8 = exprF_ $ IntroInteger uint8_t (UInt8 w8)
+uint8 :: Haskell.Word8 -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
+uint8 w8 = exprF $ IntroInteger uint8_t (UInt8 w8)
 
-uint16 :: Haskell.Word16 -> Expr ExprF f ('Integer 'Unsigned 'Sixteen)
-uint16 w16 = exprF_ $ IntroInteger uint16_t (UInt16 w16)
+uint16 :: Haskell.Word16 -> Expr ExprF val f ('Integer 'Unsigned 'Sixteen)
+uint16 w16 = exprF $ IntroInteger uint16_t (UInt16 w16)
 
-uint32 :: Haskell.Word32 -> Expr ExprF f ('Integer 'Unsigned 'ThirtyTwo)
-uint32 w32 = exprF_ $ IntroInteger uint32_t (UInt32 w32)
+uint32 :: Haskell.Word32 -> Expr ExprF val f ('Integer 'Unsigned 'ThirtyTwo)
+uint32 w32 = exprF $ IntroInteger uint32_t (UInt32 w32)
 
-uint64 :: Haskell.Word64 -> Expr ExprF f ('Integer 'Unsigned 'SixtyFour)
-uint64 w64 = exprF_ $ IntroInteger uint64_t (UInt64 w64)
+uint64 :: Haskell.Word64 -> Expr ExprF val f ('Integer 'Unsigned 'SixtyFour)
+uint64 w64 = exprF $ IntroInteger uint64_t (UInt64 w64)
 
-int8 :: Haskell.Int8 -> Expr ExprF f ('Integer 'Signed 'Eight)
-int8 i8 = exprF_ $ IntroInteger int8_t (Int8 i8)
+int8 :: Haskell.Int8 -> Expr ExprF val f ('Integer 'Signed 'Eight)
+int8 i8 = exprF $ IntroInteger int8_t (Int8 i8)
 
-int16 :: Haskell.Int16 -> Expr ExprF f ('Integer 'Signed 'Sixteen)
-int16 i16 = exprF_ $ IntroInteger int16_t (Int16 i16)
+int16 :: Haskell.Int16 -> Expr ExprF val f ('Integer 'Signed 'Sixteen)
+int16 i16 = exprF $ IntroInteger int16_t (Int16 i16)
 
-int32 :: Haskell.Int32 -> Expr ExprF f ('Integer 'Signed 'ThirtyTwo)
-int32 i32 = exprF_ $ IntroInteger int32_t (Int32 i32)
+int32 :: Haskell.Int32 -> Expr ExprF val f ('Integer 'Signed 'ThirtyTwo)
+int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
 
-int64 :: Haskell.Int64 -> Expr ExprF f ('Integer 'Signed 'SixtyFour)
-int64 i64 = exprF_ $ IntroInteger int64_t (Int64 i64)
+int64 :: Haskell.Int64 -> Expr ExprF val f ('Integer 'Signed 'SixtyFour)
+int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
 
 add :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-add tr x y = exprF $ \interp -> PrimOp $ Arithmetic $ AddInteger tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+add tr x y = exprF $ PrimOp $ Arithmetic $ AddInteger tr x y
 
 sub :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-sub tr x y = exprF $ \interp -> PrimOp $ Arithmetic $ SubInteger tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+sub tr x y = exprF $ PrimOp $ Arithmetic $ SubInteger tr x y
 
 mul :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-mul tr x y = exprF $ \interp -> PrimOp $ Arithmetic $ MulInteger tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+mul tr x y = exprF $ PrimOp $ Arithmetic $ MulInteger tr x y
 
 div :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-div tr x y = exprF $ \interp -> PrimOp $ Arithmetic $ DivInteger tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+div tr x y = exprF $ PrimOp $ Arithmetic $ DivInteger tr x y
 
 mod :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-mod tr x y = exprF $ \interp -> PrimOp $ Arithmetic $ ModInteger tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+mod tr x y = exprF $ PrimOp $ Arithmetic $ ModInteger tr x y
 
 neg :: TypeRep ('Integer 'Signed width)
-    -> Expr ExprF f ('Integer 'Signed width)
-    -> Expr ExprF f ('Integer 'Signed width)
-neg tr x = exprF $ \interp -> PrimOp $ Arithmetic $ NegInteger tr (interp x)
+    -> Expr ExprF val f ('Integer 'Signed width)
+    -> Expr ExprF val f ('Integer 'Signed width)
+neg tr x = exprF $ PrimOp $ Arithmetic $ NegInteger tr x
 
 andB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-andB tr x y = exprF $ \interp -> PrimOp $ Bitwise $ AndB tr (interp x) (interp y)
+     -> Expr ExprF val f ('Integer signedness width)
+     -> Expr ExprF val f ('Integer signedness width)
+     -> Expr ExprF val f ('Integer signedness width)
+andB tr x y = exprF $ PrimOp $ Bitwise $ AndB tr x y
 
 orB :: TypeRep ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-    -> Expr ExprF f ('Integer signedness width)
-orB tr x y = exprF $ \interp -> PrimOp $ Bitwise $ OrB tr (interp x) (interp y)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+    -> Expr ExprF val f ('Integer signedness width)
+orB tr x y = exprF $ PrimOp $ Bitwise $ OrB tr x y
 
 xorB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-xorB tr x y = exprF $ \interp -> PrimOp $ Bitwise $ XOrB tr (interp x) (interp y)
+     -> Expr ExprF val f ('Integer signedness width)
+     -> Expr ExprF val f ('Integer signedness width)
+     -> Expr ExprF val f ('Integer signedness width)
+xorB tr x y = exprF $ PrimOp $ Bitwise $ XOrB tr x y
 
 notB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-     -> Expr ExprF f ('Integer signedness width)
-notB tr x = exprF $ \interp -> PrimOp $ Bitwise $ NotB tr (interp x)
+     -> Expr ExprF val f ('Integer signedness width)
+     -> Expr ExprF val f ('Integer signedness width)
+notB tr x = exprF $ PrimOp $ Bitwise $ NotB tr x
 
 shiftL :: TypeRep ('Integer signedness width)
-       -> Expr ExprF f ('Integer signedness width)
-       -> Expr ExprF f ('Integer 'Unsigned 'Eight)
-       -> Expr ExprF f ('Integer signedness width)
-shiftL tr x y = exprF $ \interp -> PrimOp $ Bitwise $ ShiftL tr (interp x) (interp y)
+       -> Expr ExprF val f ('Integer signedness width)
+       -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
+       -> Expr ExprF val f ('Integer signedness width)
+shiftL tr x y = exprF $ PrimOp $ Bitwise $ ShiftL tr x y
 
 shiftR :: TypeRep ('Integer signedness width)
-       -> Expr ExprF f ('Integer signedness width)
-       -> Expr ExprF f ('Integer 'Unsigned 'Eight)
-       -> Expr ExprF f ('Integer signedness width)
-shiftR tr x y = exprF $ \interp -> PrimOp $ Bitwise $ ShiftR tr (interp x) (interp y)
-
-local
-  :: TypeRep t
-  -> TypeRep r
-  -> Expr ExprF f t
-  -> (Expr ExprF f t -> Expr ExprF f r)
-  -> Expr ExprF f r
-local trt trr v k = exprF $ \interp -> Local trt trr (interp v) (interp . k . known)
+       -> Expr ExprF val f ('Integer signedness width)
+       -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
+       -> Expr ExprF val f ('Integer signedness width)
+shiftR tr x y = exprF $ PrimOp $ Bitwise $ ShiftR tr x y

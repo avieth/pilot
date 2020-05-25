@@ -13,6 +13,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ConstraintKinds #-}
@@ -20,39 +21,38 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleContexts #-}
 
 module Pilot.EDSL.Lifted
-  ( Lifted (..)
-  , Embed (..)
+  ( Embed (..)
+  , Lifted (..)
   , lift
   , unlift
   ) where
 
-import qualified Data.Kind as Haskell (Type)
-import Pilot.EDSL.Expr (Expr (..))
+import Pilot.EDSL.Expr (EDSL, Hask, Expr)
+import qualified Pilot.EDSL.Expr as Unlifted
 import Pilot.Types.Represented
 
--- | "Lift" an EDSL's domain into "Hask". This is any expression in some EDSL
--- with a `Haskell.Type` standing in for the type in the underlying domain, by
--- way of the 'EmbedT' family of the 'Embed' typeclass.
---
--- This is one way to give nominal types to an otherwise structurally-typed
--- EDSL. Even if two different `Haskell.Type`s have the same representation in
--- the underlying domain (defined by the 'Embed' class), they are nevertheless
--- distinct types in the 'Lifted' variant.
---
--- this is sort of analagous to Haskell's notion of "lifted" types but doesn't
--- carry the same _|_ semantics. Maybe a better name is needed?
-newtype Lifted
-  (exprF :: (domain -> Haskell.Type) -> domain -> Haskell.Type)
-  (f :: domain -> Haskell.Type)
-  (t :: Haskell.Type) = Lifted { getLifted :: Expr exprF f (EmbedT domain t) }
-
-lift :: Expr exprF f (EmbedT domain t) -> Lifted exprF f t
-lift = Lifted
-
-unlift :: Lifted exprF f t -> Expr exprF f (EmbedT domain t)
-unlift = getLifted
-
 -- | Gives a representation in `domain` for a Haskell type.
-class ( Represented domain ) => Embed (domain :: Haskell.Type) (t :: Haskell.Type) where
+--
+-- By way of this class, an EDSL domain can be endowed with a kind of
+-- "open world" of user-defined nominal types. The programmer may define
+-- two different nominal Haskell types which have the same type in the given
+-- EDSL domain, but which, in the "lifted" expression and value semantics, are
+-- not the same type.
+class ( Represented domain ) => Embed (domain :: Hask) (t :: Hask) where
   type EmbedT domain t :: domain
   embedT :: proxy domain -> proxy t -> Rep domain (EmbedT domain t)
+
+data Lifted (f :: domain -> Hask) (t :: Hask) where
+  Lifted :: f (EmbedT domain t) -> Lifted f t
+
+lift :: f (EmbedT domain t) -> Lifted f t
+lift = Lifted
+
+unlift :: Lifted f t -> f (EmbedT domain t)
+unlift (Lifted f) = f
+
+liftExpr :: Expr edsl expr f (EmbedT domain t) -> Lifted (Expr edsl expr f) t
+liftExpr = lift
+
+unliftExpr :: Lifted (Expr edsl expr f) t -> Expr edsl expr f (EmbedT domain t)
+unliftExpr = unlift

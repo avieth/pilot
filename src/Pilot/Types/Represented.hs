@@ -18,6 +18,8 @@ module Pilot.Types.Represented
   ( Represented (..)
   , Auto (..)
   , auto
+
+  , Proxy (..)
   ) where
 
 import qualified Data.Kind as Haskell (Type)

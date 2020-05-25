@@ -28,8 +28,7 @@ import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
 import Pilot.EDSL.Expr
-import Pilot.EDSL.Point (Type (..), All (..), Any (..), Case (..), ExprF (..),
-  Selector (..))
+import Pilot.EDSL.Point
 import qualified Pilot.EDSL.Point as Point
 import Pilot.EDSL.Stream
 import qualified Pilot.EDSL.Stream as Stream
@@ -38,120 +37,210 @@ import Pilot.Types.Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
-import qualified Pilot.C as C
+-- (42, -42) :: (UInt8, Int8)
+example_1 :: Expr Point.ExprF expr f (Pair UInt8 Int8)
+example_1 = Point.pair uint8_t int8_t (Point.uint8 42) (Point.int8 (-42))
+
+-- Right (-42) :: Either (UInt8, Int8)
+--
+-- Shows how we can use `auto` to fill in type information for the variants.
+-- The top-level type signature ensures that GHC can figure it out (everything
+-- is a known monotype).
+example_2 :: Expr Point.ExprF expr f (Point.Either UInt8 Int8)
+example_2 = Point.right auto auto (Point.int8 (-42))
+
+-- Just (-42) :: Maybe Int8
+example_3 :: Expr Point.ExprF expr f (Point.Maybe Int8)
+example_3 = Point.just auto (Point.int8 (-42))
+
+-- NB: even for simple pointwise expressions there is really a difference
+-- between it and a value that we need to maintain
+--   let y = let x = 2 in x + x
+--   in  y + y
+-- would make 2 bindings to 2, one for each of the y terms in the outer sum.
+--   y <- let x = 2 in x + x
+--   y + y
+-- would only make 1 binding to 2. The value y would be x + x and we'd get
+--   (x + x) + (x + x)
+-- as opposed to
+--   x0 = 2
+--   x1 = 2
+--   (x0 + x0) + (x1 + x1)
+--
+-- So, remember why we wanted to bring back the notion of `val`? The memory
+-- stream: 
+--
+--   a <- cosntant ...
+--   y <- memory [a] as
+--
+-- here y is fundamentally different from `memory [a] as`. 
+--
+--
+
+-- case example_3 of
+--   Nothing -> -1
+--   Just t  -> t
+example_4 :: Expr Point.ExprF expr f Int8
+example_4 = elim_maybe auto auto example_3
+  (\_ -> Point.int8 (-1))
+  (\t -> t)
+
+-- case example_2 of
+--   Left  -> -1
+--   Right -> 2
+example_4_1 :: Expr Point.ExprF expr f Int8
+example_4_1 = elim_either uint8_t int8_t int8_t example_2
+  (\_ -> Point.int8 (-1))
+  (\_ -> Point.int8 2)
+
+-- fst example_1
+example_5 :: Expr Point.ExprF expr f UInt8
+example_5 = Point.fst auto auto example_1
+
+-- 2 + 2
+example_6 :: Expr Point.ExprF expr f UInt8
+example_6 = Point.add auto (Point.uint8 2) (Point.uint8 2)
+
+-- example_6 + example_5
+-- = (2 + 2) + fst example_1
+-- = (2 + 2) + fst (42, -42)
+example_7 :: Expr Point.ExprF expr f UInt8
+example_7 = Point.add auto example_6 example_5
+
+example_8 :: Expr Point.ExprF expr f UInt8
+example_8 = Point.add auto (Point.fst auto auto example_1) example_6
+
+-- Expressions can of course be constructed with Haskell where/let bindings...
+example_9 :: Expr Point.ExprF val f UInt8
+example_9 = notB auto f
+  where
+  a = Point.uint8 0
+  b = Point.uint8 1
+  c = Point.uint8 2
+  d = Point.add auto a b
+  e = Point.add auto d c
+  f = Point.shiftR auto e a
+
+-- ... but they may also be constructed with "object-language" let bindings.
+--
+-- A Monad constraint appears on the interpreter because it must come up with
+-- a name and be flexible enough to do substitution.
+--
+-- NB: the Haskell let binding does not actually appear in the object-language,
+-- but the `local` induces a name/subst structure that _may_ appear in the
+-- object-language (depending on the interpreter).
+example_10 :: Monad f => Expr Point.ExprF val f UInt8
+example_10 = local example_9 $ \x ->
+  let y = Point.uint8 42
+  in  Point.orB auto x y
+
+-- We can also use a monadic style to do bindings (`local` uses this in its
+-- definition). Since `Expr` does not have the _kind_ of a Haskell monad, we
+-- use `ExprM` instead.
+example_11 :: Monad f => Expr Point.ExprF val f Point.Ordering
+example_11 = Expr $ do
+  x <- bind example_9
+  y <- bind $ Point.orB auto x (Point.uint8 42)
+  expr $ Point.cmp auto auto x y lt eq gt
+
+-- | Contains a nested product in a sum.
+example_12 :: Monad f => Expr Point.ExprF val f UInt8
+example_12 = Expr $ do
+  p <- bind $ example_1
+  s <- bind $ Point.just auto p
+  expr $ elim_maybe auto auto s
+    (\_ -> Point.uint8 1)
+    (\x -> Point.fst auto auto x)
+
+-- It should suffice here to make a type that is point expressions _free in
+-- val_, no?
+-- Concern is that, if it's free in val, it must be free in f, but will we
+-- always be free in f? What if the point uses some interpreter specific stuff?
+-- We should still be able to use it in a stream which uses the same interpreter.
+--
+-- Think about what the type will be in the interpreter type signature for C
+--
+--   eval_point
+--     :: Point.ExprF (Expr Point.ExprF (Compose Val 'Point) CodeGen) x
+--     -> CodeGen (Compose Val 'Point x)
+--
+--   eval_stream
+--     :: Stream.ExprF ? (Expr (Stream.ExprF ?) Val CodeGen) x
+--     -> CodeGen (Val x)
+--
+--
+-- Well... just let them be different?
+
+
+example_13 :: (Monad f) => Expr (Stream.ExprF (Expr Point.ExprF pval f)) val f ('Constant UInt8)
+example_13 = Stream.point uint8_t example_12
+
+type StreamExpr pval val f = Expr (Stream.ExprF (Expr Point.ExprF pval f)) val f
+
+-- Here a point is expressed and then "lifted" into a stream of a given
+-- prefix size (zero).
+example_14 :: (Monad f) => StreamExpr pval val f ('Stream 'Z (Pair UInt8 Int8))
+example_14 = Stream.constant auto auto p
+  where
+  p = Stream.point auto $ Point.pair auto auto d e
+  a = Point.uint8 1
+  b = Point.int8 2
+  c = Point.uint8 3
+  d = Point.add auto a c
+  e = Point.mul auto b b
+
+-- A memory stream. This one is just the value of example_13 forever.
+-- You wouldn't actually do it this way, because Steram.constant can be used
+-- to make example_13 into a stream of any prefix size.
+example_15 :: (Monad f) => StreamExpr pval val f ('Stream ('S 'Z) UInt8)
+example_15 = Stream.memory auto auto inits $ \_ ->
+  Stream.constant auto auto example_13
+  where
+  inits :: (Monad f) => Vec ('S 'Z) (StreamExpr pval val f ('Constant UInt8))
+  inits = VCons example_13 VNil
+
+-- The flagship example: define an integral using a memory stream of prefix
+-- size 1 and a lifted pointwise function.
+integral
+  :: forall pval val f .
+     (Monad f)
+  => StreamExpr pval val f ('Constant Int32)
+  -> StreamExpr pval val f ('Stream 'Z Int32)
+  -> StreamExpr pval val f ('Stream ('S 'Z) Int32)
+integral c f = Stream.memory auto auto (VCons c VNil) $ \sums ->
+  -- Here `sums` is the stream itself, but with a prefix of size zero (one less
+  -- than the prefix) so that only values which have already been computed may
+  -- be used.
+  unlit $ Stream.liftF autoArgs auto auto plus `at` f `at` sums
+  where
+  plus :: Fun (Expr Point.ExprF pval f) (Int32 :-> Int32 :-> V Int32)
+  plus = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
 
 -- |
 -- = Examples of streamwise expressions
 --
 -- TODO some examples of streams and lifting.
--- - Start with some applicative style of constant streams
--- - Show an integral using hold
 -- - Show a rising edge detector using hold and drop, as in
 --     and (not stream) (drop stream)
 --
 
-type Streamwise n t = forall f g . Expr (Stream.ExprF Point.ExprF g) f ('Stream n t)
-
--- NB: for these constant streams we do not choose a particular index on their
--- prefix size. It's not clear whether we can get away with using Haskell's
--- universal quantification to get quantification in the object language...
--- should maybe look into that later, but for now, each constant stream must
--- be given a particular explicit prefix size (but it can be anything).
-
-constant_42 :: forall n . NatRep n -> Streamwise n Point.UInt8
-constant_42 nrep = Stream.constant auto nrep (Point.uint8 42)
-
-constant_true :: forall n . NatRep n -> Streamwise n Point.Boolean
-constant_true nrep = Stream.constant auto nrep Point.true
-
-mk_pair :: Fun (Expr Point.ExprF f) (Point.UInt8 :-> Point.Boolean :-> V (Point.Pair Point.UInt8 Point.Boolean))
-mk_pair = fun $ \a -> fun $ \b -> lit $ Point.pair auto auto a b
-
--- Here's an unfortunate thing: we have to give a NatRep in order to lift a
--- function over, but we want it to be forall n.
--- Solution could be to not use a typical Nat, but rather Nat with infinity.
--- This way we have
---   Inf for pure streams
---   Z for no-memory impure streams
---   S n for memory impure streams
-constant_pair :: forall n . NatRep n -> Streamwise n (Point.Pair Point.UInt8 Point.Boolean)
-constant_pair nrep = unlit $ Stream.liftF argsrep auto nrep mk_pair
-  `at` constant_42 nrep `at` constant_true nrep
+-- To define the rising edge of a boolean stream, we first define a stream which
+-- gives the last value of that stream, then we take the exclusive or where
+-- the older one is false.
+rising_edge
+  :: forall pval val f .
+     (Monad f)
+  => StreamExpr pval val f ('Stream 'Z Boolean)
+  -> StreamExpr pval val f ('Stream 'Z Boolean)
+rising_edge bs = Expr $ do
+  ms <- bind $ Stream.memory auto auto inits $ \_ -> bs
+  -- We have to "shift" the stream to match the nat indices. What we get is
+  -- a stream bs' which at any instant is the value of bs at the last instant.
+  let bs' = Stream.shift auto auto ms
+      f = fun $ \x -> fun $ \y -> lit (Point.and (Point.not x) y)
+  expr $ unlit $ Stream.liftF autoArgs auto auto f `at` bs' `at` bs
   where
-  argsrep = Arg auto $ Arg auto $ Args
-
--- | Lifts (+) specialized to UInt8 over 2 streams. Analog of fmap (+) for
--- an applicative.
-lifted_plus
-  :: forall g f n .
-     NatRep n
-  -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
-     ('Stream n Point.UInt8 :-> 'Stream n Point.UInt8 :-> V ('Stream n Point.UInt8))
-lifted_plus nrep = Stream.liftF argsrep auto nrep point_add
-  where
-  point_add = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
-  argsrep = Arg auto $ Arg auto $ Args
-
--- | The integral of constant_42 (yes it's in UInt8 and will overflow fast but
--- whatever). This is a stream with memory (1 cell). That makes sense: the
--- first value is known to be 0, and this memory is essential for the
--- definition. At any given point one can drop from the stream to get the
--- latest value, which will depend upon the latest value of constant_42.
---
--- Also notice how we can use `auto` for the natural number representations,
--- since giving the top level 'S 'Z is enough to infer them all.
-mono_integral :: Streamwise ('S 'Z) Point.UInt8
-mono_integral = Stream.memory auto auto (VCons (Point.uint8 0) VNil) $ \sums ->
-  -- We have the stream of sums, seeded with the value 0. To get the next
-  -- values in this stream, we want to add those very partial sums to the
-  -- constant_42 stream. In order to do this lifted addition, both streams must
-  -- have the same nat index, and in this case they already do: in the
-  -- continuation of Stream.memory, the parameter (`sums` in this case) is
-  -- given a memory index 1 less than it actually has, to ensure that circular
-  -- definitions cannot happen (you can't drop the whole known memory segment).
-  unlit $ lifted_plus auto `at` constant_42 auto `at` sums
-
--- | Lifts (&&) over streams.
-lifted_and
-  :: forall g f n .
-     NatRep n
-  -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
-     ('Stream n Point.Boolean :-> 'Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
-lifted_and nrep = Stream.liftF argsrep auto nrep point_and
-  where
-  point_and = fun $ \a -> fun $ \b -> lit $ Point.and a b
-  argsrep = Arg auto $ Arg auto $ Args
-
-lifted_not
-  :: forall g f n .
-     NatRep n
-  -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
-     ('Stream n Point.Boolean :-> V ('Stream n Point.Boolean))
-lifted_not nrep = Stream.liftF argsrep auto nrep point_not
-  where
-  point_not = fun $ \a -> lit $ Point.not a
-  argsrep = Arg auto Args
-
--- | A rising edge stream. Given a stream of boolean, this stream is true
--- whenever that stream changes from false to true.
---
--- It's defined by making a 1-cell memory stream that holds the previous
--- value, and starting with true. The rising edge is then defined as "NOT
--- the first value AND the second value".
---
--- Notice how shift and drop are both used, so that the memory stream can
--- be reconciled with itself.
---
--- Also, we can use `auto` for all of the natural number representations, since
--- the top-level signature is enough for GHC to figure it out.
-rising_edge :: Streamwise 'Z Point.Boolean -> Streamwise 'Z Point.Boolean
-rising_edge bs =
-  -- Ideally it would look like this
-  --   and <$> shift (not <$> mem) <*> drop 1 mem
-  unlit $ lifted_and auto `at` Stream.shift auto auto (unlit $ lifted_not auto `at` mem)
-                          `at` Stream.drop  auto auto mem
-  where
-  mem = Stream.memory auto auto (VCons Point.true VNil) $ \_ -> bs
+  inits = VCons (Stream.point auto Point.false) VNil
 
 -- |
 -- = Examples of lifted pointwise expressions
@@ -168,36 +257,36 @@ instance Embed Point.Type Haskell.Int8 where
   type EmbedT Point.Type Haskell.Int8 = Point.Int8
   embedT _ _ = Point.int8_t
 
-uint8 :: Haskell.Word8 -> Lifted Point.ExprF f Haskell.Word8
+uint8 :: Haskell.Word8 -> Lifted (Expr Point.ExprF val f) Haskell.Word8
 uint8 = lift . Point.uint8
 
-int8 :: Haskell.Int8 -> Lifted Point.ExprF f Haskell.Int8
+int8 :: Haskell.Int8 -> Lifted (Expr Point.ExprF val f) Haskell.Int8
 int8 = lift . Point.int8
 
 instance Embed Point.Type () where
   type EmbedT Point.Type () = Point.Unit
   embedT _ _ = Point.unit_t
 
-unit :: Lifted Point.ExprF f ()
+unit :: Lifted (Expr Point.ExprF val f) ()
 unit = lift Point.unit
 
 instance Embed Point.Type Bool where
   type EmbedT Point.Type Bool = Point.Boolean
   embedT _ _ = Point.boolean_t
 
-true :: Lifted Point.ExprF f Bool
+true :: Lifted (Expr Point.ExprF val f) Bool
 true = lift Point.true
 
-false :: Lifted Point.ExprF f Bool
+false :: Lifted (Expr Point.ExprF val f) Bool
 false = lift Point.false
 
 if_else
-  :: forall f r .
+  :: forall val f r .
      (Embed Point.Type r)
-  => Lifted Point.ExprF f Bool
-  -> Lifted Point.ExprF f r
-  -> Lifted Point.ExprF f r
-  -> Lifted Point.ExprF f r
+  => Lifted (Expr Point.ExprF val f) Bool
+  -> Lifted (Expr Point.ExprF val f) r
+  -> Lifted (Expr Point.ExprF val f) r
+  -> Lifted (Expr Point.ExprF val f) r
 if_else vb cTrue cFalse = lift $ Point.if_else
   (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy r))
   (unlift vb)
@@ -209,28 +298,28 @@ instance Embed Point.Type t => Embed Point.Type (Prelude.Maybe t) where
   embedT _ _ = Point.maybe_t (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy t))
 
 nothing
-  :: forall f t .
-     ( Embed Point.Type t )
-  => Lifted Point.ExprF f (Prelude.Maybe t)
+  :: forall val f t .
+     (Embed Point.Type t)
+  => Lifted (Expr Point.ExprF val f) (Prelude.Maybe t)
 nothing = lift $ Point.nothing
   (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy t))
 
 just
-  :: forall f t .
-     ( Embed Point.Type t )
-  => Lifted Point.ExprF f t
-  -> Lifted Point.ExprF f (Prelude.Maybe t)
+  :: forall val f t .
+     (Embed Point.Type t)
+  => Lifted (Expr Point.ExprF val f) t
+  -> Lifted (Expr Point.ExprF val f) (Prelude.Maybe t)
 just vt = lift $ Point.just
   (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy t))
   (unlift vt)
 
 maybe
-  :: forall f t r .
-     ( Embed Point.Type t, Embed Point.Type r )
-  => Lifted Point.ExprF f (Prelude.Maybe t)
-  -> Lifted Point.ExprF f r
-  -> (Lifted Point.ExprF f t -> Lifted Point.ExprF f r)
-  -> Lifted Point.ExprF f r
+  :: forall val f t r .
+     (Embed Point.Type t, Embed Point.Type r)
+  => Lifted (Expr Point.ExprF val f) (Prelude.Maybe t)
+  -> Lifted (Expr Point.ExprF val f) r
+  -> (Lifted (Expr Point.ExprF val f) t -> Lifted (Expr Point.ExprF val f) r)
+  -> Lifted (Expr Point.ExprF val f) r
 maybe mx cNothing cJust = lift $ Point.elim_maybe
   (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy t))
   (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy r))
@@ -244,21 +333,21 @@ instance (Embed Point.Type s, Embed Point.Type t) => Embed Point.Type (s, t) whe
                             (embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy t))
 
 pair
-  :: forall f a b .
-     ( Embed Point.Type a, Embed Point.Type b )
-  => Lifted Point.ExprF f a
-  -> Lifted Point.ExprF f b
-  -> Lifted Point.ExprF f (a, b)
+  :: forall val f a b .
+     (Embed Point.Type a, Embed Point.Type b)
+  => Lifted (Expr Point.ExprF val f) a
+  -> Lifted (Expr Point.ExprF val f) b
+  -> Lifted (Expr Point.ExprF val f) (a, b)
 pair ea eb = lift $ Point.pair arep brep (unlift ea) (unlift eb)
   where
   arep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy a)
   brep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy b)
 
 fst
-  :: forall f a b .
-     ( Embed Point.Type a, Embed Point.Type b )
-  => Lifted Point.ExprF f (a, b)
-  -> Lifted Point.ExprF f a
+  :: forall val f a b .
+     (Embed Point.Type a, Embed Point.Type b)
+  => Lifted (Expr Point.ExprF val f) (a, b)
+  -> Lifted (Expr Point.ExprF val f) a
 fst p = lift $ Point.fst arep brep (unlift p)
   where
   arep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy a)
@@ -285,59 +374,54 @@ instance Embed Point.Type ApplicationSpecificType where
     where
     urep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ())
 
-variant_A :: Lifted Point.ExprF f ApplicationSpecificType
-variant_A = lift $ Point.exprF $ \interp -> Point.IntroSum trep Point.unit_t
-  (Any Selector) (interp Point.unit)
+variant_A :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
+variant_A = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
+  (Any Selector) Point.unit
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
-variant_B :: Lifted Point.ExprF f ApplicationSpecificType
-variant_B = lift $ Point.exprF $ \interp -> Point.IntroSum trep Point.unit_t
-  (Or $ Any Selector) (interp Point.unit)
+variant_B :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
+variant_B = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
+  (Or $ Any Selector) Point.unit
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
-variant_C :: Lifted Point.ExprF f ApplicationSpecificType
-variant_C = lift $ Point.exprF $ \interp -> Point.IntroSum trep Point.unit_t
-  (Or $ Or $ Any Selector) (interp Point.unit)
+variant_C :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
+variant_C = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
+  (Or $ Or $ Any Selector) Point.unit
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
-variant_D :: Lifted Point.ExprF f ApplicationSpecificType
-variant_D = lift $ Point.exprF $ \interp -> Point.IntroSum trep Point.unit_t
-  (Or $ Or $ Or $ Any Selector) (interp Point.unit)
+variant_D :: Lifted (Expr Point.ExprF val f) ApplicationSpecificType
+variant_D = lift $ Point.exprF $ Point.IntroSum trep Point.unit_t
+  (Or $ Or $ Or $ Any Selector) Point.unit
   where
   trep :: Point.TypeRep (EmbedT Point.Type ApplicationSpecificType)
   trep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
 
 -- | Case match to eliminate an ApplicationSpecificType
-variant
-  :: forall f r .
-     ( Embed Point.Type r )
-  => Lifted Point.ExprF f ApplicationSpecificType
-  -> Lifted Point.ExprF f r -- if A
-  -> Lifted Point.ExprF f r -- if B
-  -> Lifted Point.ExprF f r -- if C
-  -> Lifted Point.ExprF f r -- if D
-  -> Lifted Point.ExprF f r
-variant vv cA cB cC cD = lift $ Point.exprF $ \interp -> Point.ElimSum srep rrep
-  (And (Case urep (const (interp (unlift cA)))) $
-   And (Case urep (const (interp (unlift cB)))) $
-   And (Case urep (const (interp (unlift cC)))) $
-   And (Case urep (const (interp (unlift cD)))) $
+case_variant
+  :: forall val f r .
+     (Embed Point.Type r)
+  => Lifted (Expr Point.ExprF val f) ApplicationSpecificType
+  -> Lifted (Expr Point.ExprF val f) r -- if A
+  -> Lifted (Expr Point.ExprF val f) r -- if B
+  -> Lifted (Expr Point.ExprF val f) r -- if C
+  -> Lifted (Expr Point.ExprF val f) r -- if D
+  -> Lifted (Expr Point.ExprF val f) r
+case_variant vv cA cB cC cD = lift $ Point.exprF $ Point.ElimSum srep rrep
+  (unlift vv)
+  (And (Case urep (const (unlift cA))) $
+   And (Case urep (const (unlift cB))) $
+   And (Case urep (const (unlift cC))) $
+   And (Case urep (const (unlift cD))) $
    All)
-  (interp (unlift vv))
   where
   -- The lower-level representation requires type annotations everywhere, but
   -- we can just grab those from the embed instances.
   srep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ApplicationSpecificType)
   rrep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy r)
   urep = embedT (Proxy :: Proxy Point.Type) (Proxy :: Proxy ())
-
-{-
-write_lifted :: String -> Lifted ExprF C.CodeGen C.Val s x -> IO ()
-write_lifted fpath = C.write_example fpath . unlift
--}

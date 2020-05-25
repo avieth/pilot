@@ -32,6 +32,8 @@ module Pilot.Types.Fun
   , fun
   , at
   , Args (..)
+  , KnownArgs (..)
+  , autoArgs
   , mapArgs
   , traverseArgs
   , apply
@@ -43,6 +45,7 @@ module Pilot.Types.Fun
 
 import Prelude hiding (curry, uncurry)
 import qualified Data.Kind as Haskell (Type)
+import Pilot.Types.Represented
 
 -- We're interested in functions of the form
 --
@@ -102,6 +105,18 @@ at (Fun k) t = k t
 data Args (expr :: domain -> Haskell.Type) (ts :: [domain]) where
   Args :: Args expr '[]
   Arg  :: expr t -> Args expr ts -> Args expr (t ': ts)
+
+class KnownArgs (args :: [k]) where
+  inferArgs :: proxy args -> Args (Rep k) args
+
+instance KnownArgs '[] where
+  inferArgs _ = Args
+
+instance (Auto arg, KnownArgs args) => KnownArgs (arg ': args) where
+  inferArgs _ = Arg auto (inferArgs (Proxy :: Proxy args))
+
+autoArgs :: forall (args :: [k]) . KnownArgs args => Args (Rep k) args
+autoArgs = inferArgs (Proxy :: Proxy args)
 
 mapArgs :: (forall x . f x -> g x) -> Args f ts -> Args g ts
 mapArgs _ Args         = Args
