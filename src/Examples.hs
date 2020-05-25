@@ -53,31 +53,6 @@ example_2 = Point.right auto auto (Point.int8 (-42))
 example_3 :: Expr Point.ExprF expr f (Point.Maybe Int8)
 example_3 = Point.just auto (Point.int8 (-42))
 
-
--- NB: even for simple pointwise expressions there is really a difference
--- between it and a value that we need to maintain
---   let y = let x = 2 in x + x
---   in  y + y
--- would make 2 bindings to 2, one for each of the y terms in the outer sum.
---   y <- let x = 2 in x + x
---   y + y
--- would only make 1 binding to 2. The value y would be x + x and we'd get
---   (x + x) + (x + x)
--- as opposed to
---   x0 = 2
---   x1 = 2
---   (x0 + x0) + (x1 + x1)
---
--- So, remember why we wanted to bring back the notion of `val`? The memory
--- stream: 
---
---   a <- cosntant ...
---   y <- memory [a] as
---
--- here y is fundamentally different from `memory [a] as`. 
---
---
-
 -- case example_3 of
 --   Nothing -> -1
 --   Just t  -> t
@@ -153,26 +128,6 @@ example_12 = Expr $ do
     (\_ -> Point.uint8 1)
     (\x -> Point.fst auto auto x)
 
--- It should suffice here to make a type that is point expressions _free in
--- val_, no?
--- Concern is that, if it's free in val, it must be free in f, but will we
--- always be free in f? What if the point uses some interpreter specific stuff?
--- We should still be able to use it in a stream which uses the same interpreter.
---
--- Think about what the type will be in the interpreter type signature for C
---
---   eval_point
---     :: Point.ExprF (Expr Point.ExprF (Compose Val 'Point) CodeGen) x
---     -> CodeGen (Compose Val 'Point x)
---
---   eval_stream
---     :: Stream.ExprF ? (Expr (Stream.ExprF ?) Val CodeGen) x
---     -> CodeGen (Val x)
---
---
--- Well... just let them be different?
-
-
 example_13 :: (Monad f) => Expr (Stream.ExprF (Expr Point.ExprF pval f)) val f ('Constant UInt8)
 example_13 = Stream.point uint8_t example_12
 
@@ -225,14 +180,6 @@ example_16 = integral c f
   f :: (Monad f) => StreamExpr pval val f ('Stream 'Z Int32)
   f = Stream.constant auto auto (Stream.point auto (Point.int32 3))
 
--- |
--- = Examples of streamwise expressions
---
--- TODO some examples of streams and lifting.
--- - Show a rising edge detector using hold and drop, as in
---     and (not stream) (drop stream)
---
-
 -- To define the rising edge of a boolean stream, we first define a stream which
 -- gives the last value of that stream, then we take the exclusive or where
 -- the older one is false.
@@ -250,6 +197,25 @@ rising_edge bs = Expr $ do
   expr $ unlit $ Stream.liftF autoArgs auto auto f `at` bs' `at` bs
   where
   inits = VCons (Stream.point auto Point.false) VNil
+
+example_17 :: (Monad f) => StreamExpr pval val f ('Stream 'Z Boolean)
+example_17 = rising_edge signal
+  where
+  signal :: (Monad f) => StreamExpr pval val f ('Stream 'Z Boolean)
+  signal =
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.memory auto auto inits $ \_ -> Stream.constant auto auto (Stream.point auto Point.false)
+
+  inits :: Vec ('S ('S ('S ('S 'Z)))) (StreamExpr pval val f ('Constant Boolean))
+  inits =
+    VCons (Stream.point auto Point.true) $
+    VCons (Stream.point auto Point.false) $
+    VCons (Stream.point auto Point.false) $
+    VCons (Stream.point auto Point.true) $
+    VNil
 
 -- |
 -- = Examples of lifted pointwise expressions
