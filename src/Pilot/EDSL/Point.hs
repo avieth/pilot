@@ -741,11 +741,11 @@ elim_either tra trb trc v cLeft cRight = exprF $ ElimSum
    And (Case trb cRight) $
    All)
 
-true :: Expr ExprF expr f Boolean
-true = exprF $ IntroSum boolean_t unit_t (Any $ unit)
-
 false :: Expr ExprF expr f Boolean
-false = exprF $ IntroSum boolean_t unit_t (Or $ Any $ unit)
+false = exprF $ IntroSum boolean_t unit_t (Any $ unit)
+
+true :: Expr ExprF expr f Boolean
+true = exprF $ IntroSum boolean_t unit_t (Or $ Any $ unit)
 
 elim_boolean
   :: forall val r f .
@@ -754,10 +754,10 @@ elim_boolean
   -> Expr ExprF val f r
   -> Expr ExprF val f r
   -> Expr ExprF val f r
-elim_boolean trep vb cTrue cFalse = exprF $ ElimSum boolean_t trep
+elim_boolean trep vb cFalse cTrue = exprF $ ElimSum boolean_t trep
   vb
-  (And (Case unit_t (\_ -> cTrue)) $
-   And (Case unit_t (\_ -> cFalse)) $
+  (And (Case unit_t (\_ -> cFalse)) $
+   And (Case unit_t (\_ -> cTrue)) $
    All)
 
 if_else
@@ -772,15 +772,15 @@ if_else = elim_boolean
 and :: Expr ExprF val f Boolean
     -> Expr ExprF val f Boolean
     -> Expr ExprF val f Boolean
-and a b = if_else boolean_t a b false
+and a b = if_else boolean_t a false b
 
 or :: Expr ExprF val f Boolean
    -> Expr ExprF val f Boolean
    -> Expr ExprF val f Boolean
-or a b = if_else boolean_t a true b
+or a b = if_else boolean_t a b true
 
 not :: Expr ExprF val f Boolean -> Expr ExprF val f Boolean
-not a = if_else boolean_t a false true
+not a = if_else boolean_t a true false
 
 lt :: Expr ExprF val f Ordering
 lt = exprF $ IntroSum ordering_t unit_t (Any $ unit)
