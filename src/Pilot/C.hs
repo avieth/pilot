@@ -44,13 +44,12 @@ import qualified Language.C99.AST as C
 import Language.C99.Pretty (Pretty, pretty)
 import Text.PrettyPrint (render)
 
-import qualified Pilot.EDSL.Expr as Expr (known)
+import Pilot.EDSL.Expr
 -- TODO these should not be in the Point module.
-import Pilot.EDSL.Point (All (..), Any (..), Field (..), Selector (..),
-  Case (..), anyOfAll, forAll, mapAll)
-import Pilot.EDSL.Point hiding (Either, Maybe)
+import Pilot.EDSL.Point (All (..), Any (..), Selector (..), Case (..),
+  anyOfAll, forAll, mapAll)
+import Pilot.EDSL.Point (Signedness (..), Width (..), SignednessRep (..), WidthRep (..))
 import qualified Pilot.EDSL.Point as Point
-import Pilot.EDSL.Stream
 import qualified Pilot.EDSL.Stream as Stream
 
 import Pilot.Types.Fun
@@ -63,103 +62,28 @@ import Control.Exception (throwIO)
 
 -- TODO NEXT STEPS
 --
--- [ ] "local" bindings for the stream EDSL!?
---     Ought to be possible.
---
--- [ ] StreamTarget and streamwise values.
---     For constant streams, the function is a constant function. There is a
---     trivial way to lift the point value to a stream value for any n in this
---     way.
---     For hold streams the function simply bumps the C index used (modulo the
---     size). That can all live in the function closure, it won't be needed
---     anywhere else I don't believe.
---     For drop streams, call the original with the next offset `withNextOffset`
---     For shift streams, call the original with the same offset `withSameOffset`
---     For function streams, call each of the arguments with the same offset
---     (i.e. the one that's given).
---
--- [ ] Generating code for a stream-valued thing?
---     We could offer a way to just "demote" it using a given offset (we already
---     have that basically) and then generate it like we would for a point.
---     That can be good for running examples, demos, and debugging.
---     NB: this would give a program which, at each call to the eval function,
---     returns the next value of the stream, so it's definitely a legit thing
---     to have around.
---
---     But ultimately, what we want is an analog of the Haskell main with IO
---     monad: you construct a `Trigger`. However, note that this is _backend
---     specific_ just like external inputs. A trigger will be constructed from
---     0 or more streams and will generate an extern function declaration
---     and that function shall be called _at every eval_ with the current
---     values of those things. Then, `Trigger`s can be combined as a monoid.
+-- - C specific IO
+--   - Input corresponds exactly to externs
+--   - Output is set up by way of "triggers": multiple streams can be combined
+--     into one trigger, along with a string identifier, resulting in an
+--     extern function declaration.
+--     Then multiple triggers may be combined monoidally.
 --
 --       nop :: Trigger
 --       (<>) :: Trigger -> Trigger -> Trigger
 --       trigger :: TriggerCInfo -> TriggerStreams -> CodeGen s Trigger
 --
+--     To get a full C program you would need something of type
 --
--- [ ] Use Lifted over stream expressions. Will require a generic `Stream n t`
---     type with an embed instance that embeds t.
+--       ExprM <EDSL> (Stream s) (CodeGen s) (Trigger s)
 --
--- - Check whether a type actually has any sharing and if not, do not ever
---   generate an unshared type for it. toShared and toNotShared should actually
---   be no-ops in terms of CodeGenState as well.
+--     which can use the "pure" EDSL but ultimately commits to the C backend
+--     types.
 --
 -- - Simplify declare_product and declare_sum: just put the root name and the
 --   usage into the map, and generate the declarations at the end like we did
 --   before... ah yes but we still need the order... so track the order as
 --   well and then insertion sort them by that.
---
--- - Streams.
---   - "pure" streams (made from pointwise functions through the stream functor/
---     applicative/monad interfaces) compile to points.
---   - "memory" streams: generate a new name for the stream, and a static
---
---       struct <ty_name> {
---         <type> values[<size>];
---         <size_type> index;
---       };
---       struct <ty_name> <stream_name>;
---
---     where <size> is statically known (from the Nat type parameter), <type>
---     as well, and <size_type> is chosen so that it fits <size> and is
---     unsigned. A stream is represented by something which is a pointer to
---     this static struct. We can run the continuation with &<stream_name> to
---     come up with the expression which computes the next value in the stream,
---     and use that to implement an update function or macro
---
---       void <stream_name>_update(<type> value) {
---         <stream_name>.index += 1;
---         <stream_name>.index %= <size>;
---         <stream_name>.values[<stream_name>.index] = value;
---       }
---
---     Care must be taken to ensure that stack-allocated compound types are
---     taken by value, but static stream types (which can also be held in
---     streams) are taken by reference.
---
---     Then, at the end of the step function, for each stream we compute the
---     expression of the next element and then copy it in, in blocks
---
---       stream_1_val = <stream_1_expr>;
---       stream_2_val = <stream_2_expr>;
---       stream_1_update(stream_1_val);
---       stream_2_update(stream_2_val);
---
---     this way, if stream 1 uses stream 2 or vice versa, we still get the
---     expected result (no destructive updates mid-computation). All writes
---     happen at the end, after all reads.
---
---     TODO IMPORTANT since pure streams can have any type index, we'll need
---     to know from the Val type whether it's a pure stream or not, so that
---     we can correctly implement drop: if it's pure, then drop x = x.
---
---   - "impure" streams are simply extern declarations with a type annotation.
---     Actually, 2 types here: the extern type (any syntactically valid C), and
---     the EDSL type. The programmer must then say how to convert from the
---     extern to the intern. This will be done at the start of each step, to
---     copy the extern to a local static variable of the intern type.
---     This is of course C CodeGen-specific, unlike memory streams.
 --
 -- - C backend specific externs:
 --   - values of any EDSL type
@@ -184,66 +108,121 @@ import Control.Exception (throwIO)
 --   It would give smaller (and probably faster) C.
 --
 
--- | Useful for debugging.
+-- | Useful for debugging: C AST types, including the translation unit, have
+-- Pretty instances.
 prettyPrint :: Pretty a => a -> String
 prettyPrint = render . pretty
 
--- | The type to be used as a parameter in the 'Expr' type. An expression
--- targeted to this C backend will be instantiated as `Expr Point Target t`.
-newtype PointTarget s (t :: Point.Type) = PointTarget
-  { runPointTarget  :: CodeGen s (Val s ('ValPoint t)) }
+eval_point :: Expr Point.ExprF (Point s) (CodeGen s) t -> CodeGen s (Point s t)
+eval_point = evalExprM eval_point_expr eval_point_bind . runExpr
 
-newtype StreamTarget s (t :: Stream.Type Point.Type) = StreamTarget
-  { runStreamTarget :: CodeGen s (Val s ('ValStream t)) }
+eval_stream
+  :: Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s))) (Stream s) (CodeGen s) t
+  -> CodeGen s (Stream s t)
+eval_stream = evalExprM eval_stream_expr eval_stream_bind . runExpr
 
-data ValType where
-  ValPoint  :: Point.Type             -> ValType
-  ValStream :: Stream.Type Point.Type -> ValType
+-- | For naming/substitution in the CodeGenM monad: a C declaration is used.
+eval_point_bind :: Point s t -> CodeGen s (Point s t)
+eval_point_bind point = do
+  ident <- declare_initialized "point_binder" (pointExpr point) (pointCTypeInfo point)
+  pure $ Point
+    { pointExpr      = identIsCondExpr ident
+    , pointTypeRep   = pointTypeRep point
+    , pointCTypeInfo = pointCTypeInfo point
+    }
 
-data ValTypeRep (t :: ValType) where
-  ValPoint_t  :: Point.TypeRep  t -> ValTypeRep ('ValPoint t)
-  ValStream_t :: Stream.TypeRep t -> ValTypeRep ('ValStream t)
-
--- | A value in the C CodeGen context. It's either a point or a stream.
--- Points correspond exactly to C expressions (CondExpr is chosen arbitrarily,
--- should probably be Expr instead). Streams, on the other hand, are families
--- of C expressions depending upon the offset into the stream.
-data CVal s (t :: ValType) where
-  CValPoint  :: !C.CondExpr                         -> CVal s ('ValPoint t)
-  -- TODO FIXME this _seems_ really weird, that the stream evaluation function
-  -- would be in CodeGen. I would have thought that we'd already have everything
-  -- we need up-front, but that's not the case and we need this representation
-  -- in order to defined function lifting.
-  CValStream :: !(Offset n -> CodeGen s C.CondExpr) -> CVal s ('ValStream ('Stream n t))
-
--- | Represents an object-language value within a 'CodeGen' context (the `s`
--- type parameter, the ST/STRef trick).
+-- | Like 'eval_point_bind' but for streams: do the same thing, but behind the
+-- offset function.
 --
--- Every value has C type information (type specifier as well as pointer
--- designation). The rest depends upon whether it's a point value or a stream
--- value. For the former, we have a `C.CondExpr`, but for the latter, it's a
--- function which generates a `C.CondExpr` depending on an offset. Streams with
--- non-zero memory define more than one such expression.
-data Val (s :: Haskell.Type) (t :: ValType) = Val
-  { getVal      :: !(CVal s t)
-  , valType     :: !(ValTypeRep t)
-  , valTypeInfo :: !CTypeInfo
+-- TODO ideally, if we make a binding to a memory stream, it doesn't create a
+-- new binder, it just uses the name of the static thing.
+-- Could do the same for C externs. 
+eval_stream_bind :: Stream s t -> CodeGen s (Stream s t)
+eval_stream_bind stream = undefined
+
+-- | The C type specifier, and whether it should be taken through a pointer.
+data CTypeInfo = CTypeInfo
+  { ctypeSpec :: !C.TypeSpec
+  , ctypePtr  :: !Bool
   }
 
-valPointCondExpr :: Val s ('ValPoint t) -> C.CondExpr
-valPointCondExpr val = case getVal val of
-  CValPoint cexpr -> cexpr
+-- | Representation of a point (values in the pointwise EDSL).
+data Point s (t :: Point.Type) = Point
+  { pointExpr      :: !C.CondExpr
+  , pointTypeRep   :: !(Point.TypeRep t)
+  , pointCTypeInfo :: !CTypeInfo
+  }
 
-valPointType :: Val s ('ValPoint t) -> Point.TypeRep t
-valPointType val = case valType val of
-  ValPoint_t point_t -> point_t
+pointPtr :: Point s t -> Bool
+pointPtr = ctypePtr . pointCTypeInfo
 
-valSpec :: Val s t -> C.TypeSpec
-valSpec = ctypeSpec . valTypeInfo
+pointTypeSpec :: Point s t -> C.TypeSpec
+pointTypeSpec = ctypeSpec . pointCTypeInfo
 
-valPtr :: Val s t -> Bool
-valPtr = ctypePtr . valTypeInfo
+data StreamExpr (t :: Stream.Type Point.Type) where
+  StreamExprPoint    :: !C.CondExpr -> StreamExpr ('Stream.Constant t)
+  StreamExprConstant :: !C.CondExpr -> StreamExpr ('Stream.Stream n t)
+  -- | This stream is a combination of other streams such that its C expression
+  -- is a function of the offset into the stream.
+  StreamExprVarying  :: !(Offset n -> C.CondExpr)
+                     -> StreamExpr ('Stream.Stream n t)
+  -- | This stream is represented by a static array and index.
+  StreamExprStatic :: !StaticStream -> StreamExpr ('Stream.Stream n t)
+  -- | This stream is represented by a C extern.
+  StreamExprExtern :: !ExternStream -> StreamExpr ('Stream.Stream 'Z t)
 
+data ExternStream = ExternStream
+  { esGlobal :: !C.Ident
+  , esLocal  :: !C.Ident
+  }
+
+data StaticStream = StaticStream
+  { ssIndex :: !C.Ident
+  , ssArray :: !C.Ident
+  , ssSize  :: !Natural
+  }
+
+-- | Representation of a stream of points (values in the streamwise EDSL over
+-- the pointwise EDSL).
+data Stream s (t :: Stream.Type Point.Type) = Stream
+  { streamExpr      :: !(StreamExpr t)
+  , streamTypeRep   :: !(Stream.TypeRep t)
+  , streamCTypeInfo :: !CTypeInfo
+  }
+
+eval_point_expr
+  :: Point.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_point_expr (Point.IntroInteger tr il)        = eval_intro_integer tr il
+eval_point_expr (Point.PrimOp primop)             = eval_primop primop
+eval_point_expr (Point.IntroProduct tr fields)    = eval_intro_product tr fields
+eval_point_expr (Point.ElimProduct tr tr' sel it) = eval_elim_product tr tr' sel it
+eval_point_expr (Point.IntroSum tr tr' variant)   = eval_intro_sum tr tr' variant
+eval_point_expr (Point.ElimSum tr rr it cases)    = eval_elim_sum tr rr it cases
+
+
+eval_stream_expr
+  :: Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s))) (Stream s) (CodeGen s)) t
+  -> CodeGen s (Stream s t)
+eval_stream_expr _ = undefined
+
+-- | For integral types we use the C standard explicit types like uint8_t.
+--
+-- TODO may want this to be in CodeGen and update state to say which headers
+-- we need to include?
+integer_ident :: SignednessRep signedness -> WidthRep width -> C.Ident
+integer_ident Unsigned_t Eight_t     = ident_uint8_t
+integer_ident Unsigned_t Sixteen_t   = ident_uint16_t
+integer_ident Unsigned_t ThirtyTwo_t = ident_uint32_t
+integer_ident Unsigned_t SixtyFour_t = ident_uint64_t
+integer_ident Signed_t   Eight_t     = ident_int8_t
+integer_ident Signed_t   Sixteen_t   = ident_int16_t
+integer_ident Signed_t   ThirtyTwo_t = ident_int32_t
+integer_ident Signed_t   SixtyFour_t = ident_int64_t
+
+
+
+{-
 -- | Use a stream value as a point value by forgetting the stream information
 -- and taking the C.CondExpr at the given stream offset.
 sampleStreamValAt
@@ -347,6 +326,7 @@ shiftStreamVal nrep val =  case (getVal val, valType val) of
     -- C type info does not change.
     , valTypeInfo = valTypeInfo val
     }
+-}
 
 -- |
 -- = Type names and type declarations
@@ -422,32 +402,12 @@ sum_is_enum (Sum_t (And ty tys)) = case ty of
   _             -> Nothing
 -}
 
--- | For integral types we use the C standard explicit types like uint8_t.
---
--- TODO may want this to be in CodeGen and update state to say which headers
--- we need to include?
-integer_ident :: SignednessRep signedness -> WidthRep width -> C.Ident
-integer_ident Unsigned_t Eight_t     = ident_uint8_t
-integer_ident Unsigned_t Sixteen_t   = ident_uint16_t
-integer_ident Unsigned_t ThirtyTwo_t = ident_uint32_t
-integer_ident Unsigned_t SixtyFour_t = ident_uint64_t
-integer_ident Signed_t   Eight_t     = ident_int8_t
-integer_ident Signed_t   Sixteen_t   = ident_int16_t
-integer_ident Signed_t   ThirtyTwo_t = ident_int32_t
-integer_ident Signed_t   SixtyFour_t = ident_int64_t
-
--- | The C type specifier, and whether it should be taken through a pointer.
-data CTypeInfo = CTypeInfo
-  { ctypeSpec :: !C.TypeSpec
-  , ctypePtr  :: !Bool
-  }
-
 -- | Get the C type information for a given TypeRep. This includes not only
 -- the type specifier but also info about whether it should be taken as a
 -- pointer, which is often an important thing to know... Weird that in,
 -- "pointer" is not a type specifier, as we might expect from experience in
 -- functional languages.
-type_info :: CompoundTypeTreatment -> ValTypeRep t -> CodeGen s CTypeInfo
+type_info :: CompoundTypeTreatment -> Point.TypeRep t -> CodeGen s CTypeInfo
 type_info ctt trep = do
   typeSpec <- declare_type ctt trep
   pure $ CTypeInfo { ctypeSpec = typeSpec, ctypePtr = type_ptr ctt trep }
@@ -460,14 +420,14 @@ type_info ctt trep = do
 -- under the same treatment...
 --
 -- TODO rename or generalize. This only works for points, not streams.
-type_rep_val :: ValTypeRep ('ValPoint ty) -> C.CondExpr -> CodeGen s (Val s ('ValPoint ty))
+type_rep_val :: Point.TypeRep ty -> C.CondExpr -> CodeGen s (Point s ty)
 type_rep_val trep cexpr = do
   ctt <- compoundTypeTreatment
-  info <- type_info ctt trep
-  pure $ Val
-    { getVal      = CValPoint cexpr
-    , valType     = trep
-    , valTypeInfo = info
+  tinfo <- type_info ctt trep
+  pure $ Point
+    { pointExpr      = cexpr
+    , pointTypeRep   = trep
+    , pointCTypeInfo = tinfo
     }
 
 -- | C pointer information for a given type. If its representation is to be
@@ -480,61 +440,47 @@ type_rep_val trep cexpr = do
 --
 -- This just says whether or not it should be taken by reference. It does
 -- not give any C qualifiers on the pointer.
-type_ptr :: CompoundTypeTreatment -> ValTypeRep ty -> Bool
-type_ptr ctt (ValPoint_t  point_t)  = type_ptr_point  ctt point_t
-type_ptr ctt (ValStream_t stream_t) = type_ptr_stream ctt stream_t
 
-type_ptr_point :: CompoundTypeTreatment -> Point.TypeRep ty -> Bool
-type_ptr_point _ (Sum_t All)     = True
-type_ptr_point _ (Product_t All) = True
+type_ptr :: CompoundTypeTreatment -> Point.TypeRep ty -> Bool
 
-type_ptr_point Shared (Sum_t (And _ _))     = True
-type_ptr_point Shared (Product_t (And _ _)) = True
+type_ptr _ (Point.Sum_t All)     = True
+type_ptr _ (Point.Product_t All) = True
 
-type_ptr_point _ _ = False
+type_ptr Shared (Point.Sum_t (And _ _))     = True
+type_ptr Shared (Point.Product_t (And _ _)) = True
 
+type_ptr _ _ = False
+
+{-
 -- TODO define properly. It could be this is correct but I haven't though about
 -- it yet.
 type_ptr_stream :: CompoundTypeTreatment -> Stream.TypeRep ty -> Bool
 type_ptr_stream _ _ = False
-
--- | const and restrict qualifiers. Used for initialzied bindings to pointer
--- types.
-const_restrict :: C.TypeQualList
-const_restrict = C.TypeQualCons
-  (C.TypeQualBase C.QConst)
-  C.QRestrict
-
--- | Make a const restrict pointer to something by prepending *const restrict.
-const_restrict_ptr_to :: Maybe C.Ptr -> C.Ptr
-const_restrict_ptr_to Nothing    = C.PtrBase $ Just const_restrict
-const_restrict_ptr_to (Just ptr) = C.PtrCons (Just const_restrict) ptr
+-}
 
 -- | The C type specifier. This doesn't include pointer information.
 --
 -- This must be called before a given type is used, since it ensures that any
 -- necessary C declarations will be included.
-declare_type :: CompoundTypeTreatment -> ValTypeRep ty -> CodeGen s C.TypeSpec
-declare_type ctt (ValPoint_t  point_t)  = declare_type_point  ctt point_t
-declare_type ctt (ValStream_t stream_t) = declare_type_stream ctt stream_t
+declare_type :: CompoundTypeTreatment -> Point.TypeRep ty -> CodeGen s C.TypeSpec
 
-
-declare_type_point :: CompoundTypeTreatment -> Point.TypeRep ty -> CodeGen s C.TypeSpec
 -- Integer types use the standard sized variants like uint8_t. These are
 -- typedefs.
-declare_type_point _ (Integer_t sr wr) =
+declare_type _ (Point.Integer_t sr wr) =
   pure $ C.TTypedef $ C.TypedefName (integer_ident sr wr)
 
 -- TODO develop support for rational numbers.
-declare_type_point _ Rational_t = codeGenError $
+declare_type _ Point.Rational_t = codeGenError $
   CodeGenInternalError "fractional numbers not supported at the moment"
 
-declare_type_point ctt p@(Product_t _) = declare_product ctt p
+declare_type ctt p@(Point.Product_t _) = declare_product ctt p
 
-declare_type_point ctt s@(Sum_t _)     = declare_sum ctt s
+declare_type ctt s@(Point.Sum_t _)     = declare_sum ctt s
 
+{-
 declare_type_stream :: CompoundTypeTreatment -> Stream.TypeRep ty -> CodeGen s C.TypeSpec
 declare_type_stream _ _ = error "declare_type_stream not defined"
+-}
 
 product_field_prefix :: String
 product_field_prefix = "field_"
@@ -554,12 +500,15 @@ sum_variant_name n = sum_variant_prefix ++ show n
 --
 -- Otherwise, we generate a new identifier, and include its struct declaration
 -- in the CodeGen declarations list.
-declare_product :: CompoundTypeTreatment -> Point.TypeRep ('Product tys) -> CodeGen s C.TypeSpec
-declare_product _   (Product_t All) = pure $ C.TVoid
-declare_product ctt trep@(Product_t fields@(And t ts)) = do
+declare_product
+  :: CompoundTypeTreatment
+  -> Point.TypeRep ('Point.Product tys)
+  -> CodeGen s C.TypeSpec
+declare_product _        (Point.Product_t All)               = pure $ C.TVoid
+declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
   st <- CodeGen $ Trans.lift get
-  let someTypeRep :: SomeTypeRep
-      someTypeRep = SomeTypeRep trep
+  let someTypeRep :: Point.SomeTypeRep
+      someTypeRep = Point.SomeTypeRep trep
   case Map.lookup someTypeRep (cgsProducts st) of
 
     -- TODO refactor this and declare_sum (see notes over there).
@@ -677,12 +626,15 @@ product_defn_type_spec ident declnList = C.TStructOrUnion $
 
 -- | Exactly like 'declare_product' but on a different part of the CodeGen
 -- state.
-declare_sum :: CompoundTypeTreatment -> Point.TypeRep ('Sum tys) -> CodeGen s C.TypeSpec
-declare_sum _   (Sum_t All) = pure $ C.TVoid
-declare_sum ctt trep@(Sum_t variants@(And t ts)) = do
+declare_sum
+  :: CompoundTypeTreatment
+  -> Point.TypeRep ('Point.Sum tys)
+  -> CodeGen s C.TypeSpec
+declare_sum _        (Point.Sum_t All)                 = pure $ C.TVoid
+declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
   st <- CodeGen $ Trans.lift get
-  let someTypeRep :: SomeTypeRep
-      someTypeRep = SomeTypeRep trep
+  let someTypeRep :: Point.SomeTypeRep
+      someTypeRep = Point.SomeTypeRep trep
   case Map.lookup someTypeRep (cgsSums st) of
 
     -- How's this work exactly?
@@ -951,7 +903,7 @@ field_declns
   -> CodeGen s C.StructDeclnList
 
 field_declns ctt mkName n (NonEmptyFields (And t All)) = do
-  info <- type_info ctt (ValPoint_t t)
+  info <- type_info ctt t
   let !ident = assertValidIdentifier 
         ("field_declns bad identifier")
         (stringIdentifier (mkName n))
@@ -971,7 +923,7 @@ field_declns ctt mkName n (NonEmptyFields (And t All)) = do
 
 field_declns ctt mkName n (NonEmptyFields (And t (And t' ts))) = do
   subList <- field_declns ctt mkName (n+1) (NonEmptyFields (And t' ts))
-  info <- type_info ctt (ValPoint_t t)
+  info <- type_info ctt t
   let !ident = assertValidIdentifier
         ("field_declns bad identifier")
         (stringIdentifier (mkName n))
@@ -988,6 +940,257 @@ field_declns ctt mkName n (NonEmptyFields (And t (And t' ts))) = do
         C.DirectDeclrIdent ident
   pure $ C.StructDeclnCons subList $ C.StructDecln qualList declrList
 
+eval_intro_integer
+  :: forall signedness width s .
+     Point.TypeRep ('Point.Integer signedness width)
+  -> Point.IntegerLiteral signedness width
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+
+eval_intro_integer tr@(Point.Integer_t Unsigned_t _width) il = type_rep_val tr expr
+  where
+  expr = constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+
+eval_intro_integer tr@(Point.Integer_t Signed_t _width) il = type_rep_val tr $
+  if is_negative il
+  then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
+        C.IntHex (hex_const (absolute_value il)) Nothing
+  else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+
+is_negative :: Point.IntegerLiteral 'Signed width -> Bool
+is_negative (Point.Int8 i8)   = i8 < 0
+is_negative (Point.Int16 i16) = i16 < 0
+is_negative (Point.Int32 i32) = i32 < 0
+is_negative (Point.Int64 i64) = i64 < 0
+
+absolute_value :: Point.IntegerLiteral signedness width -> Natural
+absolute_value (Point.UInt8  w8)  = fromIntegral w8
+absolute_value (Point.UInt16 w16) = fromIntegral w16
+absolute_value (Point.UInt32 w32) = fromIntegral w32
+absolute_value (Point.UInt64 w64) = fromIntegral w64
+absolute_value (Point.Int8   i8)  = fromIntegral (abs i8)
+absolute_value (Point.Int16  i16) = fromIntegral (abs i16)
+absolute_value (Point.Int32  i32) = fromIntegral (abs i32)
+absolute_value (Point.Int64  i64) = fromIntegral (abs i64)
+
+eval_primop
+  :: Point.PrimOpF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_primop (Point.Arithmetic arithop) = eval_arithop arithop
+eval_primop (Point.Bitwise bitop)      = eval_bitop bitop
+eval_primop (Point.Relative relop)     = eval_relop relop
+
+eval_arithop
+  :: Point.ArithmeticOpF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_arithop (Point.AddInteger tr x y) = eval_add_integer tr x y
+eval_arithop (Point.SubInteger tr x y) = eval_sub_integer tr x y
+eval_arithop (Point.MulInteger tr x y) = eval_mul_integer tr x y
+eval_arithop (Point.DivInteger tr x y) = eval_div_integer tr x y
+eval_arithop (Point.ModInteger tr x y) = eval_mod_integer tr x y
+eval_arithop (Point.NegInteger tr x)   = eval_neg_integer tr x
+
+-- | The `signedness` and `width` meta-language types ensure that the two
+-- integers are of the same type.
+eval_add_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_add_integer tr vx vy = do
+  x <- eval_point vx
+  y <- eval_point vy
+  let expr = addExprIsCondExpr $ C.AddPlus
+        (condExprIsAddExpr  (pointExpr x))
+        (condExprIsMultExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_sub_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_sub_integer tr vx vy = do
+  x <- eval_point vx
+  y <- eval_point vy
+  let expr = addExprIsCondExpr $ C.AddMin
+        (condExprIsAddExpr  (pointExpr x))
+        (condExprIsMultExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_mul_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_mul_integer tr vx vy = do
+  x <- eval_point vx
+  y <- eval_point vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMult
+        (condExprIsMultExpr (pointExpr x))
+        (condExprIsCastExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_div_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_div_integer tr vx vy = do
+  x <- eval_point vx
+  y <- eval_point vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultDiv
+        (condExprIsMultExpr (pointExpr x))
+        (condExprIsCastExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_mod_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_mod_integer tr vx vy = do
+  x <- eval_point vx
+  y <- eval_point vy
+  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMod
+        (condExprIsMultExpr (pointExpr x))
+        (condExprIsCastExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_neg_integer
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_neg_integer tr vx  = do
+  x <- eval_point vx
+  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOMin $
+        condExprIsCastExpr (pointExpr x)
+  type_rep_val tr expr
+
+eval_bitop
+  :: Point.BitwiseOpF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_bitop (Point.AndB tr x y)   = eval_and_bitwise tr x y
+eval_bitop (Point.OrB  tr x y)   = eval_or_bitwise  tr x y
+eval_bitop (Point.XOrB tr x y)   = eval_xor_bitwise tr x y
+eval_bitop (Point.NotB tr x)     = eval_not_bitwise tr x
+eval_bitop (Point.ShiftL tr x y) = eval_shiftl_bitwise tr x y
+eval_bitop (Point.ShiftR tr x y) = eval_shiftr_bitwise tr x y
+
+eval_and_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_and_bitwise tr bx by = do
+  x <- eval_point bx
+  y <- eval_point by
+  let expr = andExprIsCondExpr $ C.And
+        (condExprIsAndExpr (pointExpr x))
+        (condExprIsEqExpr  (pointExpr y))
+  type_rep_val tr expr
+
+eval_or_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_or_bitwise tr bx by = do
+  x <- eval_point bx
+  y <- eval_point by
+  let expr = orExprIsCondExpr $ C.Or
+        (condExprIsOrExpr  (pointExpr x))
+        (condExprIsXOrExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_xor_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_xor_bitwise tr bx by = do
+  x <- eval_point bx
+  y <- eval_point by
+  let expr = xorExprIsCondExpr $ C.XOr
+        (condExprIsXOrExpr (pointExpr x))
+        (condExprIsAndExpr (pointExpr y))
+  type_rep_val tr expr
+
+eval_not_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_not_bitwise tr bx = do
+  x <- eval_point bx
+  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOBNot
+        (condExprIsCastExpr (pointExpr x))
+  type_rep_val tr expr
+
+eval_shiftl_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer 'Unsigned 'Eight)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_shiftl_bitwise tr bx by = do
+  x <- eval_point bx
+  y <- eval_point by
+  let expr = shiftExprIsCondExpr $ C.ShiftLeft
+        (condExprIsShiftExpr (pointExpr x))
+        (condExprIsAddExpr   (pointExpr y))
+  type_rep_val tr expr
+
+eval_shiftr_bitwise
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer 'Unsigned 'Eight)
+  -> CodeGen s (Point s ('Point.Integer signedness width))
+eval_shiftr_bitwise tr bx by = do
+  x <- eval_point bx
+  y <- eval_point by
+  let expr = shiftExprIsCondExpr $ C.ShiftRight
+        (condExprIsShiftExpr (pointExpr x))
+        (condExprIsAddExpr   (pointExpr y))
+  type_rep_val tr expr
+
+eval_relop
+  :: Point.RelativeOpF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_relop (Point.Cmp trep trepr x y lt eq gt) = eval_cmp trep trepr x y lt eq gt
+
+eval_cmp
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Point.TypeRep r
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Integer signedness width)
+  -> Expr Point.ExprF (Point s) (CodeGen s) r
+  -> Expr Point.ExprF (Point s) (CodeGen s) r
+  -> Expr Point.ExprF (Point s) (CodeGen s) r
+  -> CodeGen s (Point s r)
+eval_cmp _trep trepr vx vy lt eq gt = do
+  -- TODO what to do here though? The EDSL mandates that compare gives an
+  -- ordering, which is a sum type.
+  -- I find it weird that any evaluation thing would have to evaluate an
+  -- _expression_.
+  -- Wouldn't it be better to have Cmp take 2 integers and 3 cases?
+  --
+  -- We elaborate all 3 cases here.
+  -- The ternary operator which we generate ensures that only one of them is
+  -- actually evaluated in the object-language
+  lessThan    <- eval_point lt
+  greaterThan <- eval_point gt
+  equalTo     <- eval_point eq
+  x <- eval_point vx
+  y <- eval_point vy
+  let isLt :: C.RelExpr
+      isLt = C.RelLT (condExprIsRelExpr (pointExpr x)) (condExprIsShiftExpr (pointExpr y))
+      isGt :: C.RelExpr
+      isGt = C.RelGT (condExprIsRelExpr (pointExpr x)) (condExprIsShiftExpr (pointExpr y))
+      expr = C.Cond (relExprIsLOrExpr isLt) (condExprIsExpr (pointExpr lessThan)) $
+             C.Cond (relExprIsLOrExpr isGt) (condExprIsExpr (pointExpr greaterThan)) $
+                                            (pointExpr equalTo)
+  type_rep_val trepr expr
+
+
+{-
 -- |
 -- = Evaluation of expressions
 --
@@ -998,11 +1201,6 @@ run_example
   -> Expr Point.ExprF (PointTarget s) t
   -> (Prelude.Either CodeGenError (Val s ('ValPoint t)), CodeGenState)
 run_example b expr = evalCodeGen opts (runPointTarget (evalExpr eval_expr_point expr))
-  where
-  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
-
-write_example :: String -> Bool -> Expr Point.ExprF (PointTarget s) t -> IO ()
-write_example fp b expr = codeGenToFile fp opts (runPointTarget (evalExpr eval_expr_point expr))
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
 
@@ -1018,89 +1216,6 @@ write_stream_example fp b expr = codeGenToFile fp opts $ do
   sampleStreamValAt Current sval
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
-
-example_1 :: Expr Point.ExprF f (Pair UInt8 Int8)
-example_1 = pair uint8_t int8_t (uint8 42) (int8 (-42))
-
--- Want to say: take the pair in example_1 and add its first and second
--- components _in a stream_.
-
-lifted_plus
-  :: forall g f n .
-     NatRep n
-  -> Fun (Expr (Stream.ExprF Point.ExprF g) f)
-         ('Stream n UInt8 :-> 'Stream n UInt8 :-> V ('Stream n UInt8))
-lifted_plus nrep = Stream.liftF argsrep auto nrep point_add
-  where
-  point_add = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
-  argsrep = Arg auto $ Arg auto $ Args
-
-example_1_1 :: Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) ('Stream 'Z UInt8)
-example_1_1 = local auto auto example_1 $ \p ->
-  local auto auto (Point.fst auto auto p) $ \x ->
-  local auto auto (Point.snd auto auto p) $ \y ->
-
-
-example_2 :: Expr Point.ExprF f (Point.Either UInt8 Int8)
-example_2 = right uint8_t int8_t (int8 (-42))
-
-example_3 :: Expr Point.ExprF f (Point.Maybe Int8)
-example_3 = just int8_t (int8 (-42))
-
-example_4 :: Expr Point.ExprF f Int8
-example_4 = elim_maybe int8_t int8_t example_3
-  (\_ -> int8 (-1))
-  (\t -> t)
-
-example_4_1 :: Expr Point.ExprF f Int8
-example_4_1 = elim_either uint8_t int8_t int8_t example_2
-  (\_ -> int8 (-1))
-  (\_ -> int8 2)
-
-example_5 :: Expr Point.ExprF f UInt8
-example_5 = Point.fst uint8_t int8_t example_1
-
-example_6 :: Expr Point.ExprF f UInt8
-example_6 = add uint8_t (uint8 2) (uint8 2)
-
-example_7 :: Expr Point.ExprF f UInt8
-example_7 = add uint8_t example_6 example_5
-
-example_8 :: Expr Point.ExprF f UInt8
-example_8 = local (pair_t uint8_t int8_t) uint8_t example_1 $ \p -> do
-  add uint8_t (Point.fst uint8_t int8_t p) example_6
-
-example_9 :: Expr Point.ExprF f UInt8
-example_9 =
-  let a = uint8 0
-      b = uint8 1
-      c = uint8 3
-      d = add uint8_t a b
-      e = add uint8_t d c
-      f = shiftR uint8_t e a
-  in  notB uint8_t f
-
-example_10 :: Expr Point.ExprF f UInt8
-example_10 = local uint8_t uint8_t example_9 $ \a ->
-  orB uint8_t a (uint8 42)
-
-example_11 :: Expr Point.ExprF f Point.Ordering
-example_11 =
-  local uint8_t ordering_t example_10 $ \s ->
-    local uint8_t ordering_t example_6 $ \t ->
-      cmp uint8_t ordering_t s t lt eq gt
-
--- | Contains a nested product in a sum.
-example_12 :: Expr Point.ExprF f UInt8
-example_12 =
-  -- Bind the pair from example_1
-  local (pair_t uint8_t int8_t) uint8_t example_1 $ \p ->
-    -- Bind a maybe of this
-    --local (maybe_t (typeOf p)) uint8_t (nothing (typeOf p)) $ \s ->
-    local (maybe_t (typeOf p)) uint8_t (just (typeOf p) p) $ \s ->
-      elim_maybe (typeOf p) uint8_t s
-        (\_ -> uint8 1)
-        (\x -> Point.fst uint8_t int8_t x)
 
 -- | TODO doc
 eval_expr_stream
@@ -1218,301 +1333,7 @@ eval_memory_stream
   -> (StreamTarget s ('Stream n t) -> StreamTarget s ('Stream 'Z t))
   -> StreamTarget s ('Stream ('S n) t)
 eval_memory_stream = error "eval_memory_stream not defined"
-
--- | Generate a C value representation for an expression, assuming any/all of
--- its sub-expressions are already generated.
---
--- For many `ExprF`s, this will be a simple C expression. For some, C statements
--- and declarations are required (forming a compound statement). In all cases,
--- a C expression is ultimately given, but the state carried in the `CodeGen`
--- monad will contain the information necessary to construct the compound
--- statement which gives meaning to that expression.
---
--- A `Local` binding, for instance, needs a C declaration in the same scope.
--- The most complicated aspect is `ElimSum`, which must elaborate to an if/else
--- or switch construct, because the cases eliminators may reuqire scope of their
--- own (and so a conditional _expression_ cannot be used). Ultimately, the
--- `ElimSum` yields a C identifier which is updated at the end of every case
--- branch.
---
--- The `s` type parameter serves to represent the fact that the Val, which must
--- be a C expression, makes sense only in context.
-eval_expr_point :: Point.ExprF (PointTarget s) t -> PointTarget s t
-eval_expr_point (IntroInteger tr il)        = eval_intro_integer tr il
-eval_expr_point (PrimOp primop)             = eval_primop primop
-eval_expr_point (IntroProduct tr fields)    = eval_intro_product tr fields
-eval_expr_point (ElimProduct tr tr' sel it) = eval_elim_product tr tr' sel it
-eval_expr_point (IntroSum tr tr' variant v) = eval_intro_sum tr tr' variant v
-eval_expr_point (ElimSum tr rr cases it)    = eval_elim_sum tr rr cases it
-eval_expr_point (Local tt tr it k)          = eval_local tt tr it k
-
-eval_primop :: PrimOpF (PointTarget s) t -> PointTarget s t
-eval_primop (Arithmetic arithop) = eval_arithop arithop
-eval_primop (Bitwise bitop)      = eval_bitop bitop
-eval_primop (Relative relop)     = eval_relop relop
-
-eval_arithop :: ArithmeticOpF (PointTarget s) t -> PointTarget s t
-eval_arithop (AddInteger tr x y) = eval_add_integer tr x y
-eval_arithop (SubInteger tr x y) = eval_sub_integer tr x y
-eval_arithop (MulInteger tr x y) = eval_mul_integer tr x y
-eval_arithop (DivInteger tr x y) = eval_div_integer tr x y
-eval_arithop (ModInteger tr x y) = eval_mod_integer tr x y
-eval_arithop (NegInteger tr x)   = eval_neg_integer tr x
-
-eval_bitop :: BitwiseOpF (PointTarget s) t -> PointTarget s t
-eval_bitop (AndB tr x y)   = eval_and_bitwise tr x y
-eval_bitop (OrB  tr x y)   = eval_or_bitwise  tr x y
-eval_bitop (XOrB tr x y)   = eval_xor_bitwise tr x y
-eval_bitop (NotB tr x)     = eval_not_bitwise tr x
-eval_bitop (ShiftL tr x y) = eval_shiftl_bitwise tr x y
-eval_bitop (ShiftR tr x y) = eval_shiftr_bitwise tr x y
-
-eval_relop :: RelativeOpF (PointTarget s) t -> PointTarget s t
-eval_relop (Cmp trep trepr x y lt eq gt) = eval_cmp trep trepr x y lt eq gt
-
--- | Take a fresh name, bind the expression to it, and use the _name_ rather
--- than the expression to elaborate the code here in the meta-language.
---
--- NB: this has implications for the evaluation of sum type elimination. It
--- cannot be done by way of an expression, because each branch requires its own
--- scope, so we're forced to use if/else blocks or switch statements with block
--- scopes.
---
--- TODO an improvement for later: if the value being bound is just an identifier,
--- then we don't need a new binding. Can be done easily if we change the Val
--- representation to be a sum.
-eval_local
-  :: forall t r s .
-     Point.TypeRep t
-  -> Point.TypeRep r
-  -> PointTarget s t
-  -> (PointTarget s t -> PointTarget s r)
-  -> PointTarget s r
-eval_local _tt _tr x k = PointTarget $ do
-  val <- runPointTarget x
-  (_ident, val') <- declare_initialized "local" val
-  runPointTarget $ k (PointTarget (pure val'))
-
-eval_intro_integer
-  :: forall signedness width s .
-     Point.TypeRep ('Integer signedness width)
-  -> IntegerLiteral signedness width
-  -> PointTarget s ('Integer signedness width)
-
-eval_intro_integer tr@(Integer_t Unsigned_t _width) il = PointTarget $ type_rep_val (ValPoint_t tr) expr
-  where
-  expr = constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-
-eval_intro_integer tr@(Integer_t Signed_t _width) il = PointTarget $ type_rep_val (ValPoint_t tr) $
-  if is_negative il
-  then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
-        C.IntHex (hex_const (absolute_value il)) Nothing
-  else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-
-is_negative :: IntegerLiteral 'Signed width -> Bool
-is_negative (Int8 i8)   = i8 < 0
-is_negative (Int16 i16) = i16 < 0
-is_negative (Int32 i32) = i32 < 0
-is_negative (Int64 i64) = i64 < 0
-
-absolute_value :: IntegerLiteral signedness width -> Natural
-absolute_value (UInt8 w8)   = fromIntegral w8
-absolute_value (UInt16 w16) = fromIntegral w16
-absolute_value (UInt32 w32) = fromIntegral w32
-absolute_value (UInt64 w64) = fromIntegral w64
-absolute_value (Int8 i8)    = fromIntegral (abs i8)
-absolute_value (Int16 i16)  = fromIntegral (abs i16)
-absolute_value (Int32 i32)  = fromIntegral (abs i32)
-absolute_value (Int64 i64)  = fromIntegral (abs i64)
-
--- | The `signedness` and `width` meta-language types ensure that the two
--- integers are of the same type.
-eval_add_integer
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_add_integer tr vx vy = PointTarget $ do
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let expr = addExprIsCondExpr $ C.AddPlus
-        (condExprIsAddExpr  (valPointCondExpr x))
-        (condExprIsMultExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_sub_integer
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_sub_integer tr vx vy = PointTarget $ do
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let expr = addExprIsCondExpr $ C.AddMin
-        (condExprIsAddExpr (valPointCondExpr x))
-        (condExprIsMultExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_mul_integer
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_mul_integer tr vx vy = PointTarget $ do
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMult
-        (condExprIsMultExpr (valPointCondExpr x))
-        (condExprIsCastExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_div_integer
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_div_integer tr vx vy = PointTarget $ do
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let expr = addExprIsCondExpr $ C.AddMult $ C.MultDiv
-        (condExprIsMultExpr (valPointCondExpr x))
-        (condExprIsCastExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_mod_integer
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_mod_integer tr vx vy = PointTarget $ do
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let expr = addExprIsCondExpr $ C.AddMult $ C.MultMod
-        (condExprIsMultExpr (valPointCondExpr x))
-        (condExprIsCastExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_neg_integer
-  :: Point.TypeRep ('Integer 'Signed width)
-  -> PointTarget s ('Integer 'Signed width)
-  -> PointTarget s ('Integer 'Signed width)
-eval_neg_integer tr vx = PointTarget $ do
-  x <- runPointTarget vx
-  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOMin $
-        condExprIsCastExpr (valPointCondExpr x)
-  type_rep_val (ValPoint_t tr) expr
-
-eval_and_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_and_bitwise tr bx by = PointTarget $ do
-  x <- runPointTarget bx
-  y <- runPointTarget by
-  let expr = andExprIsCondExpr $ C.And
-        (condExprIsAndExpr (valPointCondExpr x))
-        (condExprIsEqExpr  (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_or_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_or_bitwise tr bx by = PointTarget $ do
-  x <- runPointTarget bx
-  y <- runPointTarget by
-  let expr = orExprIsCondExpr $ C.Or
-        (condExprIsOrExpr  (valPointCondExpr x))
-        (condExprIsXOrExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_xor_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_xor_bitwise tr bx by = PointTarget $ do
-  x <- runPointTarget bx
-  y <- runPointTarget by
-  let expr = xorExprIsCondExpr $ C.XOr
-        (condExprIsXOrExpr (valPointCondExpr x))
-        (condExprIsAndExpr (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_not_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-eval_not_bitwise tr bx = PointTarget $ do
-  x <- runPointTarget bx
-  let expr = unaryExprIsCondExpr $ C.UnaryOp C.UOBNot
-        (condExprIsCastExpr (valPointCondExpr x))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_shiftl_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer 'Unsigned 'Eight)
-  -> PointTarget s ('Integer signedness width)
-eval_shiftl_bitwise tr bx by = PointTarget $ do
-  x <- runPointTarget bx
-  y <- runPointTarget by
-  let expr = shiftExprIsCondExpr $ C.ShiftLeft
-        (condExprIsShiftExpr (valPointCondExpr x))
-        (condExprIsAddExpr   (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
-eval_shiftr_bitwise
-  :: Point.TypeRep ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer 'Unsigned 'Eight)
-  -> PointTarget s ('Integer signedness width)
-eval_shiftr_bitwise tr bx by = PointTarget $ do
-  x <- runPointTarget bx
-  y <- runPointTarget by
-  let expr = shiftExprIsCondExpr $ C.ShiftRight
-        (condExprIsShiftExpr (valPointCondExpr x))
-        (condExprIsAddExpr   (valPointCondExpr y))
-  type_rep_val (ValPoint_t tr) expr
-
--- | The comparison is expressed using 2 C ternary expressions.
--- Relies on the assumption of a total order (that if x is neither than than nor
--- greater than y then x is equal to y). Would not work for float/double, for
--- example.
-eval_cmp
-  :: Point.TypeRep ('Integer signedness width)
-  -> Point.TypeRep r
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s ('Integer signedness width)
-  -> PointTarget s r
-  -> PointTarget s r
-  -> PointTarget s r
-  -> PointTarget s r
-eval_cmp _trep trepr vx vy lt eq gt = PointTarget $ do
-  -- TODO what to do here though? The EDSL mandates that compare gives an
-  -- ordering, which is a sum type.
-  -- I find it weird that any evaluation thing would have to evaluate an
-  -- _expression_.
-  -- Wouldn't it be better to have Cmp take 2 integers and 3 cases?
-  --
-  -- We elaborate all 3 cases here.
-  -- The ternary operator which we generate ensures that only one of them is
-  -- actually evaluated in the object-language
-  lessThan    <- runPointTarget lt
-  greaterThan <- runPointTarget gt
-  equalTo     <- runPointTarget eq
-  x <- runPointTarget vx
-  y <- runPointTarget vy
-  let isLt :: C.RelExpr
-      isLt = C.RelLT (condExprIsRelExpr (valPointCondExpr x)) (condExprIsShiftExpr (valPointCondExpr y))
-      isGt :: C.RelExpr
-      isGt = C.RelGT (condExprIsRelExpr (valPointCondExpr x)) (condExprIsShiftExpr (valPointCondExpr y))
-      expr = C.Cond (relExprIsLOrExpr isLt) (condExprIsExpr (valPointCondExpr lessThan)) $
-             C.Cond (relExprIsLOrExpr isGt) (condExprIsExpr (valPointCondExpr greaterThan)) $
-                                            (valPointCondExpr equalTo)
-  type_rep_val (ValPoint_t trepr) expr
+-}
 
 -- | Product intro: give all conjuncts and get the product. Since products are
 -- structs, this corresponds to a struct initializer with a field for each
@@ -1522,18 +1343,14 @@ eval_cmp _trep trepr vx vy lt eq gt = PointTarget $ do
 -- TODO there is no way to eliminate an empty product, so we could probably
 -- get away with simply erasing an intro of an empty product.
 --
--- TODO should not take
---   All (Expr ExprF CodeGen Val s) types
--- but rather
---   All (Val s) types
--- no?
 eval_intro_product
-  :: Point.TypeRep ('Product types)
-  -> All (Field (PointTarget s)) types
-  -> PointTarget s ('Product types)
-eval_intro_product trep All        = PointTarget $
-  type_rep_val (ValPoint_t trep) cNULL
-eval_intro_product trep (And t ts) = PointTarget $ do
+  :: Point.TypeRep ('Point.Product types)
+  -> All (Expr Point.ExprF (Point s) (CodeGen s)) types
+  -> CodeGen s (Point s ('Point.Product types))
+
+eval_intro_product trep All        = type_rep_val trep cNULL
+
+eval_intro_product trep@(Point.Product_t (And _tr _trs)) (And t ts) = do
   ctt <- compoundTypeTreatment
   -- This will ensure the composite type is in the code gen state
   typeSpec <- declare_product ctt trep
@@ -1543,55 +1360,55 @@ eval_intro_product trep (And t ts) = PointTarget $ do
       expr = case ctt of
         Shared    -> reference (postfixExprIsCondExpr pexpr)
         NotShared -> postfixExprIsCondExpr pexpr
-  type_rep_val (ValPoint_t trep) expr
+  type_rep_val trep expr
 
 product_field_inits
   :: CompoundTypeTreatment
   -> Natural
-  -> Field (PointTarget s) t
-  -> All (Field (PointTarget s)) ts
+  -> Expr Point.ExprF (Point s) (CodeGen s) t
+  -> All (Expr Point.ExprF (Point s) (CodeGen s)) ts
   -> CodeGen s C.InitList
 
-product_field_inits ctt n (Field trep cgt) All = do
-  exprVal <- runPointTarget cgt
+product_field_inits ctt n t All = do
+  exprVal <- eval_point t
   -- With shared compound type treatment, all compound types which appear in
   -- other compound types are by reference.
   -- TODO think of a way to organize this to be less ad-hoc.
   let expr = case ctt of
         Shared    ->
-          if isJust (is_compound (valPointType exprVal))
-          then reference (valPointCondExpr exprVal)
-          else valPointCondExpr exprVal
-        NotShared -> valPointCondExpr exprVal
-  designator <- simple_designator (product_field_name n)
+          if isJust (is_compound (pointTypeRep exprVal))
+          then reference (pointExpr exprVal)
+          else pointExpr exprVal
+        NotShared -> pointExpr exprVal
+      !designator = assertValidDesignator "product_field" (product_field_name n)
   pure $ C.InitBase (Just designator) (C.InitExpr (condExprIsAssignExpr expr))
 
-product_field_inits ctt n (Field trep cgt) (And cgt' cgts) = do
-  exprVal <- runPointTarget cgt
+product_field_inits ctt n t (And t' ts) = do
+  exprVal <- eval_point t
   let expr = case ctt of
         Shared    ->
-          if isJust (is_compound (valPointType exprVal))
-          then reference (valPointCondExpr exprVal)
-          else valPointCondExpr exprVal
-        NotShared -> valPointCondExpr exprVal
-  designator <- simple_designator (product_field_name n)
-  subList <- product_field_inits ctt (n+1) cgt' cgts
+          if isJust (is_compound (pointTypeRep exprVal))
+          then reference (pointExpr exprVal)
+          else pointExpr exprVal
+        NotShared -> pointExpr exprVal
+      !designator = assertValidDesignator "product_field" (product_field_name n)
+  subList <- product_field_inits ctt (n+1) t' ts
   pure $ C.InitCons subList (Just designator) (C.InitExpr (condExprIsAssignExpr expr))
 
 -- | Product elimination is just a field accessor.
 eval_elim_product
-  :: Point.TypeRep ('Product fields)
+  :: Point.TypeRep ('Point.Product fields)
   -> Point.TypeRep field
-  -> Any (Selector (PointTarget s)) fields field
-  -> PointTarget s ('Product fields)
-  -> PointTarget s field
-eval_elim_product trep trepF selector cgt = PointTarget $ do
+  -> Any Point.Selector fields field
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Product fields)
+  -> CodeGen s (Point s field)
+eval_elim_product trep trepF selector t = do
   ctt <- compoundTypeTreatment
   -- We don't need the type spec itself, but we do need to ensure that it is
   -- declared.
   _typeSpec <- declare_product ctt trep
-  cgtVal <- runPointTarget cgt
-  let pexpr = condExprIsPostfixExpr $ dereferenceIf (valPtr cgtVal) (valPointCondExpr cgtVal)
+  point <- eval_point t
+  let pexpr = condExprIsPostfixExpr $ dereferenceIf (pointPtr point) (pointExpr point)
   eval_elim_product_with_selector ctt trepF 0 pexpr selector
 
 -- |
@@ -1607,16 +1424,18 @@ eval_elim_product_with_selector
   -> Natural
   -> C.PostfixExpr -- ^ The C expression giving the product struct, fully dereferenced
                    -- so that the . accessor is appropriate.
-  -> Any (Selector (PointTarget s)) fields field
-  -> CodeGen s (Val s ('ValPoint field))
+  -> Any Selector fields field
+  -> CodeGen s (Point s field)
+
 eval_elim_product_with_selector ctt trep n pexpr (Or sel) =
   eval_elim_product_with_selector ctt trep (n+1) pexpr sel
+
 eval_elim_product_with_selector ctt trep n pexpr (Any Selector) = do
-  fieldIdent <- maybeError
-    (CodeGenInternalError $ "eval_elim_product_with_selector bad field " ++ show n)
-    (pure (stringIdentifier (product_field_name n)))
-  let expr = postfixExprIsCondExpr $ C.PostfixDot pexpr fieldIdent
-  type_rep_val (ValPoint_t trep) expr
+  let !fieldIdent = assertValidIdentifier
+        ("eval_elim_product_with_selector bad field " ++ show n)
+        (stringIdentifier (product_field_name n))
+      expr = postfixExprIsCondExpr $ C.PostfixDot pexpr fieldIdent
+  type_rep_val trep expr
 
 -- |
 --
@@ -1624,36 +1443,35 @@ eval_elim_product_with_selector ctt trep n pexpr (Any Selector) = do
 -- NULL and not allocate anything.
 --
 eval_intro_sum
-  :: Point.TypeRep ('Sum variants)
+  :: Point.TypeRep ('Point.Sum variants)
   -> Point.TypeRep variant
-  -> Any (Selector (PointTarget s)) variants variant
-  -> PointTarget s variant
-  -> PointTarget s ('Sum variants)
+  -> Any (Expr Point.ExprF (Point s) (CodeGen s)) variants variant
+  -> CodeGen s (Point s ('Point.Sum variants))
 -- The meta-language doesn't allow for empty sums to be introduced (void type
 -- in the algebraic sense).
-eval_intro_sum (Sum_t All) _ it _ = case it of
+eval_intro_sum (Point.Sum_t All) _ it = case it of
   {}
-eval_intro_sum trep@(Sum_t (And _ _)) trepV anyt v = PointTarget $ do
+
+eval_intro_sum trep@(Point.Sum_t (And _ _)) trepV anyt = do
   ctt <- compoundTypeTreatment
   typeSpec <- declare_sum ctt trep
   let typeName = C.TypeName (C.SpecQualType typeSpec Nothing) Nothing
-  initList <- sum_field_inits ctt trepV anyt v
+  initList <- sum_field_inits ctt trepV anyt
   let pexpr = C.PostfixInits typeName initList
       expr = case ctt of
         Shared    -> reference (postfixExprIsCondExpr pexpr)
         NotShared -> postfixExprIsCondExpr pexpr
-  type_rep_val (ValPoint_t trep) expr
+  type_rep_val trep expr
 
 -- | The init list for a sum struct: its tag and its variant.
 sum_field_inits
   :: CompoundTypeTreatment
   -> Point.TypeRep variant
-  -> Any (Selector (PointTarget s)) variants variant
-  -> PointTarget s variant
+  -> Any (Expr Point.ExprF (Point s) (CodeGen s)) variants variant
   -> CodeGen s C.InitList
-sum_field_inits ctt trep anyt v = do
-  tagExpr <- condExprIsAssignExpr <$> sum_tag_expr 0 anyt
-  variantInitList <- sum_variant_init_list ctt trep 0 anyt v
+sum_field_inits ctt trep anyt = do
+  let !tagExpr = condExprIsAssignExpr (sum_tag_expr 0 anyt)
+  variantInitList <- sum_variant_init_list ctt trep 0 anyt
   pure $ C.InitCons
     (C.InitBase (Just (ident_designator ident_tag)) (C.InitExpr tagExpr))
     (Just (ident_designator ident_variant))
@@ -1664,13 +1482,13 @@ sum_field_inits ctt trep anyt v = do
 
 -- | The expression for a sum's tag: determined by the offset in the disjuncts
 -- in the type signature, and the common "tag_" prefix.
-sum_tag_expr :: Natural -> Any f ts t -> CodeGen s C.CondExpr
+sum_tag_expr :: Natural -> Any f ts t -> C.CondExpr
 sum_tag_expr n (Or there) = sum_tag_expr (n+1) there
-sum_tag_expr n (Any _) = do
-  ident <- maybeError
-    (CodeGenInternalError $ "sum_tag_expr invalid tag field " ++ show n)
-    (pure (stringIdentifier ("tag_" ++ show n)))
-  pure $ primExprIsCondExpr $ C.PrimIdent ident
+sum_tag_expr n (Any _) =
+  let !ident = assertValidIdentifier
+        ("sum_tag_expr invalid tag field " ++ show n)
+        (stringIdentifier ("tag_" ++ show n))
+  in  primExprIsCondExpr $ C.PrimIdent ident
 
 -- | The variant expression for a sum: it's a union literal, _without_ a
 -- pointer (sums hold their tags and unions directly).
@@ -1678,23 +1496,24 @@ sum_variant_init_list
   :: CompoundTypeTreatment
   -> Point.TypeRep variant
   -> Natural
-  -> Any (Selector (PointTarget s)) variants variant
-  -> PointTarget s variant
+  -> Any (Expr Point.ExprF (Point s) (CodeGen s)) variants variant
   -> CodeGen s C.InitList
-sum_variant_init_list ctt trep n (Or there) v =
-  sum_variant_init_list ctt trep (n+1) there v
-sum_variant_init_list ctt trep n (Any Selector) v = do
-  exprVal <- runPointTarget v 
+
+sum_variant_init_list ctt trep n (Or there) =
+  sum_variant_init_list ctt trep (n+1) there
+
+sum_variant_init_list ctt trep n (Any t) = do
+  exprVal <- eval_point t 
   -- TODO factor out this little pattern here, it's used also in product
   -- introduction.
-  let exrp = case ctt of
+  let expr = case ctt of
         Shared    ->
-          if isJust (is_compound (valPointType exprVal))
-          then reference (valPointCondExpr exprVal)
-          else valPointCondExpr exprVal
-        NotShared -> valPointCondExpr exprVal
-  designator <- simple_designator (sum_variant_name n)
-  let initExpr = C.InitExpr (condExprIsAssignExpr (valPointCondExpr exprVal))
+          if isJust (is_compound (pointTypeRep exprVal))
+          then reference (pointExpr exprVal)
+          else pointExpr exprVal
+        NotShared -> pointExpr exprVal
+      !designator = assertValidDesignator "sum_variant_init_list" (sum_variant_name n)
+      initExpr = C.InitExpr (condExprIsAssignExpr expr)
   pure $ C.InitBase (Just designator) initExpr
 
 -- | Sum elimination is the most complex of the basic expressions. Since each
@@ -1714,41 +1533,47 @@ sum_variant_init_list ctt trep n (Any Selector) v = do
 -- The resulting expression for this elimination is simply the identifier of
 -- the result. The preceding statements go into the CodeGen state.
 eval_elim_sum
-  :: Point.TypeRep ('Sum types)
+  :: Point.TypeRep ('Point.Sum types)
   -> Point.TypeRep r
-  -> All (Case (PointTarget s) r) types
-  -> PointTarget s ('Sum types)
-  -> PointTarget s r
-eval_elim_sum trep rrep cases cgt = PointTarget $ do
+  -> Expr Point.ExprF (Point s) (CodeGen s) ('Point.Sum types)
+  -> All (Case (Expr Point.ExprF (Point s) (CodeGen s)) r) types
+  -> CodeGen s (Point s r)
+eval_elim_sum trep rrep t cases = do
   ctt <- compoundTypeTreatment
   -- We don't need the type spec itself, but we do need to ensure that it is
   -- declared.
   _typeSpec <- declare_sum ctt trep
-  cgtVal <- runPointTarget cgt
+  rinfo <- type_info ctt rrep
+  point <- eval_point t
   -- Our two declarations: scrutinee and result.
   -- Declaring the scrutinee is important, so that we don't _ever_ have a case
   -- statement in which the scrutinee is repeatedly constructed at each case.
-  (_scrutineeIdent, scrutineeVal) <- declare_initialized   "scrutinee" cgtVal
-  (resultIdent, resultVal)        <- declare_uninitialized "result"    rrep
+  scrutineePoint <- declare_initialized_point "scrutinee" point
+  resultIdent    <- declare_uninitialized     "result"    rinfo
+  let resultPoint = Point
+        { pointExpr      = identIsCondExpr resultIdent
+        , pointTypeRep   = rrep
+        , pointCTypeInfo = rinfo
+        }
   -- We take two expressions in the object-language (forgetting their
   -- meta-language types): the sum's tag and its variant. The arrow accessor
   -- is never used, we manually derefernece if needed.
   let tagPostfixExpr :: C.PostfixExpr
       tagPostfixExpr = C.PostfixDot
-        (condExprIsPostfixExpr (dereferenceIf (valPtr scrutineeVal) (valPointCondExpr scrutineeVal)))
+        (condExprIsPostfixExpr (dereferenceIf (pointPtr scrutineePoint) (pointExpr scrutineePoint)))
         ident_tag
       tagExpr :: C.Expr
       tagExpr = postfixExprIsExpr tagPostfixExpr
       variantExpr = C.PostfixDot
-        (condExprIsPostfixExpr (dereferenceIf (valPtr scrutineeVal) (valPointCondExpr scrutineeVal)))
+        (condExprIsPostfixExpr (dereferenceIf (pointPtr scrutineePoint) (pointExpr scrutineePoint)))
         ident_variant
   -- If the sum is empty, the result is a switch statement with no cases behind
   -- it. That's a no-op. The result variable will remain undefined.
   -- Should be you can never introduce an empty sum, so this code should not
   -- be reachable.
   (caseBlockItems :: [C.BlockItem]) <- case trep of
-    Sum_t All       -> pure []
-    Sum_t (And _ _) -> NE.toList <$> eval_elim_sum_cases ctt 0 rrep
+    Point.Sum_t All       -> pure []
+    Point.Sum_t (And _ _) -> NE.toList <$> eval_elim_sum_cases ctt 0 rrep
       (postfixExprIsEqExpr tagPostfixExpr)
       variantExpr
       resultIdent
@@ -1758,102 +1583,18 @@ eval_elim_sum trep rrep cases cgt = PointTarget $ do
       switchItem :: C.BlockItem
       switchItem = C.BlockItemStmt $ C.StmtSelect $ C.SelectSwitch tagExpr casesStmt
   addBlockItem switchItem
-  pure resultVal
-
--- | Make a declaration assigning the given value to a new identifier.
--- The resulting Val is that identifier.
---
--- TODO does this make sense for stream types too?
-declare_initialized :: String -> Val s ('ValPoint t) -> CodeGen s (C.Ident, Val s ('ValPoint t))
-declare_initialized prefix val = do
-  ident <- fresh_binder prefix
-  -- Now we must make a block item which assigns the value `it` to the
-  -- identifier `ident`.
-  -- Every initialized binding is const.
-  --
-  --   const <typeSpec> <ident> = <rexpr>;
-  --   |______________| |_____|   |_____|
-  --      declnSpecs     decln     init
-  --
-  let declnSpecs :: C.DeclnSpecs
-      --declnSpecs = C.DeclnSpecsQual C.QConst $ Just $ C.DeclnSpecsType (valSpec val) Nothing
-      declnSpecs = C.DeclnSpecsType (valSpec val) Nothing
-      -- Pointer types in initialized bindings are const restrict.
-      -- This is OK because indeed the pointers themselves will never change.
-      -- However, we can't put const out front (on the thing behind the pointer),
-      -- because the possibility of an uninitialized variable (for sum
-      -- elimination) means that the struct members cannot be const, means that
-      -- no bindings can be const, for we may want to use a binder in a struct
-      -- thereby stripping the const and getting a warning.
-      --
-      -- It may be possible to infer from a completely generated program which
-      -- things can be const, but is it worth the effort? Do const annotations
-      -- help the compiler significantly?
-      ptr :: Maybe C.Ptr
-      ptr = if valPtr val
-            then Just (C.PtrBase (Just const_restrict))
-            else Nothing
-      declr :: C.Declr
-      declr = C.Declr ptr (C.DirectDeclrIdent ident)
-      cexpr :: C.CondExpr
-      cexpr = valPointCondExpr val
-      cinit :: C.Init
-      cinit = C.InitExpr (condExprIsAssignExpr cexpr);
-      initDeclr :: C.InitDeclr
-      initDeclr = C.InitDeclrInitr declr cinit
-      initDeclrList :: C.InitDeclrList
-      initDeclrList = C.InitDeclrBase initDeclr
-      blockItem :: C.BlockItem
-      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
-  addBlockItem blockItem
-  let val' = Val
-        { getVal      = CValPoint (identIsCondExpr ident)
-        , valType     = valType val
-        , valTypeInfo = valTypeInfo val
-        }
-  pure (ident, val')
-
--- | Make a declaration without initializing it.
--- Unlike 'declare_initialized', this one will not be a const declaration.
---
--- TODO TBD does this make sense for stream types too?
-declare_uninitialized :: String -> Point.TypeRep t -> CodeGen s (C.Ident, Val s ('ValPoint t))
-declare_uninitialized prefix trep = do
-  ctt <- compoundTypeTreatment
-  ident <- fresh_binder prefix
-  info <- type_info ctt (ValPoint_t trep)
-  let typeSpec = ctypeSpec info
-      -- If this is a pointer type, then we use a restrict, but not const,
-      -- pointer.
-      ptr = if ctypePtr info
-            then Just (C.PtrBase (Just (C.TypeQualBase C.QRestrict)))
-            else Nothing
-      declnSpecs = C.DeclnSpecsType typeSpec Nothing
-      declr :: C.Declr
-      declr = C.Declr ptr (C.DirectDeclrIdent ident)
-      initDeclr :: C.InitDeclr
-      initDeclr = C.InitDeclr declr
-      initDeclrList :: C.InitDeclrList
-      initDeclrList = C.InitDeclrBase initDeclr
-      blockItem :: C.BlockItem
-      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
-  addBlockItem blockItem
-  let val' = Val
-        { getVal      = CValPoint (identIsCondExpr ident)
-        , valType     = ValPoint_t trep
-        , valTypeInfo = info
-        }
-  pure (ident, val')
+  pure resultPoint
 
 -- | Makes the cases in a switch statement for a sum elimination.
 eval_elim_sum_cases
-  :: CompoundTypeTreatment
+  :: forall s r ty tys .
+     CompoundTypeTreatment
   -> Natural
   -> Point.TypeRep r
   -> C.EqExpr -- ^ The tag of the sum
   -> C.PostfixExpr -- ^ The variant of the sum
   -> C.Ident -- ^ Identifier of the place to assign the result.
-  -> All (Case (PointTarget s) r) (ty ': tys)
+  -> All (Case (Expr Point.ExprF (Point s) (CodeGen s)) r) (ty ': tys)
   -> CodeGen s (NonEmpty C.BlockItem)
 eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k) cases) = do
   -- We need the identifiers for the enum tag, and the union variant, at this
@@ -1881,8 +1622,8 @@ eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k
   -- variants (and their tags) directly.
   let valueSelector :: C.PostfixExpr
       valueSelector = C.PostfixDot variantExpr variantIdent
-  valInThisCase <- type_rep_val (ValPoint_t trep) (postfixExprIsCondExpr valueSelector)
-  (expr, blockItems) <- withNewScope $ runPointTarget (k (PointTarget (pure valInThisCase)))
+  valInThisCase :: Point s ty <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
+  (expr, blockItems) <- withNewScope $ eval_point (k (value valInThisCase))
   let -- Here we have the result assignment and the case break, the final two
       -- statements in the compound statement.
       resultAssignment :: C.BlockItem
@@ -1890,7 +1631,7 @@ eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k
         C.ExprAssign $ C.Assign
           (identIsUnaryExpr resultIdent)
           C.AEq
-          (condExprIsAssignExpr (valPointCondExpr expr))
+          (condExprIsAssignExpr (pointExpr expr))
       caseBreak :: C.BlockItem
       caseBreak = C.BlockItemStmt $ C.StmtJump $ C.JumpBreak
       theBlockItemList :: C.BlockItemList
@@ -1907,157 +1648,88 @@ eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k
       items <- eval_elim_sum_cases ctt (n+1) rrep tagExpr variantExpr resultIdent cases'
       pure $ NE.cons blockItem items
 
--- |
--- = Utilities for C99 AST manipulation
+declare_initialized_point :: String -> Point s t -> CodeGen s (Point s t)
+declare_initialized_point prefix point = do
+  ident <- declare_initialized prefix (pointExpr point) (pointCTypeInfo point)
+  pure $ Point
+    { pointExpr      = identIsCondExpr ident
+    , pointTypeRep   = pointTypeRep point
+    , pointCTypeInfo = pointCTypeInfo point
+    }
 
-condExprIsAddExpr :: C.CondExpr -> C.AddExpr
-condExprIsAddExpr = C.AddMult . condExprIsMultExpr
+-- | Make a declaration assigning the given value to a new identifier.
+-- The declaration appears in the CodeGen state, and the resulting C identifier
+-- may be used to refer to it.
+declare_initialized
+  :: String
+  -> C.CondExpr
+  -> CTypeInfo
+  -> CodeGen s C.Ident
+declare_initialized prefix cexpr tinfo = do
+  ident <- fresh_binder prefix
+  -- Now we must make a block item which assigns the value `it` to the
+  -- identifier `ident`.
+  --
+  --   <typeSpec> <ident> = <rexpr>;
+  --   |________| |_____|   |_____|
+  --   declnSpecs  decln     init
+  --
+  let declnSpecs :: C.DeclnSpecs
+      declnSpecs = C.DeclnSpecsType (ctypeSpec tinfo) Nothing
+      -- Pointer types in initialized bindings are const restrict.
+      -- This is OK because indeed the pointers themselves will never change.
+      -- However, we can't put const out front (on the thing behind the pointer),
+      -- because the possibility of an uninitialized variable (for sum
+      -- elimination) means that the struct members cannot be const, means that
+      -- no bindings can be const, for we may want to use a binder in a struct
+      -- thereby stripping the const and getting a warning.
+      --
+      -- It may be possible to infer from a completely generated program which
+      -- things can be const, but is it worth the effort? Do const annotations
+      -- help the compiler significantly?
+      ptr :: Maybe C.Ptr
+      ptr = if ctypePtr tinfo
+            then Just (C.PtrBase (Just const_restrict))
+            else Nothing
+      declr :: C.Declr
+      declr = C.Declr ptr (C.DirectDeclrIdent ident)
+      cinit :: C.Init
+      cinit = C.InitExpr (condExprIsAssignExpr cexpr);
+      initDeclr :: C.InitDeclr
+      initDeclr = C.InitDeclrInitr declr cinit
+      initDeclrList :: C.InitDeclrList
+      initDeclrList = C.InitDeclrBase initDeclr
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
+  addBlockItem blockItem
+  pure ident
 
-condExprIsMultExpr :: C.CondExpr -> C.MultExpr
-condExprIsMultExpr = C.MultCast . C.CastUnary . C.UnaryPostfix . C.PostfixPrim .
-  C.PrimExpr . C.ExprAssign . C.AssignCond
-
-condExprIsAndExpr :: C.CondExpr -> C.AndExpr
-condExprIsAndExpr = C.AndEq . condExprIsEqExpr
-
-condExprIsXOrExpr :: C.CondExpr -> C.XOrExpr
-condExprIsXOrExpr = C.XOrAnd . condExprIsAndExpr
-
-condExprIsOrExpr :: C.CondExpr -> C.OrExpr
-condExprIsOrExpr = C.OrXOr . condExprIsXOrExpr
-
-condExprIsEqExpr :: C.CondExpr -> C.EqExpr
-condExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimExpr . condExprIsExpr
-
-condExprIsShiftExpr :: C.CondExpr -> C.ShiftExpr
-condExprIsShiftExpr = C.ShiftAdd . condExprIsAddExpr
-
-condExprIsRelExpr :: C.CondExpr -> C.RelExpr
-condExprIsRelExpr = C.RelShift . condExprIsShiftExpr
-
-condExprIsLAndExpr :: C.CondExpr -> C.LAndExpr
-condExprIsLAndExpr = C.LAndOr . condExprIsOrExpr
-
-condExprIsLOrExpr :: C.CondExpr -> C.LOrExpr
-condExprIsLOrExpr = C.LOrAnd . condExprIsLAndExpr
-
-addExprIsCondExpr :: C.AddExpr -> C.CondExpr
-addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
-  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
-
-lorExprIsCondExpr :: C.LOrExpr -> C.CondExpr
-lorExprIsCondExpr = C.CondLOr
-
-landExprIsCondExpr :: C.LAndExpr -> C.CondExpr
-landExprIsCondExpr = lorExprIsCondExpr . C.LOrAnd
-
-orExprIsCondExpr :: C.OrExpr -> C.CondExpr
-orExprIsCondExpr = landExprIsCondExpr . C.LAndOr
-
-xorExprIsCondExpr :: C.XOrExpr -> C.CondExpr
-xorExprIsCondExpr = orExprIsCondExpr . C.OrXOr
-
-andExprIsCondExpr :: C.AndExpr -> C.CondExpr
-andExprIsCondExpr = xorExprIsCondExpr . C.XOrAnd
-
-shiftExprIsCondExpr :: C.ShiftExpr -> C.CondExpr
-shiftExprIsCondExpr = relExprIsCondExpr . C.RelShift
-
-relExprIsCondExpr :: C.RelExpr -> C.CondExpr
-relExprIsCondExpr = eqExprIsCondExpr . C.EqRel
-
-eqExprIsCondExpr :: C.EqExpr -> C.CondExpr
-eqExprIsCondExpr = andExprIsCondExpr . C.AndEq
-
-eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
-eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
-
-relExprIsLOrExpr :: C.RelExpr -> C.LOrExpr
-relExprIsLOrExpr = eqExprIsLOrExpr . C.EqRel
-
-identIsConstExpr :: C.Ident -> C.ConstExpr
-identIsConstExpr = C.Const . identIsCondExpr
-
-identIsExpr :: C.Ident -> C.Expr
-identIsExpr = condExprIsExpr . identIsCondExpr
-
-identIsCondExpr :: C.Ident -> C.CondExpr
-identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
-  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
-
-identIsRelExpr :: C.Ident -> C.RelExpr
-identIsRelExpr = C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
-
-identIsUnaryExpr :: C.Ident -> C.UnaryExpr
-identIsUnaryExpr = C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
-
-identIsPostfixExpr :: C.Ident -> C.PostfixExpr
-identIsPostfixExpr = condExprIsPostfixExpr . identIsCondExpr
-
-postfixExprIsCondExpr :: C.PostfixExpr -> C.CondExpr
-postfixExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
-  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary . C.UnaryPostfix
-
-postfixExprIsAssignExpr :: C.PostfixExpr -> C.AssignExpr
-postfixExprIsAssignExpr = C.AssignCond . postfixExprIsCondExpr
-
-postfixExprIsExpr :: C.PostfixExpr -> C.Expr
-postfixExprIsExpr = C.ExprAssign . C.AssignCond . postfixExprIsCondExpr
-
-postfixExprIsEqExpr :: C.PostfixExpr -> C.EqExpr
-postfixExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult .
-  C.MultCast . C.CastUnary . C.UnaryPostfix
-
-primExprIsCondExpr :: C.PrimExpr -> C.CondExpr
-primExprIsCondExpr = postfixExprIsCondExpr . primExprIsPostfixExpr
-
-primExprIsPostfixExpr :: C.PrimExpr -> C.PostfixExpr
-primExprIsPostfixExpr = C.PostfixPrim
-
-condExprIsAssignExpr :: C.CondExpr -> C.AssignExpr
-condExprIsAssignExpr = C.AssignCond
-
-condExprIsExpr :: C.CondExpr -> C.Expr
-condExprIsExpr = C.ExprAssign . C.AssignCond
-
-condExprIsPostfixExpr :: C.CondExpr -> C.PostfixExpr
-condExprIsPostfixExpr = C.PostfixPrim . C.PrimExpr . C.ExprAssign . C.AssignCond
-
-condExprIsCastExpr :: C.CondExpr -> C.CastExpr
-condExprIsCastExpr = C.CastUnary . C.UnaryPostfix . condExprIsPostfixExpr
-
-postfixExprIsCastExpr :: C.PostfixExpr -> C.CastExpr
-postfixExprIsCastExpr = C.CastUnary . C.UnaryPostfix
-
-constIsCondExpr :: C.Const -> C.CondExpr
-constIsCondExpr = postfixExprIsCondExpr . C.PostfixPrim . C.PrimConst
-
-constIsCastExpr :: C.Const -> C.CastExpr
-constIsCastExpr = C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimConst
-
-unaryExprIsCondExpr :: C.UnaryExpr -> C.CondExpr
-unaryExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
-  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
-  C.CastUnary
-
-ident_designator :: C.Ident -> C.Design
-ident_designator = C.Design . C.DesigrBase . C.DesigrIdent
-
-simple_designator :: String -> CodeGen s C.Design
-simple_designator str = do
-  ident <- maybeError
-    (CodeGenInternalError $ "simple_designator bad identifier")
-    (pure (stringIdentifier str))
-  pure $ C.Design $ C.DesigrBase $ C.DesigrIdent ident
-
--- | All numbers are put out in hex. C decimals are just harder to work with,
--- since 0 is not a decimal number, but rather an octal one.
-hex_const :: Natural -> C.HexConst
-hex_const = hexConst . hexDigits
+-- | Make a declaration without initializing it.
+-- Unlike 'declare_initialized', this one will not be a const declaration.
+declare_uninitialized
+  :: String
+  -> CTypeInfo
+  -> CodeGen s C.Ident
+declare_uninitialized prefix tinfo = do
+  ctt <- compoundTypeTreatment
+  ident <- fresh_binder prefix
+  let typeSpec = ctypeSpec tinfo
+      -- If this is a pointer type, then we use a restrict, but not const,
+      -- pointer.
+      ptr = if ctypePtr tinfo
+            then Just (C.PtrBase (Just (C.TypeQualBase C.QRestrict)))
+            else Nothing
+      declnSpecs = C.DeclnSpecsType typeSpec Nothing
+      declr :: C.Declr
+      declr = C.Declr ptr (C.DirectDeclrIdent ident)
+      initDeclr :: C.InitDeclr
+      initDeclr = C.InitDeclr declr
+      initDeclrList :: C.InitDeclrList
+      initDeclrList = C.InitDeclrBase initDeclr
+      blockItem :: C.BlockItem
+      blockItem = C.BlockItemDecln $ C.Decln declnSpecs (Just initDeclrList)
+  addBlockItem blockItem
+  pure ident
 
 data IsCompound ty where
   IsNonEmptyProduct :: IsCompound ('Point.Product (t ': ts))
@@ -2323,7 +1995,7 @@ evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) init
 -- streams I think.
 genTransUnit
   :: CodeGenOptions
-  -> CodeGen s (Val s ('ValPoint t))
+  -> CodeGen s (Point s t)
   -> Either CodeGenError C.TransUnit
 genTransUnit opts cg = fmap mkTransUnit outcome
   where
@@ -2336,21 +2008,24 @@ genTransUnit opts cg = fmap mkTransUnit outcome
     --
     -- Always make a binding, convert using the name, so that we don't
     -- duplicate work.
+    {-
     (_ident, val') <- declare_initialized "return_value" val
     toNotShared val'
+    -}
+    pure val
 
-  mkTransUnit :: Val s ('ValPoint t) -> C.TransUnit
+  mkTransUnit :: Point s t -> C.TransUnit
   mkTransUnit val = codeGenTransUnit cgs (mainFun val cgs) 
 
   -- This function computes the expression. It assumes the value is not
   -- shared form i.e. it doesn't contain any pointers to non-static data.
-  mainFun :: Val s ('ValPoint t) -> CodeGenState -> C.FunDef
+  mainFun :: Point s t -> CodeGenState -> C.FunDef
   mainFun val cgs' =
     let declnSpecs :: C.DeclnSpecs
-        declnSpecs = C.DeclnSpecsType (valSpec val) Nothing
+        declnSpecs = C.DeclnSpecsType (pointTypeSpec val) Nothing
         expr :: C.CondExpr
-        expr = valPointCondExpr val
-        ptr = if valPtr val 
+        expr = pointExpr val
+        ptr = if pointPtr val 
               then Just (C.PtrBase Nothing)
               else Nothing
         -- It's ok to use the type's pointer information here. If it's really
@@ -2371,6 +2046,7 @@ genTransUnit opts cg = fmap mkTransUnit outcome
           Just bil -> C.BlockItemCons bil exprBlockItem
     in  C.FunDef declnSpecs declr args compoundStmt
 
+{-
 -- | Given some value, make it OK for static use.
 --
 -- This assumes that the type for the val given is already declared as shared.
@@ -2483,6 +2159,38 @@ convertTreatment ctt       ctt'      val = case valType val of
       eval_elim_sum trep trep cases (PointTarget (pure val))
 
   _ -> pure val
+-}
+
+codeGenToFile :: String -> CodeGenOptions -> CodeGen s (Point s x) -> IO ()
+codeGenToFile fp opts cg = case genTransUnit opts cg of
+  Left  err       -> throwIO (userError (show err))
+  Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
+  where
+  includes = mconcat
+    [ "#include <stdint.h>\n"
+    , "#include <stdio.h>\n"
+    ]
+
+write_point_expr
+  :: String
+  -> Bool
+  -> Expr Point.ExprF (Point s) (CodeGen s) t -> IO ()
+write_point_expr fp b expr = codeGenToFile fp opts (eval_point expr)
+  where
+  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
+
+
+
+codeGenError :: CodeGenError -> CodeGen s x
+codeGenError err = CodeGen (throwE err)
+
+maybeError :: CodeGenError -> CodeGen s (Maybe x) -> CodeGen s x
+maybeError err act = do
+  x <- act
+  maybe (codeGenError err) pure x
+
+-- |
+-- = Utilities for C99 AST manipulation
 
 -- | Put a reference unary op onto an expression.
 reference :: C.CondExpr -> C.CondExpr
@@ -2504,27 +2212,168 @@ dereferenceIf :: Bool -> C.CondExpr -> C.CondExpr
 dereferenceIf False = id
 dereferenceIf True  = dereference
 
-codeGenToFile :: String -> CodeGenOptions -> CodeGen s (Val s ('ValPoint t)) -> IO ()
-codeGenToFile fp opts cg = case genTransUnit opts cg of
-  Left  err       -> throwIO (userError (show err))
-  Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
-  where
-  includes = mconcat
-    [ "#include <stdint.h>\n"
-    , "#include <stdio.h>\n"
-    ]
+condExprIsAddExpr :: C.CondExpr -> C.AddExpr
+condExprIsAddExpr = C.AddMult . condExprIsMultExpr
 
-codeGenError :: CodeGenError -> CodeGen s x
-codeGenError err = CodeGen (throwE err)
+condExprIsMultExpr :: C.CondExpr -> C.MultExpr
+condExprIsMultExpr = C.MultCast . C.CastUnary . C.UnaryPostfix . C.PostfixPrim .
+  C.PrimExpr . C.ExprAssign . C.AssignCond
 
-maybeError :: CodeGenError -> CodeGen s (Maybe x) -> CodeGen s x
-maybeError err act = do
-  x <- act
-  maybe (codeGenError err) pure x
+condExprIsAndExpr :: C.CondExpr -> C.AndExpr
+condExprIsAndExpr = C.AndEq . condExprIsEqExpr
+
+condExprIsXOrExpr :: C.CondExpr -> C.XOrExpr
+condExprIsXOrExpr = C.XOrAnd . condExprIsAndExpr
+
+condExprIsOrExpr :: C.CondExpr -> C.OrExpr
+condExprIsOrExpr = C.OrXOr . condExprIsXOrExpr
+
+condExprIsEqExpr :: C.CondExpr -> C.EqExpr
+condExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimExpr . condExprIsExpr
+
+condExprIsShiftExpr :: C.CondExpr -> C.ShiftExpr
+condExprIsShiftExpr = C.ShiftAdd . condExprIsAddExpr
+
+condExprIsRelExpr :: C.CondExpr -> C.RelExpr
+condExprIsRelExpr = C.RelShift . condExprIsShiftExpr
+
+condExprIsLAndExpr :: C.CondExpr -> C.LAndExpr
+condExprIsLAndExpr = C.LAndOr . condExprIsOrExpr
+
+condExprIsLOrExpr :: C.CondExpr -> C.LOrExpr
+condExprIsLOrExpr = C.LOrAnd . condExprIsLAndExpr
+
+addExprIsCondExpr :: C.AddExpr -> C.CondExpr
+addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
+
+lorExprIsCondExpr :: C.LOrExpr -> C.CondExpr
+lorExprIsCondExpr = C.CondLOr
+
+landExprIsCondExpr :: C.LAndExpr -> C.CondExpr
+landExprIsCondExpr = lorExprIsCondExpr . C.LOrAnd
+
+orExprIsCondExpr :: C.OrExpr -> C.CondExpr
+orExprIsCondExpr = landExprIsCondExpr . C.LAndOr
+
+xorExprIsCondExpr :: C.XOrExpr -> C.CondExpr
+xorExprIsCondExpr = orExprIsCondExpr . C.OrXOr
+
+andExprIsCondExpr :: C.AndExpr -> C.CondExpr
+andExprIsCondExpr = xorExprIsCondExpr . C.XOrAnd
+
+shiftExprIsCondExpr :: C.ShiftExpr -> C.CondExpr
+shiftExprIsCondExpr = relExprIsCondExpr . C.RelShift
+
+relExprIsCondExpr :: C.RelExpr -> C.CondExpr
+relExprIsCondExpr = eqExprIsCondExpr . C.EqRel
+
+eqExprIsCondExpr :: C.EqExpr -> C.CondExpr
+eqExprIsCondExpr = andExprIsCondExpr . C.AndEq
+
+eqExprIsLOrExpr :: C.EqExpr -> C.LOrExpr
+eqExprIsLOrExpr = C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd . C.AndEq
+
+relExprIsLOrExpr :: C.RelExpr -> C.LOrExpr
+relExprIsLOrExpr = eqExprIsLOrExpr . C.EqRel
+
+identIsConstExpr :: C.Ident -> C.ConstExpr
+identIsConstExpr = C.Const . identIsCondExpr
+
+identIsExpr :: C.Ident -> C.Expr
+identIsExpr = condExprIsExpr . identIsCondExpr
+
+identIsCondExpr :: C.Ident -> C.CondExpr
+identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
+
+identIsRelExpr :: C.Ident -> C.RelExpr
+identIsRelExpr = C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
+
+identIsUnaryExpr :: C.Ident -> C.UnaryExpr
+identIsUnaryExpr = C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
+
+identIsPostfixExpr :: C.Ident -> C.PostfixExpr
+identIsPostfixExpr = condExprIsPostfixExpr . identIsCondExpr
+
+postfixExprIsCondExpr :: C.PostfixExpr -> C.CondExpr
+postfixExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary . C.UnaryPostfix
+
+postfixExprIsAssignExpr :: C.PostfixExpr -> C.AssignExpr
+postfixExprIsAssignExpr = C.AssignCond . postfixExprIsCondExpr
+
+postfixExprIsExpr :: C.PostfixExpr -> C.Expr
+postfixExprIsExpr = C.ExprAssign . C.AssignCond . postfixExprIsCondExpr
+
+postfixExprIsEqExpr :: C.PostfixExpr -> C.EqExpr
+postfixExprIsEqExpr = C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult .
+  C.MultCast . C.CastUnary . C.UnaryPostfix
+
+primExprIsCondExpr :: C.PrimExpr -> C.CondExpr
+primExprIsCondExpr = postfixExprIsCondExpr . primExprIsPostfixExpr
+
+primExprIsPostfixExpr :: C.PrimExpr -> C.PostfixExpr
+primExprIsPostfixExpr = C.PostfixPrim
+
+condExprIsAssignExpr :: C.CondExpr -> C.AssignExpr
+condExprIsAssignExpr = C.AssignCond
+
+condExprIsExpr :: C.CondExpr -> C.Expr
+condExprIsExpr = C.ExprAssign . C.AssignCond
+
+condExprIsPostfixExpr :: C.CondExpr -> C.PostfixExpr
+condExprIsPostfixExpr = C.PostfixPrim . C.PrimExpr . C.ExprAssign . C.AssignCond
+
+condExprIsCastExpr :: C.CondExpr -> C.CastExpr
+condExprIsCastExpr = C.CastUnary . C.UnaryPostfix . condExprIsPostfixExpr
+
+postfixExprIsCastExpr :: C.PostfixExpr -> C.CastExpr
+postfixExprIsCastExpr = C.CastUnary . C.UnaryPostfix
+
+constIsCondExpr :: C.Const -> C.CondExpr
+constIsCondExpr = postfixExprIsCondExpr . C.PostfixPrim . C.PrimConst
+
+constIsCastExpr :: C.Const -> C.CastExpr
+constIsCastExpr = C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimConst
+
+unaryExprIsCondExpr :: C.UnaryExpr -> C.CondExpr
+unaryExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
+  C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
+  C.CastUnary
+
+ident_designator :: C.Ident -> C.Design
+ident_designator = C.Design . C.DesigrBase . C.DesigrIdent
+
+-- | const and restrict qualifiers. Used for initialzied bindings to pointer
+-- types.
+const_restrict :: C.TypeQualList
+const_restrict = C.TypeQualCons
+  (C.TypeQualBase C.QConst)
+  C.QRestrict
+
+-- | Make a const restrict pointer to something by prepending *const restrict.
+const_restrict_ptr_to :: Maybe C.Ptr -> C.Ptr
+const_restrict_ptr_to Nothing    = C.PtrBase $ Just const_restrict
+const_restrict_ptr_to (Just ptr) = C.PtrCons (Just const_restrict) ptr
+
+-- | All numbers are put out in hex. C decimals are just harder to work with,
+-- since 0 is not a decimal number, but rather an octal one.
+hex_const :: Natural -> C.HexConst
+hex_const = hexConst . hexDigits
 
 assertValidIdentifier :: String -> Maybe C.Ident -> C.Ident
 assertValidIdentifier msg Nothing  = error msg
 assertValidIdentifier _   (Just i) = i
+
+assertValidDesignator :: String -> String -> C.Design
+assertValidDesignator msg str =
+  let !ident = assertValidIdentifier msg (stringIdentifier str)
+  in  C.Design $ C.DesigrBase $ C.DesigrIdent ident
 
 -- | Make a C identifier from a string. Will fail if the string is malformed
 -- w.r.t. valid C identifiers.

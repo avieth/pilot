@@ -19,7 +19,7 @@ library
                        Pilot.EDSL.Stream
 
                        Pilot.Pure
-                       --Pilot.C
+                       Pilot.C
 
                        Pilot.Types.Fun
                        Pilot.Types.Nat
