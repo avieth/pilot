@@ -55,6 +55,7 @@ module Pilot.EDSL.Point
   , KnownSignedness (..)
   , Width (..)
   , WidthRep (..)
+  , SomeWidthRep (..)
   , KnownWidth (..)
 
   , PrimOpF (..)
