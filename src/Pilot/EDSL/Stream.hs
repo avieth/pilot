@@ -198,10 +198,6 @@ data ExprF
   -- this language does not have functions. Makes sense: all of the other
   -- expressions which take parameters are fully applied (intro/elim,
   -- arithmetic, etc).
-  --
-  -- NB: this also expresses "pure" or constant streams, when the argument list
-  -- is empty.
-  -- TODO maybe that's not a good idea though?
   LiftStream :: Args (Rep a) args
              -> Rep a r
              -> NatRep n
@@ -220,10 +216,6 @@ data ExprF
 
   -- TODO rename? Drop suggests that we drop x-many things, but the number we
   -- give is (the NatRep) is what the size will be after dropping 1.
-  --
-  -- TODO explain why we use two 'S constructors (it's because of memory
-  -- stream and avoiding circular definitions).
-  -- NB: shift stream can be just one 'S cosntructor.
   DropStream :: Rep a t
              -> NatRep ('S n)
              -> expr ('Stream ('S n) t)
@@ -259,10 +251,6 @@ constant
   -> NatRep n
   -> pexpr t
   -> Expr (ExprF pexpr static) val f ('Stream n t)
--- NB if we had a NatRep we could do this:
---   constant trep t = Fun.unval (lift nrep Args (Val t))
--- but it wouldn't be good to have to specify a prefix size for constant
--- streams.
 constant trep nrep p = exprF $ ConstantStream trep nrep p
 
 drop :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static val n f t .

@@ -140,7 +140,10 @@ example_12 = Expr $ do
 -- notions of "constants" and of "statics" each get their own `val` and `f`
 -- parameters.
 type StreamExpr constval constf staticval staticf streamval streamf = Expr
-  (Stream.ExprF (Expr Point.ExprF constval constf) (Expr Point.ExprF staticval staticf))
+  (Stream.ExprF
+    (Expr Point.ExprF constval constf)
+    (Expr Point.ExprF staticval staticf)
+  )
   streamval
   streamf
 
