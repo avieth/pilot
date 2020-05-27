@@ -321,10 +321,10 @@ example_19 = Expr $ do
   inputB <- special (C.externInput "b" (Point.maybe_t Point.int32_t))
   inputC <- special (C.externInput "c" (Point.maybe_t Point.int32_t))
   let f = fun $ \mx -> fun $ \my -> fun $ \mz -> lit $
-            maybe_bind Point.int32_t Point.int32_t mx $ \x ->
-            maybe_bind Point.int32_t Point.int32_t my $ \y ->
-            maybe_bind Point.int32_t Point.int32_t mz $ \z -> Point.just Point.int32_t $
-              Point.add Point.int32_t x (Point.add Point.int32_t y z)
+            maybe_bind auto auto mx $ \x ->
+            maybe_bind auto auto my $ \y ->
+            maybe_bind auto auto mz $ \z -> Point.just auto $
+              Point.add auto x (Point.add auto y z)
   ret <- expr $ unlit $ Stream.liftF autoArgs auto auto
     f `at` value inputA
       `at` value inputB
