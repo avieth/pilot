@@ -282,11 +282,10 @@ data CodeGenState = CodeGenState
   , cgsSums       :: !(Map CompoundTypeIdentifier CompoundTypeDeclr)
   }
 
--- | TODO round this out:
--- - Duplicate C identifier names (triggers, externs)
 data CodeGenError where
   -- | Indicates a bug in this program.
   CodeGenInternalError :: String -> CodeGenError
+  CodeGenDuplicateExtern :: String -> CodeGenError
 
 deriving instance Show CodeGenError
 

@@ -34,11 +34,10 @@ import Pilot.Interp.C.CodeGen
 import Pilot.Interp.C.Eval
 
 -- | Create a stream which will appear as a C extern. This is the way in
--- which external "real world" input appears.
 extern :: String -> Point.TypeRep t -> CodeGen s (Stream s ('Stream.Stream 'Z t))
 extern name trep = do
   exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExterns
-  when exists $ codeGenError $ CodeGenInternalError ("extern name already exists " ++ name)
+  when exists $ codeGenError $ CodeGenDuplicateExtern name
   tinfo <- type_info NotShared trep
   let typeSpec = ctypeSpec tinfo
       mPtr = if ctypePtr tinfo then Just (C.PtrBase Nothing) else Nothing
