@@ -22,7 +22,7 @@ module Pilot.EDSL.Expr
   , Expr (..)
   , evalExprM
   , value
-  , known
+  , special
   , exprF
   , exprM
   , expr
@@ -163,10 +163,12 @@ evalExprM interp name expr = runExprM expr interp name
 
 -- | TODO better name
 value :: Applicative f => val t -> Expr edsl val f t
-value v = known (pure v)
+value v = special (pure v)
 
-known :: f (val t) -> Expr edsl val f t
-known m = Expr $ ExprM $ \_ _ -> m
+-- | It's called "special" because it fixes the `f` and `val` types.
+-- Typically this will be used to bring in interpreter-specific stuff.
+special :: f (val t) -> Expr edsl val f t
+special m = Expr $ ExprM $ \_ _ -> m
 
 -- | Use a base EDSL term in the expression, yielding a value (in `val`) within
 -- the interpreter context (`f`).
