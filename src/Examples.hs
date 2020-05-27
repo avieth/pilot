@@ -391,6 +391,24 @@ clock period phase = unlit $ Stream.liftF autoArgs auto auto f `at` cnt
 -- is defined. Embed instances for application-specific data types would be
 -- defined where those types are defined.
 
+data Period
+data Phase
+
+instance Embed Point.Type Period where
+  type EmbedT Point.Type Period = Point.UInt32
+  embedT _ _ = Point.uint32_t
+
+instance Embed Point.Type Phase where
+  type EmbedT Point.Type Phase = Point.UInt32
+  embedT _ _ = Point.uint32_t
+
+clock_lifted
+  :: forall cval cf sval sf val f .
+     Lifted (Expr Point.ExprF cval cf) Period
+  -> Lifted (Expr Point.ExprF cval cf) Phase
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
+clock_lifted period phase = clock (unlift period) (unlift phase)
+
 instance Embed Point.Type Haskell.Word8 where
   type EmbedT Point.Type Haskell.Word8 = Point.UInt8
   embedT _ _ = Point.uint8_t
