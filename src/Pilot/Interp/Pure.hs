@@ -20,6 +20,7 @@ module Pilot.Interp.Pure
   ( Point (..)
   , Stream (..)
   , F
+  , streamExprToList
   , eval_point
   , eval_point_
   , eval_stream
@@ -41,6 +42,11 @@ import Pilot.Types.Fun
 import Pilot.Types.Logic
 import Pilot.Types.Nat
 import qualified Pilot.Types.Stream as Pure
+
+streamExprToList
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point F) (Expr Point.ExprF Point F)) Stream F ('Stream.Stream n t)
+  -> [Point t]
+streamExprToList expr = streamToList (eval_stream_ expr)
 
 data Point (t :: Point.Type) where
 
@@ -116,6 +122,9 @@ lift_bits_2 f (Int64 x)  (Int64 y)  = Int64  $ f x y
 
 data Stream (t :: Stream.Type Point.Type) where
   Stream   :: Pure.Stream Point n t -> Stream ('Stream.Stream n t)
+
+streamToList :: Stream ('Stream.Stream n t) -> [Point t]
+streamToList (Stream stream) = Pure.streamToList stream
 
 type F = Identity
 
@@ -312,18 +321,18 @@ eval_stream_expr (Stream.ShiftStream _ nrep expr) = do
   case str of
     Stream str -> pure $ Stream $ Pure.streamShift str
 
-eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S n)) inits k) = do
+eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S m)) inits k) = do
   pts <- vecTraverse eval_point inits
   let suffix :: Pure.Stream Point 'Z s
       suffix = case runIdentity (eval_stream (k (value (Stream shifted)))) of
         Stream s -> s
-      stream :: Pure.Stream Point ('S n) s
+      stream :: Pure.Stream Point ('S m) s
       stream = Pure.streamFromInitVec pts suffix
       -- The continuation `k` does not get access to the full prefix, we need to
       -- shift. Using streamShift or streamDrop does not work though, because
       -- these aren't sufficiently lazy. Instead, streamFromInitVec' will
       -- do what streamFromInitVec does but will include the final point in
       -- the suffix.
-      shifted :: Pure.Stream Point n s
+      shifted :: Pure.Stream Point m s
       shifted = Pure.streamFromInitVec' pts suffix
   pure $ Stream $ stream
