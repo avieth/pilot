@@ -1,6 +1,6 @@
 {-|
 Module      : Pilot.EDSL.Lifted
-Description : The point EDSL, "lifted" to Haskell types.
+Description : A way to "lift" an ESDL domain in Hask (Haskell types).
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
