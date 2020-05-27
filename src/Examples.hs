@@ -317,20 +317,28 @@ maybe_bind srep trep mx k = Point.elim_maybe srep (Point.maybe_t trep) mx
 
 example_19 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Unit)
 example_19 = Expr $ do
-  inputA <- special (C.externInput "a" (Point.maybe_t Point.int32_t))
-  inputB <- special (C.externInput "b" (Point.maybe_t Point.int32_t))
-  inputC <- special (C.externInput "c" (Point.maybe_t Point.int32_t))
-  let f = fun $ \mx -> fun $ \my -> fun $ \mz -> lit $
-            maybe_bind auto auto mx $ \x ->
-            maybe_bind auto auto my $ \y ->
-            maybe_bind auto auto mz $ \z -> Point.just auto $
-              Point.add auto x (Point.add auto y z)
-  ret <- expr $ unlit $ Stream.liftF autoArgs auto auto
-    f `at` value inputA
-      `at` value inputB
-      `at` value inputC
+
+  -- Use the C backend to get inputs.
+  inputA <- value <$> special (C.externInput "a" (Point.maybe_t Point.int32_t))
+  inputB <- value <$> special (C.externInput "b" (Point.maybe_t Point.int32_t))
+  inputC <- value <$> special (C.externInput "c" (Point.maybe_t Point.int32_t))
+
+  -- Apply a pointwise function over those inputs.
+  ret <- expr $ ap f <@> arg inputA <&> arg inputB <&> arg inputC
+
+  -- Put the result of that function to an output.
   () <- special (C.externOutput "x" (value ret))
+
+  -- The program itself returns a stream of unit.
   expr $ Stream.constant auto auto Point.unit
+
+  where
+
+  f = fun $ \mx -> fun $ \my -> fun $ \mz -> lit $
+        maybe_bind auto auto mx $ \x ->
+        maybe_bind auto auto my $ \y ->
+        maybe_bind auto auto mz $ \z -> Point.just auto $
+          Point.add auto x (Point.add auto y z)
 
 -- | Use a memory stream to make a counter with some modulus.
 --
@@ -343,7 +351,7 @@ counter
   -> StreamExpr cval cf sval sf val f ('Stream 'Z Point.UInt32)
   -> StreamExpr cval cf sval sf val f ('Stream 'Z Point.UInt32)
 counter initial modulus = Stream.shift auto auto $ Stream.memory auto auto inits $ \self ->
-  unlit $ Stream.liftF autoArgs auto auto incrModulo `at` self `at` modulus
+  ap incrModulo <@> arg self <&> arg modulus
   where
   inits = VCons initial VNil
 

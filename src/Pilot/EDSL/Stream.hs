@@ -31,6 +31,11 @@ module Pilot.EDSL.Stream
   , memory
   , liftF
   , liftF_
+
+  , arg
+  , ap
+  , (<@>)
+  , (<&>)
   ) where
 
 import Prelude hiding (drop)
@@ -179,3 +184,41 @@ liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
 mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)
 mkStreamRep _    Args            = Args
 mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
+
+-- With the following functions you can often write
+--
+--   ap f <@> arg arg1 <&> ... <&> arg argN
+--
+-- where f is a pointwise function defined using `fun` and `lit` from
+-- Pilot.Types.Fun.
+
+ap :: (KnownArgs args, Auto r, Auto n)
+   => Fun pexpr ('Sig args r)
+   -> Fun (Expr (ExprF pexpr static) val f) (Fun.Lift ('Stream n) ('Sig args r))
+ap f = liftF autoArgs auto auto f
+
+(<#>) :: Fun (Expr (ExprF pexpr static) val f) ('Sig (t ': ts) r)
+      -> Expr (ExprF pexpr static) val f t
+      -> Fun (Expr (ExprF pexpr static) val f) ('Sig ts r)
+(<#>) = Fun.at
+
+arg :: Expr expr val f t
+    -> Args (Expr expr val f) ts
+    -> Args (Expr expr val f) (t ': ts)
+arg e = Arg e
+
+-- NB: only the left is universally quantified on the tail. The right, in
+-- repeated right-associative applications, will have a particular tail type.
+(<&>) :: (forall xs . Args (Expr expr val f) xs -> Args (Expr expr val f) (t ': xs))
+      -> (Args (Expr expr val f) ts -> Args (Expr expr val f) ts')
+      -> (Args (Expr expr val f) ts -> Args (Expr expr val f) (t ': ts'))
+(<&>) left right args = left (right args)
+
+infixr 2 <&>
+
+(<@>) :: Fun (Expr (ExprF pexpr static) val f) ('Sig args r)
+      -> (Args (Expr (ExprF pexpr static) val f) '[] -> Args (Expr (ExprF pexpr static) val f) args)
+      -> Expr (ExprF pexpr static) val f r
+(<@>) f xs = Fun.apply f (xs Args)
+
+infix 1 <@>
