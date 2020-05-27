@@ -303,6 +303,35 @@ example_18 = rising_edge signal
     VCons Point.false $
     VNil
 
+-- | Monadic bind for maybe.
+maybe_bind
+  :: forall val f s t .
+     Point.TypeRep s
+  -> Point.TypeRep t
+  -> Expr Point.ExprF val f (Point.Maybe s)
+  -> (Expr Point.ExprF val f s -> Expr Point.ExprF val f (Point.Maybe t))
+  -> Expr Point.ExprF val f (Point.Maybe t)
+maybe_bind srep trep mx k = Point.elim_maybe srep (Point.maybe_t trep) mx
+  (\_ -> Point.nothing trep)
+  k
+
+example_19 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Unit)
+example_19 = Expr $ do
+  inputA <- special (C.externInput "a" (Point.maybe_t Point.int32_t))
+  inputB <- special (C.externInput "b" (Point.maybe_t Point.int32_t))
+  inputC <- special (C.externInput "c" (Point.maybe_t Point.int32_t))
+  let f = fun $ \mx -> fun $ \my -> fun $ \mz -> lit $
+            maybe_bind Point.int32_t Point.int32_t mx $ \x ->
+            maybe_bind Point.int32_t Point.int32_t my $ \y ->
+            maybe_bind Point.int32_t Point.int32_t mz $ \z -> Point.just Point.int32_t $
+              Point.add Point.int32_t x (Point.add Point.int32_t y z)
+  ret <- expr $ unlit $ Stream.liftF autoArgs auto auto
+    f `at` value inputA
+      `at` value inputB
+      `at` value inputC
+  () <- special (C.externOutput "x" (value ret))
+  expr $ Stream.constant auto auto Point.unit
+
 -- |
 -- = Examples of lifted pointwise expressions
 --
