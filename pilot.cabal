@@ -18,10 +18,17 @@ library
                        Pilot.EDSL.Point
                        Pilot.EDSL.Stream
 
-                       Pilot.Pure
-                       Pilot.C
+                       Pilot.Interp.Pure
+
+                       Pilot.Interp.C
+                       Pilot.Interp.C.AST
+                       Pilot.Interp.C.CodeGen
+                       Pilot.Interp.C.Eval
+                       Pilot.Interp.C.IO
+                       Pilot.Interp.C.Util
 
                        Pilot.Types.Fun
+                       Pilot.Types.Logic
                        Pilot.Types.Nat
                        Pilot.Types.Represented
                        Pilot.Types.Stream

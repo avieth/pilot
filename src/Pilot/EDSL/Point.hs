@@ -32,19 +32,8 @@ module Pilot.EDSL.Point
   , typeOf
 
   , ExprF (..)
-  , All (..)
-  , allToList
-  , mapAll
-  , traverseAll
-  , zipAll
-  , anyOfAll
-  , Any (..)
-  , anyToOne
-  , mapAny
-  , traverseAny
   , Selector (..)
   , Case (..)
-  , forAll
   , allSelectors
   , allCases
 
@@ -147,11 +136,11 @@ import Prelude hiding (Maybe, Either, Ordering, and, fst, snd, div, drop, mod, n
 import qualified Prelude
 import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
-import Data.Proxy (Proxy (..))
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
 import Pilot.EDSL.Expr as Expr
 import Pilot.Types.Represented
+import Pilot.Types.Logic
 
 -- | Types for the pointwise EDSL: various numeric types, with finite sums and
 -- products. As usual, the empty product is unit, and the empty sum is void.
@@ -499,76 +488,11 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
               -> All (Case expr r) variants
               -> ExprF expr r
 
--- TODO define in a Pilot.Types.* module
-data All (f :: k -> Haskell.Type) (ts :: [k]) where
-  All :: All f '[]
-  And :: f t -> All f ts -> All f (t ': ts)
-
-allToList :: (forall t . f t -> r) -> All f ts -> [r]
-allToList f All        = []
-allToList f (And x xs) = f x : allToList f xs
-
-mapAll :: (forall t . f t -> g t) -> All f ts -> All g ts
-mapAll _ All = All
-mapAll h (And t as) = And (h t) (mapAll h as)
-
-traverseAll :: Applicative m => (forall t . f t -> m (g t)) -> All f ts -> m (All g ts)
-traverseAll _ All = pure All
-traverseAll h (And t ts) = And <$> h t <*> traverseAll h ts
-
-zipAll
-  :: (forall x . f x -> g x -> h x)
-  -> All f ts
-  -> All g ts
-  -> All h ts
-zipAll _ All All = All
-zipAll f (And fx fs) (And gx gs) = And (f fx gx) (zipAll f fs gs)
-
-anyOfAll :: (forall t . f t -> Bool) -> All f ts -> Bool
-anyOfAll _ All = False
-anyOfAll p (And t ts) = p t || anyOfAll p ts
-
--- TODO change constructor names to This and That.
--- TODO define in a Pilot.Types.* module (along with `All`).
-data Any (f :: k -> Haskell.Type) (ts :: [k]) (r :: k) where
-  Any :: f t -> Any f (t ': ts) t
-  Or  :: Any f ts r -> Any f (t ': ts) r
-
-anyToOne :: forall f ts x r . (forall t . Integer -> f t -> r) -> Any f ts x -> r
-anyToOne f xs = go 0 f xs
-  where
-  go :: forall ts . Integer -> (forall t . Integer -> f t -> r) -> Any f ts x -> r
-  go !n f (Any x) = f n x
-  go !n f (Or xs) = go (n+1) f xs
-
-mapAny :: (forall t . f t -> g t) -> Any f ts r -> Any g ts r
-mapAny h (Any t) = Any (h t)
-mapAny h (Or as) = Or (mapAny h as)
-
-traverseAny :: Functor m => (forall t . f t -> m (g t)) -> Any f ts r -> m (Any g ts r)
-traverseAny h (Any t) = Any <$> h t
-traverseAny h (Or as) = Or <$> traverseAny h as
-
 data Selector (t :: k) where
   Selector :: Selector t
 
 data Case (f :: k -> Haskell.Type) (r :: k) (t :: k) where
   Case :: TypeRep t -> (f t -> f r) -> Case f r t
-
--- | For each of the conjuncts, pick out that conjunct in a disjunction.
-forAll
-  :: forall f g ts .
-     (forall x . f x -> g x)
-  -> All f ts
-  -> All (Any g ts) ts
-forAll h alls = go alls id
-  where
-  go :: forall ts' .
-        All f ts'
-     -> (forall r . Any g ts' r -> Any g ts r)
-     -> All (Any g ts) ts'
-  go All        _ = All
-  go (And t ts) k = And (k (Any (h t))) (go ts (\a -> k (Or a)))
 
 allSelectors
   :: forall ts .

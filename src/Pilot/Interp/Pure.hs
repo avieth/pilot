@@ -1,5 +1,5 @@
 {-|
-Module      : Pilot.Pure
+Module      : Pilot.Interp.Pure
 Description : The "pure" interpretation of the stream and point EDSLs.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
@@ -16,7 +16,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
-module Pilot.Pure
+module Pilot.Interp.Pure
   ( Point (..)
   , Stream (..)
   , F
@@ -34,15 +34,12 @@ import Data.Functor.Identity
 import Data.List (intercalate)
 
 import Pilot.EDSL.Expr
-import Pilot.EDSL.Point (Any (..), All (..), allToList, anyToOne, traverseAny, traverseAll)
-import qualified Pilot.EDSL.Point as EDSL
 import qualified Pilot.EDSL.Point as Point
-import qualified Pilot.EDSL.Stream as EDSL
 import qualified Pilot.EDSL.Stream as Stream
 
 import Pilot.Types.Fun
+import Pilot.Types.Logic
 import Pilot.Types.Nat
-import Pilot.Types.Represented
 import qualified Pilot.Types.Stream as Pure
 
 data Point (t :: Point.Type) where

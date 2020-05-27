@@ -27,8 +27,7 @@ module Pilot.EDSL.Lifted
   , unlift
   ) where
 
-import Pilot.EDSL.Expr (EDSL, Hask, Expr)
-import qualified Pilot.EDSL.Expr as Unlifted
+import Pilot.EDSL.Expr (Hask, Expr)
 import Pilot.Types.Represented
 
 -- | Gives a representation in `domain` for a Haskell type.

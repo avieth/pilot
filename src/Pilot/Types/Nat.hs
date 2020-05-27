@@ -19,7 +19,6 @@ module Pilot.Types.Nat where
 
 import Numeric.Natural
 import Data.Kind (Type)
-import Data.Proxy (Proxy (..))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
 import Pilot.Types.Represented

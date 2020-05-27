@@ -22,8 +22,6 @@ Portability : non-portable (GHC only)
 
 module Examples where
 
-import qualified Data.Kind as Haskell (Type)
-import Data.Proxy (Proxy (..))
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -34,10 +32,11 @@ import Pilot.EDSL.Stream
 import qualified Pilot.EDSL.Stream as Stream
 import Pilot.EDSL.Lifted
 import Pilot.Types.Fun
+import Pilot.Types.Logic
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
-import qualified Pilot.C as C
+import qualified Pilot.Interp.C as C
 
 -- (42, -42) :: (UInt8, Int8)
 example_1 :: Expr Point.ExprF expr f (Pair UInt8 Int8)
