@@ -243,7 +243,12 @@ example_16 = integral c f
 example_17 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Int32)
 example_17 = Stream.drop auto auto (integral (Point.int32 0) f)
   where
-  f = special (C.extern "some_name" Point.int32_t)
+  f = special_ (C.externInput "f" Point.int32_t)
+
+example_17_1 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Unit)
+example_17_1 = Expr $ do
+  special (C.externOutput "integral_f" example_17)
+  expr $ Stream.constant auto auto Point.unit
 
 -- To define the rising edge of a boolean stream, we first define a stream which
 -- gives the last value of that stream, then we take the exclusive or where

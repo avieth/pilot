@@ -96,18 +96,18 @@ evalExprM interp name expr = runExprM expr interp name
 --
 -- TODO better name
 value :: Applicative f => val t -> Expr edsl val f t
-value v = special (pure v)
+value v = special_ (pure v)
 
 -- | Use an interpreter-specific thing in the expression.
 --
--- It's called "special" because it fixes the `f` and `val` types.
--- Typically this will be used to bring in interpreter-specific stuff.
-special :: f (val t) -> Expr edsl val f t
-special m = Expr $ ExprM $ \_ _ -> m
+-- It's called "special" because it fixes the `f` types (and probably `val` as
+-- well).
+special :: f t -> ExprM edsl val f t
+special m = ExprM $ \_ _ -> m
 
 -- | Like 'special' but it does not need to give a value.
-special_ :: f t -> ExprM edsl val f t
-special_ m = ExprM $ \_ _ -> m
+special_ :: f (val t) -> Expr edsl val f t
+special_ = Expr . special
 
 -- | Use a base EDSL term in the expression, yielding a value (in `val`) within
 -- the interpreter context (`f`).

@@ -1437,6 +1437,12 @@ eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k
   let valueSelector :: C.PostfixExpr
       valueSelector = C.PostfixDot variantExpr variantIdent
   valInThisCase :: Point s ty <- type_rep_val trep (postfixExprIsCondExpr valueSelector)
+  -- NB: with the new scope we evaluate a _point_ not a stream. That means
+  -- that we'll never, for instance, only update a memory stream, or only
+  -- update an extern output, within only one case elimination block.
+  -- TODO check on that. Should be ok, since `value valInThisCase` will never
+  -- elaborate to anything that needs to happen at the top level of the
+  -- evaluation function.
   (expr, blockItems) <- withNewScope $ eval_point (k (value valInThisCase))
   let -- Here we have the result assignment and the case break, the final two
       -- statements in the compound statement.

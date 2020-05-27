@@ -9,7 +9,8 @@ Portability : non-portable (GHC only)
 -}
 
 module Pilot.Interp.C
-  ( IO.extern
+  ( IO.externInput
+  , IO.externOutput
   , CodeGen
   , Stream
   , Point

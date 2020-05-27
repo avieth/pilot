@@ -12,7 +12,8 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE DataKinds #-}
 
 module Pilot.Interp.C.IO
-  ( extern
+  ( externInput
+  , externOutput
   ) where
 
 import Control.Monad (when)
@@ -34,16 +35,19 @@ import Pilot.Interp.C.CodeGen
 import Pilot.Interp.C.Eval
 
 -- | Create a stream which will appear as a C extern. This is the way in
-extern :: String -> Point.TypeRep t -> CodeGen s (Stream s ('Stream.Stream 'Z t))
-extern name trep = do
-  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExterns
-  when exists $ codeGenError $ CodeGenDuplicateExtern name
+-- which external real world _input_ appears.
+externInput :: String -> Point.TypeRep t -> CodeGen s (Stream s ('Stream.Stream 'Z t))
+externInput name trep = do
+  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExternInputs
+  when exists $ codeGenError $ CodeGenDuplicateExternName name
+  -- Prefix with "input_" so that it's impossible to clash with names
+  -- that we choose internally for other things.
+  ident <- maybeError
+    (CodeGenInvalidExternName name)
+    (pure (stringIdentifier ("input_" ++ name)))
   tinfo <- type_info NotShared trep
   let typeSpec = ctypeSpec tinfo
       mPtr = if ctypePtr tinfo then Just (C.PtrBase Nothing) else Nothing
-      -- Prefix with "extern_" so that it's impossible to clash with names
-      -- that we choose internally for other things.
-      ident = assertValidStringIdentifier ("extern_" ++ name)
       !externDeclr = ExternObjectDeclr
         Nothing
         typeSpec
@@ -56,5 +60,54 @@ extern name trep = do
         , streamCTypeInfo = tinfo
         }
   CodeGen $ Trans.lift $ modify' $ \cgs ->
-    cgs { cgsExterns = Map.insert name externDeclr (cgsExterns cgs) }
+    cgs { cgsExternInputs = Map.insert name externDeclr (cgsExternInputs cgs) }
   pure stream
+
+-- | Use this stream to make an output. It will appear as an uninitialized
+-- C static variable, which will be written on each evalauation of the system
+-- (each main function call in the generated C).
+--
+-- NB: consistent with 'externInput', if this term appears in the expression,
+-- then the extern appears and the output will be written.
+--
+-- It _may_ be prefereable, moving forward, to give an explicit IO type for
+-- the C backend. Extern inputs and outputs would appear within these, and
+-- typical pure streams could be lifted into it. We would encoter types like
+-- this:
+--
+--   ExprM (Stream.ExprF) (Stream s) (CodeGen s) (IO s t)
+--
+externOutput
+  :: String
+  -> StreamExpr s ('Stream.Stream 'Z t)
+  -> CodeGen s ()
+externOutput name expr = do
+  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExternOutputs
+  when exists $ codeGenError $ CodeGenDuplicateExternName name
+  ident <- maybeError
+    (CodeGenInvalidExternName name)
+    (pure (stringIdentifier ("output_" ++ name)))
+  stream <- eval_stream expr
+  cexpr <- streamExprNow (streamVal stream)
+  -- Where externInput produces a Stream value and returns it, here we must
+  -- add a block item to the context which assigns the stream expression to
+  -- the output extern
+  let typeSpec = streamTypeSpec stream
+      mPtr = if streamPtr stream then Just (C.PtrBase Nothing) else Nothing
+      !externDeclr = ExternObjectDeclr
+        Nothing
+        typeSpec
+        mPtr
+        ident
+      assignExpr :: C.AssignExpr
+      !assignExpr = C.Assign
+        (identIsUnaryExpr ident)
+        C.AEq
+        (condExprIsAssignExpr cexpr)
+      assignItem :: C.BlockItem
+      !assignItem = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+        C.ExprAssign assignExpr
+  addBlockItem assignItem
+  CodeGen $ Trans.lift $ modify' $ \cgs ->
+    cgs { cgsExternOutputs = Map.insert name externDeclr (cgsExternOutputs cgs) }
+  pure ()

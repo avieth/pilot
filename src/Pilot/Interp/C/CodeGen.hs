@@ -194,7 +194,7 @@ streamArgToPointArg
   -> NatRep n
   -> Stream s ('Stream.Stream n t)
   -> Expr Point.ExprF (Point s) (CodeGen s) t
-streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.special $ do
+streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.special_ $ do
   expr <- streamExprAtOffset offset (streamVal stream)
   pure $ Point
     { pointExpr      = expr
@@ -213,8 +213,6 @@ streamArgsToPointArgs offset nrep Args              Args           = Args
 streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = Arg
   (streamArgToPointArg   offset nrep arg)
   (streamArgsToPointArgs offset nrep argsrep args)
-
-
 
 -- | A monad to ease the expression of code generation, which carries some
 -- state and may exit early with error cases.
@@ -237,7 +235,8 @@ evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) init
   initialState = CodeGenState
     { cgsOptions       = opts
     , cgsTypeDeclns    = []
-    , cgsExterns       = mempty
+    , cgsExternInputs  = mempty
+    , cgsExternOutputs = mempty
     , cgsStaticStreams = mempty
     , cgsBlockItems    = []
     , cgsScope         = scopeInit NE.:| []
@@ -260,10 +259,12 @@ data CodeGenState = CodeGenState
     -- struct declarations induced by compound types encountered during code
     -- generation.
     cgsTypeDeclns :: ![C.Decln]
-    -- | Extern object and function declarations, keyed on the string which
-    -- determines their C identifiers, so that the generated C will not have
-    -- duplicate names.
-  , cgsExterns    :: !(Map ExternIdentifier ExternDeclr)
+    -- | Extern input declarations, keyed on the string which determines their
+    -- C identifiers.
+  , cgsExternInputs :: !(Map ExternIdentifier ExternDeclr)
+    -- | Extern output declarations, keyed on the string which determines their
+    -- C identifiers.
+  , cgsExternOutputs :: !(Map ExternIdentifier ExternDeclr)
     -- | Information determining declarations and statements which implement
     -- static streams with memory.
   , cgsStaticStreams :: !(Seq StaticMemoryStream)
@@ -285,7 +286,8 @@ data CodeGenState = CodeGenState
 data CodeGenError where
   -- | Indicates a bug in this program.
   CodeGenInternalError :: String -> CodeGenError
-  CodeGenDuplicateExtern :: String -> CodeGenError
+  CodeGenDuplicateExternName :: String -> CodeGenError
+  CodeGenInvalidExternName   :: String -> CodeGenError
 
 deriving instance Show CodeGenError
 
@@ -299,6 +301,10 @@ maybeError err act = do
 
 type ExternIdentifier = String
 
+-- | TODO FIXME this is actually a misnomer. These do not always define C
+-- externs. They correspond to top-level declarations which may either be
+-- extern (an input which the C shell would define and set) or static (an
+-- output which the C shell would declare as extern and read).
 data ExternDeclr where
   ExternObjectDeclr
     :: !(Maybe C.TypeQualList)
@@ -322,14 +328,14 @@ data FunctionParam = FunctionParam
   }
 
 -- | The top-level declaration for an external thing.
-externDecln :: ExternDeclr -> C.Decln
+externDecln :: IOClass -> ExternDeclr -> C.Decln
 
-externDecln (ExternObjectDeclr mtq ts mPtr ident) = C.Decln
-  (externDeclnSpecs mtq ts)
+externDecln ioClass (ExternObjectDeclr mtq ts mPtr ident) = C.Decln
+  (externDeclnSpecs ioClass mtq ts)
   (Just $ C.InitDeclrBase $ C.InitDeclr $ C.Declr mPtr $ C.DirectDeclrIdent ident)
 
-externDecln (ExternFunctionDeclr mtq ts mPtr ident fparams) = C.Decln
-  (externDeclnSpecs mtq ts)
+externDecln ioClass (ExternFunctionDeclr mtq ts mPtr ident fparams) = C.Decln
+  (externDeclnSpecs ioClass mtq ts)
   (Just $ C.InitDeclrBase $ C.InitDeclr $ C.Declr mPtr $ C.DirectDeclrFun1 dident ptl)
   where
   dident :: C.DirectDeclr
@@ -353,9 +359,21 @@ functionParamDeclnSpecs :: FunctionParam -> C.DeclnSpecs
 functionParamDeclnSpecs fp = declnSpecsQualListMaybe (fpTypeQual fp)
   (C.DeclnSpecsType (fpTypeSpec fp) Nothing)
 
-externDeclnSpecs :: Maybe C.TypeQualList -> C.TypeSpec -> C.DeclnSpecs
-externDeclnSpecs mtq ts = C.DeclnSpecsStorage C.SExtern $ Just $
+data IOClass where
+  IOInputExtern  :: IOClass
+  IOOutputStatic :: IOClass
+
+externDeclnSpecs
+  :: IOClass
+  -> Maybe C.TypeQualList
+  -> C.TypeSpec
+  -> C.DeclnSpecs
+externDeclnSpecs ioClass mtq ts = C.DeclnSpecsStorage storageClass $ Just $
   declnSpecsQualListMaybe mtq (C.DeclnSpecsType ts Nothing)
+  where
+  storageClass = case ioClass of
+    IOInputExtern  -> C.SExtern
+    IOOutputStatic -> C.SStatic
 
 declnSpecsQualListMaybe :: Maybe C.TypeQualList -> C.DeclnSpecs -> C.DeclnSpecs
 declnSpecsQualListMaybe Nothing   ds = ds
@@ -655,7 +673,9 @@ codeGenTransUnit cgs mainFunDef = mkTransUnit (C.ExtFun mainFunDef NE.:| extDecl
     concatMap staticMemoryStreamDeclns (toList (cgsStaticStreams cgs))
 
   externs :: [C.ExtDecln]
-  externs = fmap (C.ExtDecln . externDecln) (Map.elems (cgsExterns cgs))
+  externs =
+       fmap (C.ExtDecln . externDecln IOOutputStatic) (Map.elems (cgsExternOutputs cgs))
+    ++ fmap (C.ExtDecln . externDecln IOInputExtern)  (Map.elems (cgsExternInputs cgs))
 
   extTypeDeclns :: [C.ExtDecln]
   extTypeDeclns = fmap C.ExtDecln (cgsTypeDeclns cgs)
