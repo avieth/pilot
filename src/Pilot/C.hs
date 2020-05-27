@@ -22,7 +22,18 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE EmptyCase #-}
 
-module Pilot.C where
+module Pilot.C
+  ( CodeGen
+  , Point
+  , Stream
+  , extern
+  , evalCodeGen
+  , genTransUnit
+  , codeGenToFile
+  , writePointExpr
+  , writeStreamExpr
+  , CodeGenError (..)
+  ) where
 
 import Control.Monad (when)
 import qualified Control.Monad.Trans.Class as Trans (lift)
@@ -112,7 +123,6 @@ import Control.Exception (throwIO)
 --   simplify all products and sums using the 1 and 0 identity laws. That's to
 --   say, a product contains no 1s, and a sum contains no 0s.
 --   It would give smaller (and probably faster) C.
---
 
 -- | Useful for debugging: C AST types, including the translation unit, have
 -- Pretty instances.
@@ -2530,14 +2540,24 @@ convertTreatment ctt       ctt'      val = case valType val of
   _ -> pure val
 -}
 
+-- | Generates the concrete syntax for the translation unit.
+codeGenString
+  :: CodeGenOptions
+  -> CodeGen s (Stream s ('Stream.Stream n x))
+  -> Either CodeGenError String
+codeGenString opts cg = fmap prettyPrint (genTransUnit opts cg)
+
+-- | Generates the translation unit and writes it to a file.
+--
+-- Puts in stdint.h and stdio.h includes.
 codeGenToFile
   :: String
   -> CodeGenOptions
   -> CodeGen s (Stream s ('Stream.Stream n x))
   -> IO ()
-codeGenToFile fp opts cg = case genTransUnit opts cg of
-  Left  err       -> throwIO (userError (show err))
-  Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
+codeGenToFile fp opts cg = case codeGenString opts cg of
+  Left  err -> throwIO (userError (show err))
+  Right str -> writeFile fp $ includes ++ str
   where
   includes = mconcat
     [ "#include <stdint.h>\n"
@@ -2545,19 +2565,21 @@ codeGenToFile fp opts cg = case genTransUnit opts cg of
     , "\n"
     ]
 
-write_point_expr
+-- | Generate and write C for a point expression, by making it a constant
+-- stream.
+writePointExpr
   :: (Point.KnownType t)
   => String
   -> Bool
   -> Expr Point.ExprF (Point s) (CodeGen s) t -> IO ()
-write_point_expr fp b expr = write_stream_expr fp b (Stream.constant auto Z_t expr)
+writePointExpr fp b expr = writeStreamExpr fp b (Stream.constant auto Z_t expr)
 
-write_stream_expr
+writeStreamExpr
   :: String
   -> Bool
   -> StreamExpr s ('Stream.Stream n x)
   -> IO ()
-write_stream_expr fp b expr = codeGenToFile fp opts (eval_stream expr)
+writeStreamExpr fp b expr = codeGenToFile fp opts (eval_stream expr)
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
 
