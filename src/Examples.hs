@@ -332,6 +332,26 @@ example_19 = Expr $ do
   () <- special (C.externOutput "x" (value ret))
   expr $ Stream.constant auto auto Point.unit
 
+-- | Use a memory stream to make a counter with some modulus.
+--
+-- That modulus can be varying, but should probably be constant or you may
+-- get some really hard to understand behaviour.
+--
+-- TODO see if we can make it polymorphic over integral types.
+counter
+  :: Expr Point.ExprF sval sf Point.UInt32
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Point.UInt32)
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Point.UInt32)
+counter initial modulus = Stream.shift auto auto $ Stream.memory auto auto inits $ \self ->
+  unlit $ Stream.liftF autoArgs auto auto incrModulo `at` self `at` modulus
+  where
+  inits = VCons initial VNil
+
+  incrModulo :: Fun (Expr Point.ExprF sval cf)
+    (Point.UInt32 :-> Point.UInt32 :-> V Point.UInt32)
+  incrModulo = fun $ \x -> fun $ \m -> lit $
+    Point.mod auto (Point.add auto (Point.uint32 1) x) m
+
 -- |
 -- = Examples of lifted pointwise expressions
 --
