@@ -216,14 +216,12 @@ data ExternStream = ExternStream
 data StaticStreamVal = StaticStreamVal
   { ssvIndex  :: !C.Ident
   , ssvArray  :: !C.Ident
-  , ssvSize   :: !Natural
-  , ssvOffset :: !Natural
+  , ssvSize   :: !Natural -- ^ Of the C array
+  , ssvOffset :: !Natural -- ^ Used in computing stream drops
   }
 
 -- | Takes the static stream's static array identifier and indexes it at the
 -- appropriate offset (modulo its size)
---
--- TODO check if the offset is 0 and if so, do not do the addition.
 staticStreamAtOffset :: Natural -> StaticStreamVal -> C.CondExpr
 staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
   (identIsPostfixExpr (ssvArray ssv))
@@ -232,12 +230,16 @@ staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
   indexExpr :: C.Expr
   indexExpr = multExprIsExpr $
     C.MultMod (addExprIsMultExpr index) (constIsCastExpr modulus)
+  -- n gives the local offset, ssvOffset ssv accounts for any changes from
+  -- a drop on this stream. Their sum gives the value to add to the current
+  -- index. If it's 0, we skip this.
   index :: C.AddExpr
-  index = C.AddPlus (constIsAddExpr baseIndex) (constIsMultExpr addIndex)
-  baseIndex :: C.Const
-  baseIndex = C.ConstInt $ C.IntHex (hex_const (ssvOffset ssv)) Nothing
+  index =
+    if (n + ssvOffset ssv) == 0
+    then identIsAddExpr (ssvIndex ssv)
+    else C.AddPlus (identIsAddExpr (ssvIndex ssv)) (constIsMultExpr addIndex)
   addIndex :: C.Const
-  addIndex = C.ConstInt $ C.IntHex (hex_const n) Nothing
+  addIndex = C.ConstInt $ C.IntHex (hex_const (n + ssvOffset ssv)) Nothing
   modulus :: C.Const
   modulus = C.ConstInt $ C.IntHex (hex_const (ssvSize ssv)) Nothing
 
@@ -298,19 +300,19 @@ streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = Arg
 
 stream_drop
   :: forall s n t .
-     Stream s ('Stream.Stream ('S ('S n)) t)
-  -> Stream s ('Stream.Stream     ('S n)  t)
+     Stream s ('Stream.Stream ('S n) t)
+  -> Stream s ('Stream.Stream     n  t)
 stream_drop stream = Stream
   { streamVal       = val
   , streamTypeRep   = typeRep
   , streamCTypeInfo = streamCTypeInfo stream
   }
   where
-  typeRep :: Stream.TypeRep ('Stream.Stream ('S n) t)
+  typeRep :: Stream.TypeRep ('Stream.Stream n t)
   typeRep = case streamTypeRep stream of
     Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
 
-  val :: StreamVal s ('Stream.Stream ('S n) t)
+  val :: StreamVal s ('Stream.Stream n t)
   val = case streamVal stream of
     -- Dropping from a constant? Same thing.
     StreamValConstant c -> StreamValConstant c
@@ -351,89 +353,6 @@ integer_ident Signed_t   Eight_t     = ident_int8_t
 integer_ident Signed_t   Sixteen_t   = ident_int16_t
 integer_ident Signed_t   ThirtyTwo_t = ident_int32_t
 integer_ident Signed_t   SixtyFour_t = ident_int64_t
-
-
-
-{-
--- | Use a stream value as a point value by forgetting the stream information
--- and taking the C.CondExpr at the given stream offset.
-sampleStreamValAt
-  :: Offset n
-  -> Val s ('ValStream ('Stream n t))
-  -> CodeGen s (Val s ('ValPoint t))
-sampleStreamValAt offset sval = case (getVal sval, valType sval) of
-  (CValStream k, ValStream_t (Stream_t _ prep)) -> do
-    cexpr <- k offset
-    pure $ Val
-      { getVal      = CValPoint cexpr
-      , valType     = ValPoint_t prep
-      , valTypeInfo = valTypeInfo sval
-      }
-
--- | A point val can be made into a stream val, giving a constant, or "pure"
--- stream. This is done by substituting exactly the C expression for the point,
--- to stand for the stream.
---
--- NB: the natural number index must be given, since we need it in order to
--- construct the TypeRep.
---
-constantStreamVal :: NatRep n -> Val s ('ValPoint t) -> Val s ('ValStream ('Stream n t))
-constantStreamVal nrep pval = case valType pval of
-  ValPoint_t prep -> Val
-    { getVal      = CValStream (\_ -> pure (valPointCondExpr pval))
-    , valType     = ValStream_t (Stream_t nrep prep)
-    -- As far as C types are concerned, the point and stream are the same.
-    , valTypeInfo = valTypeInfo pval
-    }
-
--- | Is in CodeGen s because it must potentially generate type info for the
--- result type. The other functions realting to stream Vals do not have
--- to do this because they are given existing Vals.
-liftStreamVal
-  :: Args (Rep Point.Type) args
-  -> Rep Point.Type r
-  -> NatRep n
-  -> Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args)
-  -> (Args (Expr Point.ExprF (PointTarget s)) args -> Expr Point.ExprF (PointTarget s) r)
-  -> CodeGen s (Val s ('ValStream ('Stream n r)))
-liftStreamVal argsrep prep nrep sargs k = do
-  ctt <- compoundTypeTreatment
-  info <- type_info ctt (ValPoint_t prep)
-  pure $ Val
-    { getVal      = CValStream $ \offset -> do
-        pval <- elim_point_expr (k (streamArgsToPointArgs offset nrep argsrep sargs))
-        pure $ valPointCondExpr pval
-    , valType     = ValStream_t (Stream_t nrep prep)
-    , valTypeInfo = info
-    }
-
--- | Given a Val representing a stream with nonzero memory, we can "drop" it,
--- i.e. advance it one place, simply by changing the continuation to bump the
--- offset by one.
-dropStreamVal :: NatRep n
-              -> Val s ('ValStream ('Stream ('S n) t))
-              -> Val s ('ValStream ('Stream     n  t))
-dropStreamVal nrep val =  case (getVal val, valType val) of
-  (CValStream k, ValStream_t (Stream_t _ prep)) -> val
-    { getVal      = CValStream (withNextOffset k)
-    , valType     = ValStream_t (Stream_t nrep prep)
-    -- C type info does not change.
-    , valTypeInfo = valTypeInfo val
-    }
-
--- | Just like 'dropStreamVal' except we do not actually change the offset in
--- the continuation, we only change its index.
-shiftStreamVal :: NatRep n
-              -> Val s ('ValStream ('Stream ('S n) t))
-              -> Val s ('ValStream ('Stream     n  t))
-shiftStreamVal nrep val =  case (getVal val, valType val) of
-  (CValStream k, ValStream_t (Stream_t _ prep)) -> val
-    { getVal      = CValStream (withSameOffset k)
-    , valType     = ValStream_t (Stream_t nrep prep)
-    -- C type info does not change.
-    , valTypeInfo = valTypeInfo val
-    }
--}
 
 -- |
 -- = Type names and type declarations
@@ -1305,13 +1224,13 @@ eval_constant_stream trep nrep pexpr = do
 
 eval_drop_stream
   :: Point.TypeRep t
-  -> NatRep ('S ('S n))
+  -> NatRep ('S n)
   -> Expr
        (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Identity))
        (Stream s)
        (CodeGen s)
-       ('Stream.Stream ('S ('S n)) t)
-  -> CodeGen s (Stream s ('Stream.Stream ('S n) t))
+       ('Stream.Stream ('S n) t)
+  -> CodeGen s (Stream s ('Stream.Stream n t))
 eval_drop_stream trep nrep expr = do
   stream <- eval_stream expr
   pure $ stream_drop stream
@@ -1397,16 +1316,19 @@ eval_memory_stream trep nrep initExprs k = do
       !arrayLength = vecLength initPoints
 
       sizeIntConst :: C.IntConst
-      !sizeIntConst = C.IntHex (hex_const arrayLength) Nothing
+      !sizeIntConst = C.IntHex (hex_const (1 + arrayLength)) Nothing
+
+      sizeMinusOneIntConst :: C.IntConst
+      !sizeMinusOneIntConst = C.IntHex (hex_const arrayLength) Nothing
 
       !widthRep =
-        if arrayLength <= 0xFF
+        if arrayLength <= 0xFE
         then Point.SomeWidthRep Point.Eight_t
-        else if arrayLength <= 0xFFFF
+        else if arrayLength <= 0xFFFE
         then Point.SomeWidthRep Point.Sixteen_t
         -- Ok, having a vector of this size would cause GHC to implode, but oh
         -- well let's be thorough.
-        else if arrayLength <= 0xFFFFFFFF
+        else if arrayLength <= 0xFFFFFFFE
         then Point.SomeWidthRep Point.ThirtyTwo_t
         else Point.SomeWidthRep Point.SixtyFour_t
 
@@ -1421,7 +1343,7 @@ eval_memory_stream trep nrep initExprs k = do
       sval = StaticStreamVal
         { ssvIndex  = indexIdentifier
         , ssvArray  = arrayIdentifier
-        , ssvSize   = arrayLength
+        , ssvSize   = 1 + arrayLength
         , ssvOffset = 0
         }
 
@@ -1451,18 +1373,24 @@ eval_memory_stream trep nrep initExprs k = do
   nextValueExpr <- streamExprNow (streamVal sval')
 
   let !sms = StaticMemoryStream
-        { smsArrayIdent = arrayIdentifier
-        , smsIndexIdent = indexIdentifier
-        , smsCopyIdent  = copyIdentifier
-        , smsCSize      = sizeIntConst
-        , smsSizeWidth  = widthRep
-        , smsArrayInits = arrayInits
-        , smsNextValue  = nextValueExpr
-        , smsCTypeInfo  = tinfo
+        { smsArrayIdent  = arrayIdentifier
+        , smsIndexIdent  = indexIdentifier
+        , smsCSize       = sizeIntConst
+        , smsWriteOffset = sizeMinusOneIntConst
+        , smsSizeWidth   = widthRep
+        -- The array inits are in reverse order. Just an annoyance of the
+        -- C99 AST definitions.
+        , smsArrayInits  = NE.reverse arrayInits
+        , smsCTypeInfo   = tinfo
         }
 
+      -- This block item updates the stream at the "write index"
+      bi = staticMemoryStreamUpdateArrayBlockItem sms (condExprIsAssignExpr nextValueExpr)
+
   CodeGen $ Trans.lift $ modify' $ \cgs -> cgs
-    { cgsStaticStreams = cgsStaticStreams cgs Seq.|> sms }
+    { cgsStaticStreams = cgsStaticStreams cgs Seq.|> sms
+    , cgsBlockItems    = bi : cgsBlockItems cgs
+    }
 
   pure stream
 
@@ -2083,10 +2011,11 @@ data StaticMemoryStream = StaticMemoryStream
     smsArrayIdent :: !C.Ident
     -- | Identifier of the static current index into the array
   , smsIndexIdent :: !C.Ident
-    -- | Identifier of the static copy location for the next value of the stream.
-  , smsCopyIdent  :: !C.Ident
-    -- | Integer constant giving the size of the array
+    -- | Integer constant giving the size of the array (shall be at least 2).
   , smsCSize      :: !C.IntConst
+    -- | Integer constant giving one less than smsCSize. Add this to the
+    -- current offset, modulo smsCSize, gives the "write" cell.
+  , smsWriteOffset :: !C.IntConst
     -- | How many bits do we need for the index?
     -- In practice it's unlikely there would ever be a memory stream of size
     -- greater than even 255 but still it's good to know this.
@@ -2094,9 +2023,6 @@ data StaticMemoryStream = StaticMemoryStream
     -- | The initial values for the array. Must be exactly as many as the size.
     -- This is in reverse order: earlier entries will go later in the array.
   , smsArrayInits :: !(NonEmpty C.CondExpr)
-    -- | Expression giving the next value. This depends upon CodeGenState
-    -- context: it may use bindings from there.
-  , smsNextValue  :: !C.CondExpr
     -- | The C type information for the _points_ in this stream.
   , smsCTypeInfo  :: !CTypeInfo
   }
@@ -2113,34 +2039,19 @@ staticMemoryArrayInits (cexpr NE.:| (cexpr' : cexprs)) = C.InitCons
 
 staticMemoryStreamDeclns :: StaticMemoryStream -> [C.Decln]
 staticMemoryStreamDeclns sms =
-  [ staticMemoryStreamCopyDecln  sms
-  , staticMemoryStreamIndexDecln sms
+  [ staticMemoryStreamIndexDecln sms
   , staticMemoryStreamArrayDecln sms
   ]
 
+-- | Block items to update the current indices of all static memory streams.
+-- This must be done at the end of every evaluation frame.
 staticMemoryStreamBlockItems :: Seq StaticMemoryStream -> [C.BlockItem]
 staticMemoryStreamBlockItems smss =
-     fmap staticMemoryStreamUpdateArrayBlockItem lst
-  ++ fmap staticMemoryStreamUpdateIndexBlockItem lst
-  ++ fmap staticMemoryStreamCopyBlockItem lst
+  fmap staticMemoryStreamUpdateIndexBlockItem lst
   where
   lst = toList smss
 
--- | Goes after all 'staticMemoryCopyBlockItems's for all streams, and after
--- the 'staticMemoryUpdateIndexBlockItem' for this stream. It updates the
--- static array at the current index.
-staticMemoryStreamUpdateArrayBlockItem :: StaticMemoryStream -> C.BlockItem
-staticMemoryStreamUpdateArrayBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
-  C.ExprAssign $ C.Assign
-    (postfixExprIsUnaryExpr arrayAtIndex)
-    C.AEq
-    (identIsAssignExpr (smsCopyIdent sms))
-  where
-  arrayAtIndex :: C.PostfixExpr
-  arrayAtIndex = C.PostfixIndex
-    (identIsPostfixExpr (smsArrayIdent sms))
-    (identIsExpr (smsIndexIdent sms))
-
+-- | Increments the stream's index, modulo the size of the C array.
 staticMemoryStreamUpdateIndexBlockItem :: StaticMemoryStream -> C.BlockItem
 staticMemoryStreamUpdateIndexBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
   C.ExprAssign $ C.Assign
@@ -2155,14 +2066,33 @@ staticMemoryStreamUpdateIndexBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.Ex
   modulus :: C.CastExpr
   modulus = constIsCastExpr (C.ConstInt (smsCSize sms))
 
--- | Goes before all 'staticMemoryStreamUpdateBlockItem's for all streams.
--- It computes and stores the value of the next thing.
-staticMemoryStreamCopyBlockItem :: StaticMemoryStream -> C.BlockItem
-staticMemoryStreamCopyBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+-- | The "write" portion of a memory stream. The "write index" is the current
+-- index plus the size of the prefix (i.e. 1 less than the size of the C
+-- array) modulo the size of the C array. Could also think of it as the cell
+-- "behind" the current index in the sense of a circular array.
+staticMemoryStreamUpdateArrayBlockItem
+  :: StaticMemoryStream
+  -> C.AssignExpr
+  -> C.BlockItem
+staticMemoryStreamUpdateArrayBlockItem sms expr = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
   C.ExprAssign $ C.Assign
-    (identIsUnaryExpr (smsCopyIdent sms))
+    (postfixExprIsUnaryExpr arrayAtIndex)
     C.AEq
-    (condExprIsAssignExpr (smsNextValue sms))
+    expr
+  where
+  arrayAtIndex :: C.PostfixExpr
+  arrayAtIndex = C.PostfixIndex
+    (identIsPostfixExpr (smsArrayIdent sms))
+    (multExprIsExpr moduloExpr)
+  moduloExpr :: C.MultExpr
+  moduloExpr = C.MultMod (addExprIsMultExpr sumExpr) modulusExpr
+  sumExpr :: C.AddExpr
+  sumExpr = C.AddPlus
+    (identIsAddExpr (smsIndexIdent sms))
+    (constIsMultExpr (C.ConstInt (smsWriteOffset sms)))
+  modulusExpr :: C.CastExpr
+  modulusExpr = constIsCastExpr (C.ConstInt (smsCSize sms))
+
 
 -- | Declaration of the static memory area for the array of values for this
 -- memory stream.
@@ -2179,22 +2109,6 @@ staticMemoryStreamArrayDecln sms = C.Decln specs (Just initDeclrList)
   identDeclr = C.DirectDeclrIdent (smsArrayIdent sms)
   sizeExpr :: C.AssignExpr
   sizeExpr = constIsAssignExpr (C.ConstInt (smsCSize sms))
-  mPtr :: Maybe C.Ptr
-  mPtr = if ctypePtr (smsCTypeInfo sms)
-         then Just (C.PtrBase Nothing)
-         else Nothing
-
--- | Declaration of the "value copy" memory location for this stream (the
--- place where the next value will be written to, before eventually being copied
--- into the array replacing the oldest one).
-staticMemoryStreamCopyDecln :: StaticMemoryStream -> C.Decln
-staticMemoryStreamCopyDecln sms = C.Decln specs (Just initDeclrList)
-  where
-  specs = C.DeclnSpecsStorage C.SStatic $ Just $ C.DeclnSpecsType typeSpec Nothing
-  typeSpec = ctypeSpec (smsCTypeInfo sms)
-  initDeclrList :: C.InitDeclrList
-  initDeclrList = C.InitDeclrBase $ C.InitDeclr
-    (C.Declr mPtr (C.DirectDeclrIdent (smsCopyIdent sms)))
   mPtr :: Maybe C.Ptr
   mPtr = if ctypePtr (smsCTypeInfo sms)
          then Just (C.PtrBase Nothing)

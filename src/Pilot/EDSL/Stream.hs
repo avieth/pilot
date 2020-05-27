@@ -225,9 +225,9 @@ data ExprF
   -- stream and avoiding circular definitions).
   -- NB: shift stream can be just one 'S cosntructor.
   DropStream :: Rep a t
-             -> NatRep ('S ('S n))
-             -> expr ('Stream ('S ('S n)) t)
-             -> ExprF point static expr ('Stream ('S n) t)
+             -> NatRep ('S n)
+             -> expr ('Stream ('S n) t)
+             -> ExprF point static expr ('Stream n t)
 
   -- Like DropStream it lowers the nat index, but the value at an instant of the
   -- stream doesn't change. This just says that a stream with more memory can
@@ -267,16 +267,16 @@ constant trep nrep p = exprF $ ConstantStream trep nrep p
 
 drop :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static val n f t .
         Rep p t
-     -> NatRep ('S ('S n))
-     -> Expr (ExprF pexpr static) val f ('Stream ('S ('S n)) t)
+     -> NatRep ('S n)
      -> Expr (ExprF pexpr static) val f ('Stream ('S n) t)
+     -> Expr (ExprF pexpr static) val f ('Stream     n  t)
 drop trep nrep s = exprF $ DropStream trep nrep s
 
 shift :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static val n f t .
          Rep p t
       -> NatRep ('S n)
       -> Expr (ExprF pexpr static) val f ('Stream ('S n) t)
-      -> Expr (ExprF pexpr static) val f ('Stream n t)
+      -> Expr (ExprF pexpr static) val f ('Stream     n  t)
 shift trep nrep s = exprF $ ShiftStream trep nrep s
 
 memory :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static val n f t .

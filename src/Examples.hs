@@ -235,8 +235,11 @@ example_16 = integral c f
 
 -- Here is an example which is fixed to the C backend, because it uses
 -- 'special' to get an 'extern'.
-example_17 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream ('S 'Z) Int32)
-example_17 = integral (Point.int32 0) f
+--
+-- Also uses Stream.drop so that the value of the integral returned is
+-- the latest, not the most recent sum.
+example_17 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Int32)
+example_17 = Stream.drop auto auto (integral (Point.int32 0) f)
   where
   f = special (C.extern "some_name" Point.int32_t)
 
