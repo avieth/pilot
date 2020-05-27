@@ -90,11 +90,6 @@ streamZip
 streamZip f (Prefix a as) (Prefix b bs) = Prefix (f a b) (streamZip f as bs)
 streamZip f (Suffix a as) (Suffix b bs) = Suffix (f a b) (streamZip f as bs)
 
--- One way to do this is to create an Args over streams using streamZip...
---
---   Args (Stream f n) args -> Stream (Args f) n args
---
-
 -- | Arguments in `Stream f n` can be zipped together into one stream of
 -- arguments. Analagous to zipping a list from a tuple of lists
 --

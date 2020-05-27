@@ -61,6 +61,7 @@ import Pilot.Types.Represented
 -- This could be represented with a list of types and a result type, but
 -- we prefer to use one just data kind, called Sig.
 
+-- | A first-order function type signature: arguments and result type.
 data Sig t where
   Sig :: [t] -> t -> Sig t
 
@@ -86,6 +87,9 @@ type V x = 'Sig '[] x
 --
 -- corresponding to the first order Haskell function `Bool -> Char -> () -> Int`
 
+-- | A first-order function over `expr`, which may take any kind as its
+-- parameter. This is useful in expressing first-order functions over a given
+-- EDSL.
 data Fun expr sig where
   Lit :: expr r -> Fun expr ('Sig '[] r)
   Fun :: (expr t -> Fun expr ('Sig ts r)) -> Fun expr ('Sig (t ': ts) r)
@@ -102,6 +106,7 @@ fun = Fun
 at :: Fun expr ('Sig (t ': ts) r) -> expr t -> Fun expr ('Sig ts r)
 at (Fun k) t = k t
 
+-- | Arguments in a given expression type. Pairs with 'Fun'.
 data Args (expr :: domain -> Haskell.Type) (ts :: [domain]) where
   Args :: Args expr '[]
   Arg  :: expr t -> Args expr ts -> Args expr (t ': ts)

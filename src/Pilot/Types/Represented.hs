@@ -1,6 +1,6 @@
 {-|
 Module      : Pilot.Types.Represented
-Description : Type family for represented kinds.
+Description : Type family for "represented" kinds.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com

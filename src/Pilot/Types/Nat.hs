@@ -1,6 +1,6 @@
 {-|
 Module      : Pilot.Types.Nat
-Description : Typical inductive Nat type.
+Description : Typical inductive Nat type and related stuff.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
