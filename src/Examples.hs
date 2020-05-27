@@ -37,6 +37,8 @@ import Pilot.Types.Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
+import qualified Pilot.C as C
+
 -- (42, -42) :: (UInt8, Int8)
 example_1 :: Expr Point.ExprF expr f (Pair UInt8 Int8)
 example_1 = Point.pair uint8_t int8_t (Point.uint8 42) (Point.int8 (-42))
@@ -231,6 +233,13 @@ example_16 = integral c f
   f :: StreamExpr cval cf sval sf val f ('Stream 'Z Int32)
   f = Stream.constant auto auto (Point.int32 3)
 
+-- Here is an example which is fixed to the C backend, because it uses
+-- 'special' to get an 'extern'.
+example_17 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream ('S 'Z) Int32)
+example_17 = integral (Point.int32 0) f
+  where
+  f = special (C.extern "some_name" Point.int32_t)
+
 -- To define the rising edge of a boolean stream, we first define a stream which
 -- gives the last value of that stream, then we take the exclusive or where
 -- the older one is false.
@@ -249,10 +258,10 @@ rising_edge bs = Expr $ do
   where
   inits = VCons Point.false VNil
 
-example_17
+example_18
   :: (Monad f)
   => StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
-example_17 = rising_edge signal
+example_18 = rising_edge signal
   where
 
   -- To use our signal on rising edge, we have to make its prefix 'Z. We do

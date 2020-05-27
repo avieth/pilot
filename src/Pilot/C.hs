@@ -24,6 +24,7 @@ Portability : non-portable (GHC only)
 
 module Pilot.C where
 
+import Control.Monad (when)
 import qualified Control.Monad.Trans.Class as Trans (lift)
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.State.Strict
@@ -193,6 +194,12 @@ pointPtr = ctypePtr . pointCTypeInfo
 pointTypeSpec :: Point s t -> C.TypeSpec
 pointTypeSpec = ctypeSpec . pointCTypeInfo
 
+streamPtr :: Stream s t -> Bool
+streamPtr = ctypePtr . streamCTypeInfo
+
+streamTypeSpec :: Stream s t -> C.TypeSpec
+streamTypeSpec = ctypeSpec . streamCTypeInfo
+
 data StreamVal s (t :: Stream.Type Point.Type) where
   StreamValConstant :: !C.CondExpr -> StreamVal s ('Stream.Stream n t)
   StreamValStatic   :: !StaticStreamVal -> StreamVal s ('Stream.Stream n t)
@@ -269,7 +276,7 @@ streamArgToPointArg
   -> NatRep n
   -> Stream s ('Stream.Stream n t)
   -> Expr Point.ExprF (Point s) (CodeGen s) t
-streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.known $ do
+streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.special $ do
   expr <- streamExprAtOffset offset (streamVal stream)
   pure $ Point
     { pointExpr      = expr
@@ -1804,7 +1811,13 @@ declare_initialized_point prefix point = do
 -- For composite streams with nonzero prefix, what happens when you drop the
 -- bound thing? Do you get a new binder?
 declare_initialized_stream :: String -> Stream s t -> CodeGen s (Stream s t)
-declare_initialized_stream prefix stream = undefined
+declare_initialized_stream _ _ = error "declare_initialized_stream not defined"
+{-
+declare_initialized_stream prefix stream = do
+  expr <- streamExprNow (streamVal stream)
+  ident <- declare_initialized prefix expr (streamCTypeInfo stream)
+  pure $ 
+-}
 
 -- | Make a declaration assigning the given value to a new identifier.
 -- The declaration appears in the CodeGen state, and the resulting C identifier
@@ -2277,6 +2290,31 @@ data NonEmptyFields where
 
 type ExternIdentifier = String
 
+extern :: String -> Point.TypeRep t -> CodeGen s (Stream s ('Stream.Stream 'Z t))
+extern name trep = do
+  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExterns
+  when exists $ codeGenError $ CodeGenInternalError ("extern name already exists " ++ name)
+  tinfo <- type_info NotShared trep
+  let typeSpec = ctypeSpec tinfo
+      mPtr = if ctypePtr tinfo then Just (C.PtrBase Nothing) else Nothing
+      -- Prefix with "extern_" so that it's impossible to clash with names
+      -- that we choose internally for other things.
+      ident = assertValidStringIdentifier ("extern_" ++ name)
+      !externDeclr = ExternObjectDeclr
+        Nothing
+        typeSpec
+        mPtr
+        ident
+      !cexpr = identIsCondExpr ident
+      stream = Stream
+        { streamVal       = StreamValConstant cexpr
+        , streamTypeRep   = Stream.Stream_t Z_t trep
+        , streamCTypeInfo = tinfo
+        }
+  CodeGen $ Trans.lift $ modify' $ \cgs ->
+    cgs { cgsExterns = Map.insert name externDeclr (cgsExterns cgs) }
+  pure stream
+
 data ExternDeclr where
   ExternObjectDeclr
     :: !(Maybe C.TypeQualList)
@@ -2405,37 +2443,42 @@ evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) init
 -- streams I think.
 genTransUnit
   :: CodeGenOptions
-  -> CodeGen s (Point s t)
+  -> CodeGen s (Stream s ('Stream.Stream n x))
   -> Either CodeGenError C.TransUnit
-genTransUnit opts cg = fmap mkTransUnit outcome
+genTransUnit opts expr = fst $ evalCodeGen opts $ do
+  stream <- expr
+  -- The result of the eval function must not contain any pointers.
+  -- We always take it to the not-shared variant. For types which do not
+  -- actually have any sharing, this will be the same type TODO
+  --
+  -- Always make a binding, convert using the name, so that we don't
+  -- duplicate work.
+  {-
+  (_ident, val') <- declare_initialized "return_value" val
+  toNotShared val'
+  -}
+
+  cexpr <- streamExprNow (streamVal stream)
+  let tinfo = streamCTypeInfo stream
+  -- NB: this declaration and assignment is _not_ optional. If we didn't do
+  -- it, then we could get incorrect results, because the expression would
+  -- be evaluated _after_ all of the static streams are updated. If the
+  -- expression uses one of those, then it could become incorrect.
+  ident <- declare_initialized "return_value" cexpr tinfo
+  let returnexpr = identIsCondExpr ident
+  st <- CodeGen $ Trans.lift $ get
+  let evalFun = mainFun st stream returnexpr
+  pure $ codeGenTransUnit st evalFun
+
   where
-
-  (outcome, cgs) = evalCodeGen opts $ do
-    val <- cg
-    -- The result of the eval function must not contain any pointers.
-    -- We always take it to the not-shared variant. For types which do not
-    -- actually have any sharing, this will be the same type TODO
-    --
-    -- Always make a binding, convert using the name, so that we don't
-    -- duplicate work.
-    {-
-    (_ident, val') <- declare_initialized "return_value" val
-    toNotShared val'
-    -}
-    pure val
-
-  mkTransUnit :: Point s t -> C.TransUnit
-  mkTransUnit val = codeGenTransUnit cgs (mainFun val cgs) 
 
   -- This function computes the expression. It assumes the value is not
   -- shared form i.e. it doesn't contain any pointers to non-static data.
-  mainFun :: Point s t -> CodeGenState -> C.FunDef
-  mainFun val cgs' =
+  mainFun :: CodeGenState -> Stream s t -> C.CondExpr -> C.FunDef
+  mainFun cgs' stream expr =
     let declnSpecs :: C.DeclnSpecs
-        declnSpecs = C.DeclnSpecsType (pointTypeSpec val) Nothing
-        expr :: C.CondExpr
-        expr = pointExpr val
-        ptr = if pointPtr val 
+        declnSpecs = C.DeclnSpecsType (streamTypeSpec stream) Nothing
+        ptr = if streamPtr stream
               then Just (C.PtrBase Nothing)
               else Nothing
         -- It's ok to use the type's pointer information here. If it's really
@@ -2573,7 +2616,11 @@ convertTreatment ctt       ctt'      val = case valType val of
   _ -> pure val
 -}
 
-codeGenToFile :: String -> CodeGenOptions -> CodeGen s (Point s x) -> IO ()
+codeGenToFile
+  :: String
+  -> CodeGenOptions
+  -> CodeGen s (Stream s ('Stream.Stream n x))
+  -> IO ()
 codeGenToFile fp opts cg = case genTransUnit opts cg of
   Left  err       -> throwIO (userError (show err))
   Right transUnit -> writeFile fp $ includes ++ prettyPrint transUnit
@@ -2581,26 +2628,24 @@ codeGenToFile fp opts cg = case genTransUnit opts cg of
   includes = mconcat
     [ "#include <stdint.h>\n"
     , "#include <stdio.h>\n"
+    , "\n"
     ]
 
 write_point_expr
-  :: String
+  :: (Point.KnownType t)
+  => String
   -> Bool
   -> Expr Point.ExprF (Point s) (CodeGen s) t -> IO ()
-write_point_expr fp b expr = codeGenToFile fp opts (eval_point expr)
-  where
-  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
+write_point_expr fp b expr = write_stream_expr fp b (Stream.constant auto Z_t expr)
 
-{-
 write_stream_expr
   :: String
   -> Bool
-  -> StreamExpr s t
+  -> StreamExpr s ('Stream.Stream n x)
   -> IO ()
 write_stream_expr fp b expr = codeGenToFile fp opts (eval_stream expr)
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
--}
 
 codeGenError :: CodeGenError -> CodeGen s x
 codeGenError err = CodeGen (throwE err)
