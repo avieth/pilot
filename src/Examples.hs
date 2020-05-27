@@ -352,6 +352,38 @@ counter initial modulus = Stream.shift auto auto $ Stream.memory auto auto inits
   incrModulo = fun $ \x -> fun $ \m -> lit $
     Point.mod auto (Point.add auto (Point.uint32 1) x) m
 
+-- | Use 'counter' to generate a clock with a given phase and period.
+--
+-- It will be true once every period, and the phase determines on which tick
+-- it will be true.
+--
+-- If the phase is n, it will be true on the n+1th tick of the phase. If the
+-- phase is greater than or equal to the period, it will never be true, unless
+-- the period is 0.
+--
+-- Here's a plain language overview of how it's done:
+-- 1. Define the counter using the period as its modulus and 0 as its inital
+--    value.
+-- 2. Define a first-order function over points which compares some point to
+--    the phase and gives true if they are equal.
+-- 3. Lift that function over the counter stream.
+clock
+  :: forall cval cf sval sf val f .
+     Expr Point.ExprF cval cf Point.UInt32 -- ^ Period
+  -> Expr Point.ExprF cval cf Point.UInt32 -- ^ Phase
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
+clock period phase = unlit $ Stream.liftF autoArgs auto auto f `at` cnt
+
+  where
+
+  f :: Fun (Expr Point.ExprF cval cf) (Point.UInt32 :-> V Point.Boolean)
+  f = fun $ \x -> lit $ cmp auto auto x phase
+        Point.false -- If LT
+        Point.true  -- If EQ
+        Point.false -- If GT
+
+  cnt = counter (Point.uint32 0) (Stream.constant auto auto period)
+
 -- |
 -- = Examples of lifted pointwise expressions
 --
