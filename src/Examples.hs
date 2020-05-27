@@ -128,66 +128,117 @@ example_12 = Expr $ do
     (\_ -> Point.uint8 1)
     (\x -> Point.fst auto auto x)
 
-example_13 :: (Monad f) => Expr (Stream.ExprF (Expr Point.ExprF pval f)) val f ('Constant UInt8)
-example_13 = Stream.point uint8_t example_12
+-- For point expressions, we have the type parameters `val` and `f`, which
+-- jointly represent what we know about the interpreter. Usually, these
+-- should be free (save for a possible Monad constraint on `f`), meaning the
+-- expression assumes nothing about the interpreter.
+--
+-- For stream expressions, the same idea applies, except that there are two
+-- expression parameters to the stream EDSL, so we get 6 type parameters: the
+-- notions of "constants" and of "statics" each get their own `val` and `f`
+-- parameters.
+type StreamExpr constval constf staticval staticf streamval streamf = Expr
+  (Stream.ExprF (Expr Point.ExprF constval constf) (Expr Point.ExprF staticval staticf))
+  streamval
+  streamf
 
-type StreamExpr pval val f = Expr (Stream.ExprF (Expr Point.ExprF pval f)) val f
+-- example_13 and example_14 show how to crate constant streams from points.
+-- Any prefix size index can be chosen.
 
--- Here a point is expressed and then "lifted" into a stream of a given
--- prefix size (zero).
-example_14 :: (Monad f) => StreamExpr pval val f ('Stream 'Z (Pair UInt8 Int8))
+example_13
+  :: (Monad cf)
+  => NatRep n
+  -> StreamExpr cval cf sval sf val f ('Stream n UInt8)
+example_13 nrep = Stream.constant auto nrep example_12
+
+example_14
+  :: (Monad cf)
+  => StreamExpr cval cf sval sf val f ('Stream 'Z (Pair UInt8 Int8))
 example_14 = Stream.constant auto auto p
   where
-  p = Stream.point auto $ Point.pair auto auto d e
+  p = Point.pair auto auto d e
   a = Point.uint8 1
   b = Point.int8 2
   c = Point.uint8 3
   d = Point.add auto a c
   e = Point.mul auto b b
 
--- A memory stream. This one is just the value of example_13 forever.
--- You wouldn't actually do it this way, because Steram.constant can be used
--- to make example_13 into a stream of any prefix size.
-example_15 :: (Monad f) => StreamExpr pval val f ('Stream ('S 'Z) UInt8)
+-- We could also do example_14 with binders in the point expression
+
+example_14_1
+  :: (Monad cf)
+  => StreamExpr cval cf sval sf val f ('Stream 'Z (Pair UInt8 Int8))
+example_14_1 = Stream.constant auto auto $ Expr $ do
+  let a = Point.uint8 1
+      b = Point.int8  2
+      c = Point.uint8 3
+  d <- bind $ Point.add auto a c
+  e <- bind $ Point.mul auto b b
+  expr $ Point.pair auto auto d e
+
+-- A memory stream. This one is just the value of example_12 forever.
+--
+-- You wouldn't actually do it this way, because Stream.constant can be used
+-- to make example_12 into a stream of any prefix size.
+--
+-- Note that a constraint on sf appears, since the vector of initial values
+-- uses the static value and interpreter parameters. The Monad constraint
+-- therefore comes from example_12.
+example_15
+  :: (Monad cf, Monad sf)
+  => StreamExpr cval cf sval sf val f ('Stream ('S 'Z) UInt8)
 example_15 = Stream.memory auto auto inits $ \_ ->
-  Stream.constant auto auto example_13
+  -- The _ parameter is the resulting stream, so that we can make 
+  Stream.constant auto auto example_12
+
   where
-  inits :: (Monad f) => Vec ('S 'Z) (StreamExpr pval val f ('Constant UInt8))
-  inits = VCons example_13 VNil
+
+  inits :: forall val f .
+           (Monad f)
+        => Vec ('S 'Z) (Expr Point.ExprF val f UInt8)
+  inits = VCons example_12 VNil
 
 -- The flagship example: define an integral using a memory stream of prefix
 -- size 1 and a lifted pointwise function.
 integral
-  :: forall pval val f .
+  :: forall cval cf sval sf val f .
      (Monad f)
-  => StreamExpr pval val f ('Constant Int32)
-  -> StreamExpr pval val f ('Stream 'Z Int32)
-  -> StreamExpr pval val f ('Stream ('S 'Z) Int32)
+  => Expr Point.ExprF sval sf Int32
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Int32)
+  -> StreamExpr cval cf sval sf val f ('Stream ('S 'Z) Int32)
 integral c f = Stream.memory auto auto (VCons c VNil) $ \sums ->
   -- Here `sums` is the stream itself, but with a prefix of size zero (one less
   -- than the prefix) so that only values which have already been computed may
   -- be used.
   unlit $ Stream.liftF autoArgs auto auto plus `at` f `at` sums
   where
-  plus :: Fun (Expr Point.ExprF pval f) (Int32 :-> Int32 :-> V Int32)
+  plus :: Fun (Expr Point.ExprF cval cf) (Int32 :-> Int32 :-> V Int32)
   plus = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
 
-example_16 :: (Monad f) => StreamExpr pval val f ('Stream ('S 'Z) Int32)
+-- The integral of constant 3.
+example_16
+  :: (Monad f)
+  => StreamExpr cval cf sval sf val f ('Stream ('S 'Z) Int32)
 example_16 = integral c f
+
   where
-  c :: (Monad f) => StreamExpr pval val f ('Constant Int32)
-  c = Stream.point auto (Point.int32 0)
-  f :: (Monad f) => StreamExpr pval val f ('Stream 'Z Int32)
-  f = Stream.constant auto auto (Stream.point auto (Point.int32 3))
+
+  -- Type signatures are not needed, but are here for illustration.
+
+  c :: Expr Point.ExprF val f Int32
+  c = Point.int32 0
+
+  f :: StreamExpr cval cf sval sf val f ('Stream 'Z Int32)
+  f = Stream.constant auto auto (Point.int32 3)
 
 -- To define the rising edge of a boolean stream, we first define a stream which
 -- gives the last value of that stream, then we take the exclusive or where
 -- the older one is false.
 rising_edge
-  :: forall pval val f .
+  :: forall cval cf sval sf val f .
      (Monad f)
-  => StreamExpr pval val f ('Stream 'Z Boolean)
-  -> StreamExpr pval val f ('Stream 'Z Boolean)
+  => StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
+  -> StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
 rising_edge bs = Expr $ do
   ms <- bind $ Stream.memory auto auto inits $ \_ -> bs
   -- We have to "shift" the stream to match the nat indices. What we get is
@@ -196,25 +247,41 @@ rising_edge bs = Expr $ do
       f = fun $ \x -> fun $ \y -> lit (Point.and (Point.not x) y)
   expr $ unlit $ Stream.liftF autoArgs auto auto f `at` bs' `at` bs
   where
-  inits = VCons (Stream.point auto Point.false) VNil
+  inits = VCons Point.false VNil
 
-example_17 :: (Monad f) => StreamExpr pval val f ('Stream 'Z Boolean)
+example_17
+  :: (Monad f)
+  => StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
 example_17 = rising_edge signal
   where
-  signal :: (Monad f) => StreamExpr pval val f ('Stream 'Z Boolean)
+
+  -- To use our signal on rising edge, we have to make its prefix 'Z. We do
+  -- that by "shifting" rather than "dropping". This means the prefix values
+  -- all remain but appear closer to the suffix.
+  signal :: StreamExpr cval cf sval sf val f ('Stream 'Z Boolean)
   signal =
     Stream.shift auto auto $
     Stream.shift auto auto $
     Stream.shift auto auto $
     Stream.shift auto auto $
-    Stream.memory auto auto inits $ \_ -> Stream.constant auto auto (Stream.point auto Point.false)
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.shift auto auto $
+    Stream.memory auto auto inits $ \_ -> Stream.constant auto auto Point.true
 
-  inits :: Vec ('S ('S ('S ('S 'Z)))) (StreamExpr pval val f ('Constant Boolean))
+  -- The type signature for this is tedious to write, but GHC can infer it.
+  --
+  --inits :: Vec <some long Nat type> (Expr Point.ExprF val f Boolean)
   inits =
-    VCons (Stream.point auto Point.true) $
-    VCons (Stream.point auto Point.false) $
-    VCons (Stream.point auto Point.false) $
-    VCons (Stream.point auto Point.true) $
+    VCons Point.true  $
+    VCons Point.false $
+    VCons Point.false $
+    VCons Point.true  $
+    VCons Point.true  $
+    VCons Point.false $
+    VCons Point.true  $
+    VCons Point.false $
     VNil
 
 -- |

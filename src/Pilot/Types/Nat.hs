@@ -89,6 +89,10 @@ data Offset (n :: Nat) where
   Current :: Offset n
   Next    :: Offset n -> Offset ('S n)
 
+offsetToNatural :: Offset n -> Natural
+offsetToNatural Current    = 0
+offsetToNatural (Next off) = 1 + offsetToNatural off
+
 -- | A function which expects a wider range of offsets can be made into one
 -- which expects a smaller range, by calling the original with 1 + the given
 -- offset.
@@ -110,6 +114,16 @@ withSameOffset k = \offset -> k (smallerOffset offset)
 data Index (n :: Nat) where
   Here  :: Index (S n)
   There :: Index n -> Index (S n)
+
+offsetToIndex :: Offset ('S n) -> Index ('S n)
+offsetToIndex Current             = Here
+offsetToIndex (Next Current)      = Here
+offsetToIndex (Next off@(Next _)) = There (offsetToIndex off)
+
+-- | The same Index, but with a higher type parameter.
+lowerIndex :: Index n -> Index (S n)
+lowerIndex Here = Here
+lowerIndex (There i) = There (lowerIndex i)
 
 data Vec (n :: Nat) (t :: Type) where
   VNil  :: Vec Z t

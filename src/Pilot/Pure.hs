@@ -19,6 +19,7 @@ Portability : non-portable (GHC only)
 module Pilot.Pure
   ( Point (..)
   , Stream (..)
+  , F
   , eval_point
   , eval_point_
   , eval_stream
@@ -117,11 +118,7 @@ lift_bits_2 f (Int32 x)  (Int32 y)  = Int32  $ f x y
 lift_bits_2 f (Int64 x)  (Int64 y)  = Int64  $ f x y
 
 data Stream (t :: Stream.Type Point.Type) where
-  Constant :: Point t               -> Stream ('Stream.Constant t)
   Stream   :: Pure.Stream Point n t -> Stream ('Stream.Stream n t)
-
-constant_is_point :: Stream ('Stream.Constant t) -> Point t
-constant_is_point (Constant pt) = pt
 
 type F = Identity
 
@@ -138,17 +135,17 @@ eval_point_ :: Expr Point.ExprF Point F t -> Point t
 eval_point_ = runIdentity . eval_point
 
 eval_stream
-  :: Expr (Stream.ExprF (Expr Point.ExprF Point F)) Stream F t
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point F) (Expr Point.ExprF Point F)) Stream F t
   -> F (Stream t)
 eval_stream = evalExprM eval_stream_expr eval_stream_bind . runExpr
 
 eval_stream_
-  :: Expr (Stream.ExprF (Expr Point.ExprF Point F)) Stream F t
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point F) (Expr Point.ExprF Point F)) Stream F t
   -> Stream t
 eval_stream_ = runIdentity . eval_stream
 
 stream_to_list
-  :: Expr (Stream.ExprF (Expr Point.ExprF Point F)) Stream F ('Stream.Stream n t)
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point F) (Expr Point.ExprF Point F)) Stream F ('Stream.Stream n t)
   -> [Point t]
 stream_to_list expr = case runIdentity (eval_stream expr) of
   Stream st -> Pure.streamToList st
@@ -280,15 +277,16 @@ eval_point_relop (Point.Cmp _ _ x y cLT cEQ cGT) = do
 
 eval_stream_expr
   :: forall t .
-     Stream.ExprF (Expr Point.ExprF Point F) (Expr (Stream.ExprF (Expr Point.ExprF Point F)) Stream F) t
+     Stream.ExprF
+       (Expr Point.ExprF Point F)
+       (Expr Point.ExprF Point F)
+       (Expr (Stream.ExprF (Expr Point.ExprF Point F) (Expr Point.ExprF Point F)) Stream F)
+       t
   -> F (Stream t)
 
-eval_stream_expr (Stream.ConstantPoint _ pexpr) = fmap Constant (eval_point pexpr)
-
 eval_stream_expr (Stream.ConstantStream _ nrep expr) = do
-  cnst <- eval_stream expr
-  case cnst of
-    Constant point -> pure $ Stream $ Pure.streamRepeat nrep point
+  point <- eval_point expr
+  pure $ Stream $ Pure.streamRepeat nrep point
 
 eval_stream_expr (Stream.LiftStream argsrep _ nrep f args) = do
   evaldArgs <- traverseArgs eval_stream args
@@ -318,7 +316,7 @@ eval_stream_expr (Stream.ShiftStream _ nrep expr) = do
     Stream str -> pure $ Stream $ Pure.streamShift str
 
 eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S n)) inits k) = do
-  pts <- vecTraverse (fmap constant_is_point . eval_stream) inits
+  pts <- vecTraverse eval_point inits
   let suffix :: Pure.Stream Point 'Z s
       suffix = case runIdentity (eval_stream (k (value (Stream shifted)))) of
         Stream s -> s

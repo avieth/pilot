@@ -30,6 +30,7 @@ import Control.Monad.Trans.State.Strict
 import Data.Functor.Compose
 import Data.Functor.Identity
 
+import Data.Foldable (toList)
 import qualified Data.Kind as Haskell (Type)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
@@ -37,6 +38,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import GHC.TypeLits (KnownSymbol, symbolVal)
 import Numeric.Natural (Natural)
 
@@ -55,6 +58,8 @@ import qualified Pilot.EDSL.Stream as Stream
 import Pilot.Types.Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
+
+import qualified Pilot.Pure as Pure (Point (..), F, eval_point_)
 
 import System.IO (writeFile)
 import System.IO.Error (userError)
@@ -116,20 +121,12 @@ prettyPrint = render . pretty
 eval_point :: Expr Point.ExprF (Point s) (CodeGen s) t -> CodeGen s (Point s t)
 eval_point = evalExprM eval_point_expr eval_point_bind . runExpr
 
-eval_stream
-  :: Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s))) (Stream s) (CodeGen s) t
-  -> CodeGen s (Stream s t)
+eval_stream :: StreamExpr s t -> CodeGen s (Stream s t)
 eval_stream = evalExprM eval_stream_expr eval_stream_bind . runExpr
 
 -- | For naming/substitution in the CodeGenM monad: a C declaration is used.
 eval_point_bind :: Point s t -> CodeGen s (Point s t)
-eval_point_bind point = do
-  ident <- declare_initialized "point_binder" (pointExpr point) (pointCTypeInfo point)
-  pure $ Point
-    { pointExpr      = identIsCondExpr ident
-    , pointTypeRep   = pointTypeRep point
-    , pointCTypeInfo = pointCTypeInfo point
-    }
+eval_point_bind point = declare_initialized_point "point_binder" point
 
 -- | Like 'eval_point_bind' but for streams: do the same thing, but behind the
 -- offset function.
@@ -138,7 +135,44 @@ eval_point_bind point = do
 -- new binder, it just uses the name of the static thing.
 -- Could do the same for C externs. 
 eval_stream_bind :: Stream s t -> CodeGen s (Stream s t)
-eval_stream_bind stream = undefined
+eval_stream_bind stream = declare_initialized_stream "stream_binder" stream
+
+eval_point_expr
+  :: Point.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) t
+  -> CodeGen s (Point s t)
+eval_point_expr (Point.IntroInteger tr il)        = eval_intro_integer tr il
+eval_point_expr (Point.PrimOp primop)             = eval_primop primop
+eval_point_expr (Point.IntroProduct tr fields)    = eval_intro_product tr fields
+eval_point_expr (Point.ElimProduct tr tr' sel it) = eval_elim_product tr tr' sel it
+eval_point_expr (Point.IntroSum tr tr' variant)   = eval_intro_sum tr tr' variant
+eval_point_expr (Point.ElimSum tr rr it cases)    = eval_elim_sum tr rr it cases
+
+-- We can only run stream expressions which unify with these types
+
+type StreamExprF s = Stream.ExprF
+  (Expr Point.ExprF (Point s) (CodeGen s))
+  (Expr Point.ExprF Pure.Point Pure.F)
+  (Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Pure.F)) (Stream s) (CodeGen s))
+
+type StreamExpr s = Expr
+  (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Pure.F))
+  (Stream s)
+  (CodeGen s)
+
+-- Note that the static part must be in the pure interpreter types. With this,
+-- we can actually precompute the static parts using the pure interpreter.
+--
+-- This is essentially a stand-in for universal quantification over the
+-- static value and interpreter with a monad constraint on the interpreter (F
+-- is Identity). Most expressions will be free in these types so they'll just
+-- unify with Pure.Point and Pure.F.
+
+eval_stream_expr :: forall s t . StreamExprF s t -> CodeGen s (Stream s t)
+eval_stream_expr (Stream.ConstantStream trep nrep expr)       = eval_constant_stream trep nrep expr
+eval_stream_expr (Stream.DropStream trep nrep expr)           = eval_drop_stream trep nrep expr
+eval_stream_expr (Stream.ShiftStream trep nrep expr)          = eval_shift_stream trep nrep expr
+eval_stream_expr (Stream.MemoryStream trep nrep inits k)      = eval_memory_stream trep nrep inits k
+eval_stream_expr (Stream.LiftStream argsrep trep nrep k args) = eval_lift_stream argsrep trep nrep k args
 
 -- | The C type specifier, and whether it should be taken through a pointer.
 data CTypeInfo = CTypeInfo
@@ -159,52 +193,143 @@ pointPtr = ctypePtr . pointCTypeInfo
 pointTypeSpec :: Point s t -> C.TypeSpec
 pointTypeSpec = ctypeSpec . pointCTypeInfo
 
-data StreamExpr (t :: Stream.Type Point.Type) where
-  StreamExprPoint    :: !C.CondExpr -> StreamExpr ('Stream.Constant t)
-  StreamExprConstant :: !C.CondExpr -> StreamExpr ('Stream.Stream n t)
-  -- | This stream is a combination of other streams such that its C expression
-  -- is a function of the offset into the stream.
-  StreamExprVarying  :: !(Offset n -> C.CondExpr)
-                     -> StreamExpr ('Stream.Stream n t)
-  -- | This stream is represented by a static array and index.
-  StreamExprStatic :: !StaticStream -> StreamExpr ('Stream.Stream n t)
-  -- | This stream is represented by a C extern.
-  StreamExprExtern :: !ExternStream -> StreamExpr ('Stream.Stream 'Z t)
+data StreamVal s (t :: Stream.Type Point.Type) where
+  StreamValConstant :: !C.CondExpr -> StreamVal s ('Stream.Stream n t)
+  StreamValStatic   :: !StaticStreamVal -> StreamVal s ('Stream.Stream n t)
+  -- | The expression at this offset, and a way to get the expression at
+  -- later offsets.
+  StreamValFunction :: !(Offset n -> CodeGen s C.CondExpr)
+                    -> StreamVal s ('Stream.Stream n t)
 
 data ExternStream = ExternStream
   { esGlobal :: !C.Ident
   , esLocal  :: !C.Ident
   }
 
-data StaticStream = StaticStream
-  { ssIndex :: !C.Ident
-  , ssArray :: !C.Ident
-  , ssSize  :: !Natural
+data StaticStreamVal = StaticStreamVal
+  { ssvIndex  :: !C.Ident
+  , ssvArray  :: !C.Ident
+  , ssvSize   :: !Natural
+  , ssvOffset :: !Natural
   }
+
+-- | Takes the static stream's static array identifier and indexes it at the
+-- appropriate offset (modulo its size)
+--
+-- TODO check if the offset is 0 and if so, do not do the addition.
+staticStreamAtOffset :: Natural -> StaticStreamVal -> C.CondExpr
+staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
+  (identIsPostfixExpr (ssvArray ssv))
+  indexExpr
+  where
+  indexExpr :: C.Expr
+  indexExpr = multExprIsExpr $
+    C.MultMod (addExprIsMultExpr index) (constIsCastExpr modulus)
+  index :: C.AddExpr
+  index = C.AddPlus (constIsAddExpr baseIndex) (constIsMultExpr addIndex)
+  baseIndex :: C.Const
+  baseIndex = C.ConstInt $ C.IntHex (hex_const (ssvOffset ssv)) Nothing
+  addIndex :: C.Const
+  addIndex = C.ConstInt $ C.IntHex (hex_const n) Nothing
+  modulus :: C.Const
+  modulus = C.ConstInt $ C.IntHex (hex_const (ssvSize ssv)) Nothing
 
 -- | Representation of a stream of points (values in the streamwise EDSL over
 -- the pointwise EDSL).
 data Stream s (t :: Stream.Type Point.Type) = Stream
-  { streamExpr      :: !(StreamExpr t)
+  { streamVal       :: !(StreamVal s t)
   , streamTypeRep   :: !(Stream.TypeRep t)
   , streamCTypeInfo :: !CTypeInfo
   }
 
-eval_point_expr
-  :: Point.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) t
-  -> CodeGen s (Point s t)
-eval_point_expr (Point.IntroInteger tr il)        = eval_intro_integer tr il
-eval_point_expr (Point.PrimOp primop)             = eval_primop primop
-eval_point_expr (Point.IntroProduct tr fields)    = eval_intro_product tr fields
-eval_point_expr (Point.ElimProduct tr tr' sel it) = eval_elim_product tr tr' sel it
-eval_point_expr (Point.IntroSum tr tr' variant)   = eval_intro_sum tr tr' variant
-eval_point_expr (Point.ElimSum tr rr it cases)    = eval_elim_sum tr rr it cases
+-- How are streams represented? It depends upon how they are composed...
+--
+-- - Point streams (Stream.point, type 'Constant t) take the same representation
+--   of an EDSL Point: the type Point t.
+-- - Constant streams also: Point t. These are identical to pointwise
+--   expressions, and could even be factored out and precomputed.
+-- - External streams: a C identifier of the copy of the extern.
+-- - Memory streams: a C identifier of the array, C identifier of the current
+--   index, and size to use as modulus when doing stream drop
+-- - Composite streams... The generated code depends upon the offset being
+--   taken, so Offset n -> CondExpr seems like the obvious choice.
+--
+-- It would be good to have the function as a derived thing
 
+streamExprAtOffset :: Offset n -> StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
+streamExprAtOffset _   (StreamValConstant c) = pure c
+streamExprAtOffset off (StreamValStatic ssv) = pure $ staticStreamAtOffset (offsetToNatural off) ssv
+streamExprAtOffset off (StreamValFunction k) = k off
 
-eval_stream_expr
-  :: Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s))) (Stream s) (CodeGen s)) t
-  -> CodeGen s (Stream s t)
-eval_stream_expr _ = undefined
+streamExprNow :: StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
+streamExprNow = streamExprAtOffset Current
+
+streamArgToPointArg
+  :: Offset n
+  -> NatRep n
+  -> Stream s ('Stream.Stream n t)
+  -> Expr Point.ExprF (Point s) (CodeGen s) t
+streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.known $ do
+  expr <- streamExprAtOffset offset (streamVal stream)
+  pure $ Point
+    { pointExpr      = expr
+    , pointTypeRep   = case streamTypeRep stream of
+        Stream.Stream_t _ trep -> trep
+    , pointCTypeInfo = streamCTypeInfo stream
+    }
+
+streamArgsToPointArgs
+  :: Offset n
+  -> NatRep n
+  -> Args Point.TypeRep args
+  -> Args (Stream s) (MapArgs ('Stream.Stream n) args)
+  -> Args (Expr Point.ExprF (Point s) (CodeGen s)) args
+streamArgsToPointArgs offset nrep Args              Args           = Args
+streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = Arg
+  (streamArgToPointArg   offset nrep arg)
+  (streamArgsToPointArgs offset nrep argsrep args)
+
+stream_drop
+  :: forall s n t .
+     Stream s ('Stream.Stream ('S ('S n)) t)
+  -> Stream s ('Stream.Stream     ('S n)  t)
+stream_drop stream = Stream
+  { streamVal       = val
+  , streamTypeRep   = typeRep
+  , streamCTypeInfo = streamCTypeInfo stream
+  }
+  where
+  typeRep :: Stream.TypeRep ('Stream.Stream ('S n) t)
+  typeRep = case streamTypeRep stream of
+    Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
+
+  val :: StreamVal s ('Stream.Stream ('S n) t)
+  val = case streamVal stream of
+    -- Dropping from a constant? Same thing.
+    StreamValConstant c -> StreamValConstant c
+    -- Dropping from a static memory stream: bump the index.
+    StreamValStatic   s -> StreamValStatic $ s { ssvOffset = 1 + ssvOffset s }
+    StreamValFunction k -> StreamValFunction (withNextOffset k)
+
+stream_shift
+  :: forall s n t .
+     Stream s ('Stream.Stream ('S n) t)
+  -> Stream s ('Stream.Stream     n  t)
+stream_shift stream = Stream
+  { streamVal       = val
+  , streamTypeRep   = typeRep
+  , streamCTypeInfo = streamCTypeInfo stream
+  }
+  where
+  typeRep :: Stream.TypeRep ('Stream.Stream n t)
+  typeRep = case streamTypeRep stream of
+    Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
+
+  val :: StreamVal s ('Stream.Stream n t)
+  val = case streamVal stream of
+    StreamValConstant c -> StreamValConstant c
+    StreamValStatic   s -> StreamValStatic s
+    StreamValFunction k -> StreamValFunction (withSameOffset k)
 
 -- | For integral types we use the C standard explicit types like uint8_t.
 --
@@ -231,31 +356,6 @@ sampleStreamValAt
   -> CodeGen s (Val s ('ValPoint t))
 sampleStreamValAt offset sval = case (getVal sval, valType sval) of
   (CValStream k, ValStream_t (Stream_t _ prep)) -> do
-    cexpr <- k offset
-    pure $ Val
-      { getVal      = CValPoint cexpr
-      , valType     = ValPoint_t prep
-      , valTypeInfo = valTypeInfo sval
-      }
-
-streamArgsToPointArgs
-  :: Offset n
-  -> NatRep n
-  -> Args (Rep Point.Type) args
-  -> Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args)
-  -> Args (Expr Point.ExprF (PointTarget s)) args
-streamArgsToPointArgs offset nrep Args Args = Args
-streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg (Compose arg) args) = Arg
-  (streamArgToPointArg   offset nrep arg)
-  (streamArgsToPointArgs offset nrep argsrep args)
-
-streamArgToPointArg
-  :: Offset n
-  -> NatRep n
-  -> Val s ('ValStream ('Stream n t))
-  -> Expr Point.ExprF (PointTarget s) t
-streamArgToPointArg offset nrep sval = case (getVal sval, valType sval) of
-  (CValStream k, ValStream_t (Stream_t _ prep)) -> Expr.known $ PointTarget $ do
     cexpr <- k offset
     pure $ Val
       { getVal      = CValPoint cexpr
@@ -451,13 +551,6 @@ type_ptr Shared (Point.Product_t (And _ _)) = True
 
 type_ptr _ _ = False
 
-{-
--- TODO define properly. It could be this is correct but I haven't though about
--- it yet.
-type_ptr_stream :: CompoundTypeTreatment -> Stream.TypeRep ty -> Bool
-type_ptr_stream _ _ = False
--}
-
 -- | The C type specifier. This doesn't include pointer information.
 --
 -- This must be called before a given type is used, since it ensures that any
@@ -476,11 +569,6 @@ declare_type _ Point.Rational_t = codeGenError $
 declare_type ctt p@(Point.Product_t _) = declare_product ctt p
 
 declare_type ctt s@(Point.Sum_t _)     = declare_sum ctt s
-
-{-
-declare_type_stream :: CompoundTypeTreatment -> Stream.TypeRep ty -> CodeGen s C.TypeSpec
-declare_type_stream _ _ = error "declare_type_stream not defined"
--}
 
 product_field_prefix :: String
 product_field_prefix = "field_"
@@ -541,7 +629,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
 
         CodeGen $ Trans.lift $ modify' $ \st -> 
           st { cgsProducts = Map.insert someTypeRep declr' (cgsProducts st)
-             , cgsDeclns = cdeclns ++ cgsDeclns st
+             , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
         pure tsShared
 
@@ -560,7 +648,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
 
         CodeGen $ Trans.lift $ modify' $ \st -> 
           st { cgsProducts = Map.insert someTypeRep declr' (cgsProducts st)
-             , cgsDeclns = cdeclns ++ cgsDeclns st
+             , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
         pure tsShared
 
@@ -612,7 +700,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
           cdeclns = [productDecln]
 
       CodeGen $ Trans.lift $ modify' $ \st ->
-        st { cgsDeclns = cdeclns ++ cgsDeclns st }
+        st { cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st }
       pure productSpec
 
 -- | The type spec for the definition of a product, given a name and its fields.
@@ -701,7 +789,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
 
         CodeGen $ Trans.lift $ modify' $ \st -> 
           st { cgsSums = Map.insert someTypeRep declr' (cgsSums st)
-             , cgsDeclns = cdeclns ++ cgsDeclns st
+             , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
         pure tsShared
 
@@ -733,7 +821,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
 
         CodeGen $ Trans.lift $ modify' $ \st -> 
           st { cgsSums = Map.insert someTypeRep declr' (cgsSums st)
-             , cgsDeclns = cdeclns ++ cgsDeclns st
+             , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
         pure tsNotShared
 
@@ -806,7 +894,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
           cdeclns = [sumDecln, variantDecln, tagDecln]
 
       CodeGen $ Trans.lift $ modify' $ \st ->
-        st { cgsDeclns = cdeclns ++ cgsDeclns st }
+        st { cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st }
       pure sumSpec
 
 -- | The type spec for a sum.
@@ -940,21 +1028,27 @@ field_declns ctt mkName n (NonEmptyFields (And t (And t' ts))) = do
         C.DirectDeclrIdent ident
   pure $ C.StructDeclnCons subList $ C.StructDecln qualList declrList
 
+integer_literal
+  :: Point.TypeRep ('Point.Integer signedness width)
+  -> Point.IntegerLiteral signedness width
+  -> C.CondExpr
+
+integer_literal (Point.Integer_t Unsigned_t _) il = constIsCondExpr $
+  C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+
+integer_literal (Point.Integer_t Signed_t _) il =
+  if is_negative il
+  then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
+        C.IntHex (hex_const (absolute_value il)) Nothing
+  else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+
 eval_intro_integer
   :: forall signedness width s .
      Point.TypeRep ('Point.Integer signedness width)
   -> Point.IntegerLiteral signedness width
   -> CodeGen s (Point s ('Point.Integer signedness width))
 
-eval_intro_integer tr@(Point.Integer_t Unsigned_t _width) il = type_rep_val tr expr
-  where
-  expr = constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
-
-eval_intro_integer tr@(Point.Integer_t Signed_t _width) il = type_rep_val tr $
-  if is_negative il
-  then unaryExprIsCondExpr $ C.UnaryOp C.UOMin $ constIsCastExpr $ C.ConstInt $
-        C.IntHex (hex_const (absolute_value il)) Nothing
-  else constIsCondExpr $ C.ConstInt $ C.IntHex (hex_const (absolute_value il)) Nothing
+eval_intro_integer tr il = type_rep_val tr (integer_literal tr il)
 
 is_negative :: Point.IntegerLiteral 'Signed width -> Bool
 is_negative (Point.Int8 i8)   = i8 < 0
@@ -1189,151 +1283,197 @@ eval_cmp _trep trepr vx vy lt eq gt = do
                                             (pointExpr equalTo)
   type_rep_val trepr expr
 
-
-{-
--- |
--- = Evaluation of expressions
---
--- Notice that the examples do not mention PointTarget or CodeGen.
-
-run_example
-  :: Bool -- ^ True to use the composite reference optimization
-  -> Expr Point.ExprF (PointTarget s) t
-  -> (Prelude.Either CodeGenError (Val s ('ValPoint t)), CodeGenState)
-run_example b expr = evalCodeGen opts (runPointTarget (evalExpr eval_expr_point expr))
-  where
-  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
-
--- | Evaluates the stream expression at offset 0 and writes it out.
--- Good for demo and debug.
-write_stream_example
-  :: String
-  -> Bool
-  -> Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) ('Stream n t)
-  -> IO ()
-write_stream_example fp b expr = codeGenToFile fp opts $ do
-  sval <- elim_stream_expr expr
-  sampleStreamValAt Current sval
-  where
-  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
-
--- | TODO doc
-eval_expr_stream
-  :: Stream.ExprF Point.ExprF (PointTarget s) (StreamTarget s) t
-  -> StreamTarget s t
-eval_expr_stream (ConstantStream trep nrep pexpr)       = eval_constant_stream trep nrep pexpr
-eval_expr_stream (LiftStream pargsrep trep nrep k args) = eval_lift_stream pargsrep trep nrep k args
-eval_expr_stream (DropStream trep nrep stream)          = eval_drop_stream trep nrep stream
-eval_expr_stream (ShiftStream trep nrep stream)         = eval_shift_stream trep nrep stream
-eval_expr_stream (MemoryStream trep nrep vec k)         = eval_memory_stream trep nrep vec k
-
-elim_point_expr :: Expr Point.ExprF (PointTarget s) t -> CodeGen s (Val s ('ValPoint t))
-elim_point_expr = runPointTarget . evalExpr eval_expr_point
-
-elim_stream_expr :: Expr (Stream.ExprF Point.ExprF (PointTarget s)) (StreamTarget s) t
-                 -> CodeGen s (Val s ('ValStream t))
-elim_stream_expr = runStreamTarget . evalExpr eval_expr_stream
-
--- |
 eval_constant_stream
-  :: forall n s t .
-     Rep Point.Type t
+  :: Point.TypeRep t
   -> NatRep n
-  -> Expr Point.ExprF (PointTarget s) t
-  -> StreamTarget s ('Stream n t)
-eval_constant_stream trep nrep expr = StreamTarget $ do
-  pval <- elim_point_expr expr
-  pure $ constantStreamVal nrep pval 
-
-eval_lift_stream
-  :: forall args n r s .
-     Args (Rep Point.Type) args
-  -> Rep Point.Type r
-  -> NatRep n
-  -> (Args (Expr Point.ExprF (PointTarget s)) args -> Expr Point.ExprF (PointTarget s) r)
-  -> Args (StreamTarget s) (MapArgs ('Stream n) args)
-  -> StreamTarget s ('Stream n r)
-eval_lift_stream argsrep trep nrep k args = StreamTarget $ do
-  -- For all of the stream arguments, we must make them into
-  --
-  --   Expr Point.ExprF (PointTarget s)
-  --
-  -- values so that we can call the continuation.
-  --
-  -- Hm, but that should happen inside the ValStream continuation, no?
-  -- Yes, for each argument we produce a `Val s ('ValStream yadayada)`.
-  -- Then we run them all with the same offset, thereby producing a C.CondExpr
-  -- for each, which can be made into an
-  --
-  --   Expr Point.ExprF (PointTarget s) t
-  --
-  -- for our choosing of t.
-  --
-  -- Ok so I think the crux of it may be
-  --
-  --   StreamTarget s ('Stream n t) -> Expr Point.ExprF (PointTarget s) t
-  --
-  -- Problem though: surely we want to run those StreamTargets right here,
-  -- rather that whenever _this_ value is sampled, no? 
-  --
-  -- The MapStream is going to be a problem... unless, no it may be fine once
-  -- we pattern match on the Args...
-  -- Ah yes, the argsrep!
-  -- svals <- 
- 
-
-  -- Here we run all of the stream target code generation for the args.
-  (svalargs :: Args (Compose (Val s) 'ValStream) (MapArgs ('Stream n) args))
-    <- traverseArgs runArgStream args
-
-  -- And the rest of the story happens whenever the Val which we construct
-  -- here is given an offset at which to evaluate.
-  liftStreamVal argsrep trep nrep svalargs k
-
-  where
-
-  runArgStream
-    :: forall s t .
-       StreamTarget s t
-    -> CodeGen s (Compose (Val s) 'ValStream t)
-  runArgStream stream = do
-    sval <- runStreamTarget stream
-    pure $ Compose sval
+  -> Expr Point.ExprF (Point s) (CodeGen s) t
+  -> CodeGen s (Stream s ('Stream.Stream n t))
+eval_constant_stream trep nrep pexpr = do
+  point <- eval_point pexpr
+  pure $ Stream
+    { streamVal       = StreamValConstant (pointExpr point)
+    , streamTypeRep   = Stream.Stream_t nrep (pointTypeRep point)
+    , streamCTypeInfo = pointCTypeInfo point
+    }
 
 eval_drop_stream
-  :: forall n s t .
-     Rep Point.Type t
-  -> NatRep n
-  -> StreamTarget s ('Stream ('S n) t)
-  -> StreamTarget s ('Stream     n  t)
-eval_drop_stream trep nrep stream = StreamTarget $ do
-  sval <- runStreamTarget stream
-  pure $ dropStreamVal nrep sval
+  :: Point.TypeRep t
+  -> NatRep ('S ('S n))
+  -> Expr
+       (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Identity))
+       (Stream s)
+       (CodeGen s)
+       ('Stream.Stream ('S ('S n)) t)
+  -> CodeGen s (Stream s ('Stream.Stream ('S n) t))
+eval_drop_stream trep nrep expr = do
+  stream <- eval_stream expr
+  pure $ stream_drop stream
 
 eval_shift_stream
-  :: forall n s t .
-     Rep Point.Type t
-  -> NatRep n
-  -> StreamTarget s ('Stream ('S n) t)
-  -> StreamTarget s ('Stream     n  t)
-eval_shift_stream trep nrep stream = StreamTarget $ do
-  sval <- runStreamTarget stream
-  pure $ shiftStreamVal nrep sval
-
--- TODO this is by far the most complicated case, as it requires dealing with
--- CodeGen state in order to ensure the right declarations are made. Each
--- memory stream corresponds to one static declaration of an array and index.
--- This also has to take care of marshalling between shared and not-shared
--- types treatments if necessary.
-eval_memory_stream
-  :: forall n s t .
-     Rep Point.Type t
+  :: Point.TypeRep t
   -> NatRep ('S n)
-  -> Vec ('S n) (Expr Point.ExprF (PointTarget s) t)
-  -> (StreamTarget s ('Stream n t) -> StreamTarget s ('Stream 'Z t))
-  -> StreamTarget s ('Stream ('S n) t)
-eval_memory_stream = error "eval_memory_stream not defined"
--}
+  -> Expr
+       (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Pure.F))
+       (Stream s)
+       (CodeGen s)
+       ('Stream.Stream ('S n) t)
+  -> CodeGen s (Stream s ('Stream.Stream n t))
+eval_shift_stream trep nrep expr = do
+  stream <- eval_stream expr
+  pure $ stream_shift stream
+
+eval_lift_stream
+  :: forall args s n r .
+     Args Point.TypeRep args
+  -> Point.TypeRep r
+  -> NatRep n
+  -> (Args (Expr Point.ExprF (Point s) (CodeGen s)) args -> Expr Point.ExprF (Point s) (CodeGen s) r)
+  -> Args (StreamExpr s) (MapArgs ('Stream.Stream n) args)
+  -> CodeGen s (Stream s ('Stream.Stream n r))
+eval_lift_stream argsrep trep nrep k args = do
+
+  ctt <- compoundTypeTreatment
+  tinfo <- type_info ctt trep
+
+  -- Evaluate all of the stream arguments.
+  streamArgs :: Args (Stream s) (MapArgs ('Stream.Stream n) args)
+    <- traverseArgs eval_stream args
+
+  -- If this stream has a nonzero prefix, we do not elaborate the code at
+  -- all offsets. Instead we use a function
+  --   Offset n -> CodeGen s C.CondExpr
+  --
+  let f :: Offset n -> CodeGen s C.CondExpr
+      f = \offset -> do
+        let args  = streamArgsToPointArgs offset nrep argsrep streamArgs
+            pexpr = k args
+        point <- eval_point pexpr
+        return $ pointExpr point
+
+      streamVal :: StreamVal s ('Stream.Stream n t)
+      streamVal = StreamValFunction f
+
+  pure $ Stream
+    { streamVal       = streamVal
+    , streamTypeRep   = Stream.Stream_t nrep trep
+    , streamCTypeInfo = tinfo
+    }
+
+eval_memory_stream
+  :: forall s n t .
+     Point.TypeRep t
+  -> NatRep ('S n)
+  -> Vec ('S n) (Expr Point.ExprF Pure.Point Pure.F t)
+  -> (   Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Pure.F)) (Stream s) (CodeGen s) ('Stream.Stream n t)
+      -> Expr (Stream.ExprF (Expr Point.ExprF (Point s) (CodeGen s)) (Expr Point.ExprF Pure.Point Pure.F)) (Stream s) (CodeGen s) ('Stream.Stream 'Z t)
+     )
+  -> CodeGen s (Stream s ('Stream.Stream ('S n) t))
+eval_memory_stream trep nrep initExprs k = do
+  -- Storing in stream: always not shared, since we must copy the entire data
+  -- structure to the static area.
+  tinfo <- type_info NotShared trep
+  -- Using the code gen state we can come up with fresh names for the static
+  -- data: array, index, and copy
+  n :: Natural <- CodeGen $ Trans.lift $ gets $ fromIntegral . Seq.length . cgsStaticStreams
+
+  let !arrayIdentifier = assertValidStringIdentifier ("memory_array_" ++ show n)
+      !indexIdentifier = assertValidStringIdentifier ("memory_index_" ++ show n)
+      !copyIdentifier  = assertValidStringIdentifier ("memory_copy_"  ++ show n)
+
+  -- Since we require that the "static" parts of the expression unify with
+  -- the pure interpreter types, we can actually precompute them using that
+  -- interpreter. This means that these expressions will certainly be suitable
+  -- for C static array initializers (no function calls, no variable bindings).
+  let initPoints :: Vec ('S n) (Pure.Point t)
+      !initPoints = vecMap Pure.eval_point_ initExprs
+
+      !arrayLength = vecLength initPoints
+
+      sizeIntConst :: C.IntConst
+      !sizeIntConst = C.IntHex (hex_const arrayLength) Nothing
+
+      !widthRep =
+        if arrayLength <= 0xFF
+        then Point.SomeWidthRep Point.Eight_t
+        else if arrayLength <= 0xFFFF
+        then Point.SomeWidthRep Point.Sixteen_t
+        -- Ok, having a vector of this size would cause GHC to implode, but oh
+        -- well let's be thorough.
+        else if arrayLength <= 0xFFFFFFFF
+        then Point.SomeWidthRep Point.ThirtyTwo_t
+        else Point.SomeWidthRep Point.SixtyFour_t
+
+  -- NB: if the result is a sum or product, it will have been declared
+  -- here in this do block (type_info)
+  let arrayInits :: NonEmpty C.CondExpr
+      !arrayInits = fmap pureExpr (vecToNonEmpty initPoints)
+
+  -- TODO must create a stream value to run the continuation with, using the
+  -- identifiers
+  let sval :: StaticStreamVal
+      sval = StaticStreamVal
+        { ssvIndex  = indexIdentifier
+        , ssvArray  = arrayIdentifier
+        , ssvSize   = arrayLength
+        , ssvOffset = 0
+        }
+
+      stream :: Stream s ('Stream.Stream ('S n) t)
+      stream = Stream
+        { streamVal       = StreamValStatic sval
+        , streamTypeRep   = Stream.Stream_t nrep trep
+        , streamCTypeInfo = tinfo
+        }
+
+      nrep' :: NatRep n
+      nrep' = case nrep of
+        S_t n -> n
+
+      -- NB: it's `n`, not `'S n`.
+      streamRec :: Stream s ('Stream.Stream n t)
+      streamRec = Stream
+        { streamVal       = StreamValStatic sval
+        , streamTypeRep   = Stream.Stream_t nrep' trep
+        , streamCTypeInfo = tinfo
+        }
+
+  -- NB: this recursive call may declare more memory streams, updating the
+  -- cgsStaticStreams list, but that's OK, it just means the suffix on the
+  -- names will not necessarily be consistent with the order in the list.
+  sval' <- eval_stream (k (value streamRec))
+  nextValueExpr <- streamExprNow (streamVal sval')
+
+  let !sms = StaticMemoryStream
+        { smsArrayIdent = arrayIdentifier
+        , smsIndexIdent = indexIdentifier
+        , smsCopyIdent  = copyIdentifier
+        , smsCSize      = sizeIntConst
+        , smsSizeWidth  = widthRep
+        , smsArrayInits = arrayInits
+        , smsNextValue  = nextValueExpr
+        , smsCTypeInfo  = tinfo
+        }
+
+  CodeGen $ Trans.lift $ modify' $ \cgs -> cgs
+    { cgsStaticStreams = cgsStaticStreams cgs Seq.|> sms }
+
+  pure stream
+
+
+-- | Make a C expression from a pure evaluation of a point (Pilot.Pure).
+pureExpr :: Pure.Point t -> C.CondExpr
+
+pureExpr (Pure.UInt8  w8)  = integer_literal auto (Point.UInt8  w8)
+pureExpr (Pure.UInt16 w16) = integer_literal auto (Point.UInt16 w16)
+pureExpr (Pure.UInt32 w32) = integer_literal auto (Point.UInt32 w32)
+pureExpr (Pure.UInt64 w64) = integer_literal auto (Point.UInt64 w64)
+pureExpr (Pure.Int8   i8)  = integer_literal auto (Point.Int8   i8)
+pureExpr (Pure.Int16  i16) = integer_literal auto (Point.Int16   i16)
+pureExpr (Pure.Int32  i32) = integer_literal auto (Point.Int32   i32)
+pureExpr (Pure.Int64  i64) = integer_literal auto (Point.Int64   i64)
+
+pureExpr (Pure.Product points) = error "pureExpr TODO"
+pureExpr (Pure.Sum points)     = error "pureExpr TODO"
 
 -- | Product intro: give all conjuncts and get the product. Since products are
 -- structs, this corresponds to a struct initializer with a field for each
@@ -1657,6 +1797,15 @@ declare_initialized_point prefix point = do
     , pointCTypeInfo = pointCTypeInfo point
     }
 
+-- | Make an initialized variable declaration for a stream. How this is done
+-- depends upon the nature of the stream. Sometimes it is the same as for
+-- points. For memory streams, it's essentially a no-op since these already have
+-- static declarations.
+-- For composite streams with nonzero prefix, what happens when you drop the
+-- bound thing? Do you get a new binder?
+declare_initialized_stream :: String -> Stream s t -> CodeGen s (Stream s t)
+declare_initialized_stream prefix stream = undefined
+
 -- | Make a declaration assigning the given value to a new identifier.
 -- The declaration appears in the CodeGen state, and the resulting C identifier
 -- may be used to refer to it.
@@ -1858,10 +2007,17 @@ withCompoundTypeTreatment ctt cg = do
 --
 data CodeGenState = CodeGenState
   { cgsOptions :: !CodeGenOptions
-  , -- | C declarations in reverse order. This includes enum, union, and struct
-    -- declarations induced by compound types encountered during code
+  , -- | Type declarations in reverse order. This comprises enum, union, and
+    -- struct declarations induced by compound types encountered during code
     -- generation.
-    cgsDeclns :: ![C.Decln]
+    cgsTypeDeclns :: ![C.Decln]
+    -- | Extern object and function declarations, keyed on the string which
+    -- determines their C identifiers, so that the generated C will not have
+    -- duplicate names.
+  , cgsExterns    :: !(Map ExternIdentifier ExternDeclr)
+    -- | Information determining declarations and statements which implement
+    -- static streams with memory.
+  , cgsStaticStreams :: !(Seq StaticMemoryStream)
     -- | C block items composing a compound statement which must be evaluated
     -- before the expression. It's in reverse order: head of list is the last
     -- to be evaluated.
@@ -1876,6 +2032,179 @@ data CodeGenState = CodeGenState
     -- | Sum types encountered.
   , cgsSums       :: !(Map CompoundTypeIdentifier CompoundTypeDeclr)
   }
+
+--
+-- TODO what we need is
+-- - Top-level declaration of static arrays and their indices.
+-- - Statements which do the update:
+--   - For all memory streams, write the update to its "copy" location
+--   - For all memory streams, write the "copy" location to its static
+--     array at the current index
+-- The two phase update with copy thing ensures we don't have to worry
+-- about ordering of updates.
+--
+-- Also for externs, may be good practice to copy them all over at the
+-- start of eval, to be _really_ sure they will be consistent, in case we
+-- somehow were running on an SMP system.
+-- No, no sense worrying about it. There's always going to be ways to do it
+-- wrong (passing pointers, for instance). Let's just say the programmer must
+-- ensure that these externs are only updated in strong ordering w.r.t. to the
+-- eval function.
+--
+-- But there's still the matter of conversion (also relevant to output) to/from
+-- whatever types the C shell uses.
+--
+-- Form of the main function:
+--
+--   1. Put in the block items which compute the triggers
+--   2. For each memory stream, compute its next value and assign it to its
+--      copy location.
+--   3. For each memory stream, bump its index modulo its size and copy its
+--      copy location to this index.
+
+-- | This contains all of the information needed in order to generate
+-- - Static declarations of the stream
+-- - The statements to update the stream (i.e. mutate those static declarations)
+data StaticMemoryStream = StaticMemoryStream
+  { -- | Identifier of the static array
+    smsArrayIdent :: !C.Ident
+    -- | Identifier of the static current index into the array
+  , smsIndexIdent :: !C.Ident
+    -- | Identifier of the static copy location for the next value of the stream.
+  , smsCopyIdent  :: !C.Ident
+    -- | Integer constant giving the size of the array
+  , smsCSize      :: !C.IntConst
+    -- | How many bits do we need for the index?
+    -- In practice it's unlikely there would ever be a memory stream of size
+    -- greater than even 255 but still it's good to know this.
+  , smsSizeWidth  :: !Point.SomeWidthRep
+    -- | The initial values for the array. Must be exactly as many as the size.
+    -- This is in reverse order: earlier entries will go later in the array.
+  , smsArrayInits :: !(NonEmpty C.CondExpr)
+    -- | Expression giving the next value. This depends upon CodeGenState
+    -- context: it may use bindings from there.
+  , smsNextValue  :: !C.CondExpr
+    -- | The C type information for the _points_ in this stream.
+  , smsCTypeInfo  :: !CTypeInfo
+  }
+
+-- | Make an array initializer with these values, in reverse order.
+staticMemoryArrayInits :: NonEmpty C.CondExpr -> C.InitList
+staticMemoryArrayInits (cexpr NE.:| []) = C.InitBase
+  Nothing
+  (C.InitExpr (C.AssignCond cexpr))
+staticMemoryArrayInits (cexpr NE.:| (cexpr' : cexprs)) = C.InitCons
+  (staticMemoryArrayInits (cexpr NE.:| cexprs))
+  Nothing
+  (C.InitExpr (C.AssignCond cexpr))
+
+staticMemoryStreamDeclns :: StaticMemoryStream -> [C.Decln]
+staticMemoryStreamDeclns sms =
+  [ staticMemoryStreamCopyDecln  sms
+  , staticMemoryStreamIndexDecln sms
+  , staticMemoryStreamArrayDecln sms
+  ]
+
+staticMemoryStreamBlockItems :: Seq StaticMemoryStream -> [C.BlockItem]
+staticMemoryStreamBlockItems smss =
+     fmap staticMemoryStreamUpdateArrayBlockItem lst
+  ++ fmap staticMemoryStreamUpdateIndexBlockItem lst
+  ++ fmap staticMemoryStreamCopyBlockItem lst
+  where
+  lst = toList smss
+
+-- | Goes after all 'staticMemoryCopyBlockItems's for all streams, and after
+-- the 'staticMemoryUpdateIndexBlockItem' for this stream. It updates the
+-- static array at the current index.
+staticMemoryStreamUpdateArrayBlockItem :: StaticMemoryStream -> C.BlockItem
+staticMemoryStreamUpdateArrayBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+  C.ExprAssign $ C.Assign
+    (postfixExprIsUnaryExpr arrayAtIndex)
+    C.AEq
+    (identIsAssignExpr (smsCopyIdent sms))
+  where
+  arrayAtIndex :: C.PostfixExpr
+  arrayAtIndex = C.PostfixIndex
+    (identIsPostfixExpr (smsArrayIdent sms))
+    (identIsExpr (smsIndexIdent sms))
+
+staticMemoryStreamUpdateIndexBlockItem :: StaticMemoryStream -> C.BlockItem
+staticMemoryStreamUpdateIndexBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+  C.ExprAssign $ C.Assign
+    (identIsUnaryExpr (smsIndexIdent sms))
+    C.AEq
+    (multExprIsAssignExpr (C.MultMod incrementedIndex modulus))
+  where
+  incrementedIndex :: C.MultExpr
+  incrementedIndex = addExprIsMultExpr $ C.AddPlus
+    (identIsAddExpr (smsIndexIdent sms))
+    (constIsMultExpr (C.ConstInt (C.IntHex (hex_const 1) Nothing)))
+  modulus :: C.CastExpr
+  modulus = constIsCastExpr (C.ConstInt (smsCSize sms))
+
+-- | Goes before all 'staticMemoryStreamUpdateBlockItem's for all streams.
+-- It computes and stores the value of the next thing.
+staticMemoryStreamCopyBlockItem :: StaticMemoryStream -> C.BlockItem
+staticMemoryStreamCopyBlockItem sms = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
+  C.ExprAssign $ C.Assign
+    (identIsUnaryExpr (smsCopyIdent sms))
+    C.AEq
+    (condExprIsAssignExpr (smsNextValue sms))
+
+-- | Declaration of the static memory area for the array of values for this
+-- memory stream.
+staticMemoryStreamArrayDecln :: StaticMemoryStream -> C.Decln
+staticMemoryStreamArrayDecln sms = C.Decln specs (Just initDeclrList)
+  where
+  specs = C.DeclnSpecsStorage C.SStatic $ Just $ C.DeclnSpecsType typeSpec Nothing
+  typeSpec = ctypeSpec (smsCTypeInfo sms)
+  initDeclrList :: C.InitDeclrList
+  initDeclrList = C.InitDeclrBase $ C.InitDeclrInitr
+    (C.Declr mPtr $ C.DirectDeclrArray1 identDeclr Nothing (Just sizeExpr))
+    (C.InitArray (staticMemoryArrayInits (smsArrayInits sms)))
+  identDeclr :: C.DirectDeclr
+  identDeclr = C.DirectDeclrIdent (smsArrayIdent sms)
+  sizeExpr :: C.AssignExpr
+  sizeExpr = constIsAssignExpr (C.ConstInt (smsCSize sms))
+  mPtr :: Maybe C.Ptr
+  mPtr = if ctypePtr (smsCTypeInfo sms)
+         then Just (C.PtrBase Nothing)
+         else Nothing
+
+-- | Declaration of the "value copy" memory location for this stream (the
+-- place where the next value will be written to, before eventually being copied
+-- into the array replacing the oldest one).
+staticMemoryStreamCopyDecln :: StaticMemoryStream -> C.Decln
+staticMemoryStreamCopyDecln sms = C.Decln specs (Just initDeclrList)
+  where
+  specs = C.DeclnSpecsStorage C.SStatic $ Just $ C.DeclnSpecsType typeSpec Nothing
+  typeSpec = ctypeSpec (smsCTypeInfo sms)
+  initDeclrList :: C.InitDeclrList
+  initDeclrList = C.InitDeclrBase $ C.InitDeclr
+    (C.Declr mPtr (C.DirectDeclrIdent (smsCopyIdent sms)))
+  mPtr :: Maybe C.Ptr
+  mPtr = if ctypePtr (smsCTypeInfo sms)
+         then Just (C.PtrBase Nothing)
+         else Nothing
+
+-- | Declaration of the "current index" memory location for this stream.
+staticMemoryStreamIndexDecln :: StaticMemoryStream -> C.Decln
+staticMemoryStreamIndexDecln sms = C.Decln specs (Just initDeclrList)
+  where
+  -- The spec of the index is always
+  --   static uint<N>_t <name> = 0x00
+  -- where N depends upon how big the array is.
+  specs = C.DeclnSpecsStorage C.SStatic $ Just $ C.DeclnSpecsType typeSpec Nothing
+  typeSpec = C.TTypedef $ C.TypedefName $ case smsSizeWidth sms of
+    Point.SomeWidthRep Point.Eight_t     -> ident_uint8_t
+    Point.SomeWidthRep Point.Sixteen_t   -> ident_uint16_t
+    Point.SomeWidthRep Point.ThirtyTwo_t -> ident_uint32_t
+    Point.SomeWidthRep Point.SixtyFour_t -> ident_uint64_t
+  initDeclrList :: C.InitDeclrList
+  initDeclrList = C.InitDeclrBase $ C.InitDeclrInitr
+    (C.Declr Nothing (C.DirectDeclrIdent (smsIndexIdent sms)))
+    (C.InitExpr (constIsAssignExpr (C.ConstInt (C.IntHex (hex_const 0) Nothing))))
+
 
 -- | The C translation unit for a CodeGenState. This is the type declarations,
 --
@@ -1893,7 +2222,17 @@ codeGenTransUnit cgs mainFunDef = mkTransUnit (C.ExtFun mainFunDef NE.:| extDecl
   mkTransUnit (t NE.:| (t':ts)) = C.TransUnitCons (mkTransUnit (t' NE.:| ts)) t
 
   extDeclns :: [C.ExtDecln]
-  extDeclns = fmap C.ExtDecln (cgsDeclns cgs)
+  extDeclns = externs ++ staticMemDeclns ++ extTypeDeclns
+
+  staticMemDeclns :: [C.ExtDecln]
+  staticMemDeclns = fmap C.ExtDecln $
+    concatMap staticMemoryStreamDeclns (toList (cgsStaticStreams cgs))
+
+  externs :: [C.ExtDecln]
+  externs = fmap (C.ExtDecln . externDecln) (Map.elems (cgsExterns cgs))
+
+  extTypeDeclns :: [C.ExtDecln]
+  extTypeDeclns = fmap C.ExtDecln (cgsTypeDeclns cgs)
 
 codeGenCompoundStmt :: CodeGenState -> C.CompoundStmt
 codeGenCompoundStmt = C.Compound . blockItemList . cgsBlockItems
@@ -1907,6 +2246,10 @@ blockItemListNE (item NE.:| (item' : items)) = C.BlockItemCons
 blockItemList :: [C.BlockItem] -> Maybe C.BlockItemList
 blockItemList []             = Nothing
 blockItemList (item : items) = Just (blockItemListNE (item NE.:| items))
+
+-- | The Haskell TypeRep of a composite type's fields determines its C
+-- representation(s).
+type CompoundTypeIdentifier = Point.SomeTypeRep
 
 -- | How is a compound type used in the program? Determines which type
 -- declarations we need.
@@ -1932,9 +2275,74 @@ data CompoundTypeDeclr where
 data NonEmptyFields where
   NonEmptyFields :: All Point.TypeRep (ty ': tys) -> NonEmptyFields
 
--- | The Haskell TypeRep of a composite type's fields determines its C
--- representation(s).
-type CompoundTypeIdentifier = Point.SomeTypeRep
+type ExternIdentifier = String
+
+data ExternDeclr where
+  ExternObjectDeclr
+    :: !(Maybe C.TypeQualList)
+    -> !C.TypeSpec
+    -> !(Maybe C.Ptr)
+    -> !C.Ident
+    -> ExternDeclr
+  ExternFunctionDeclr
+    :: !(Maybe C.TypeQualList)
+    -> !C.TypeSpec
+    -> !(Maybe C.Ptr)
+    -> !C.Ident
+    -> ![FunctionParam]
+    -> ExternDeclr
+
+data FunctionParam = FunctionParam
+  { fpTypeQual :: !(Maybe C.TypeQualList)
+  , fpTypeSpec :: !C.TypeSpec
+  , fpPtr      :: !(Maybe C.Ptr)
+  , fpIdent    :: !C.Ident
+  }
+
+-- | The top-level declaration for an external thing.
+externDecln :: ExternDeclr -> C.Decln
+
+externDecln (ExternObjectDeclr mtq ts mPtr ident) = C.Decln
+  (externDeclnSpecs mtq ts)
+  (Just $ C.InitDeclrBase $ C.InitDeclr $ C.Declr mPtr $ C.DirectDeclrIdent ident)
+
+externDecln (ExternFunctionDeclr mtq ts mPtr ident fparams) = C.Decln
+  (externDeclnSpecs mtq ts)
+  (Just $ C.InitDeclrBase $ C.InitDeclr $ C.Declr mPtr $ C.DirectDeclrFun1 dident ptl)
+  where
+  dident :: C.DirectDeclr
+  dident = C.DirectDeclrIdent ident
+  ptl :: C.ParamTypeList
+  ptl = C.ParamTypeList pl
+  pl :: C.ParamList
+  pl = case fparams of
+    []       -> C.ParamBase $ C.ParamDeclnAbstract (C.DeclnSpecsType C.TVoid Nothing) Nothing
+    (fp:fps) -> functionParams (NE.reverse (fp NE.:| fps))
+
+functionParams :: NonEmpty FunctionParam -> C.ParamList
+functionParams (fp NE.:| []) = C.ParamBase $ C.ParamDecln
+  (functionParamDeclnSpecs fp)
+  (C.Declr (fpPtr fp) (C.DirectDeclrIdent (fpIdent fp)))
+functionParams (fp NE.:| (fp' : fps)) = C.ParamCons
+  (functionParams (fp' NE.:| fps))
+  (C.ParamDecln (functionParamDeclnSpecs fp) (C.Declr (fpPtr fp) (C.DirectDeclrIdent (fpIdent fp))))
+
+functionParamDeclnSpecs :: FunctionParam -> C.DeclnSpecs
+functionParamDeclnSpecs fp = declnSpecsQualListMaybe (fpTypeQual fp)
+  (C.DeclnSpecsType (fpTypeSpec fp) Nothing)
+
+externDeclnSpecs :: Maybe C.TypeQualList -> C.TypeSpec -> C.DeclnSpecs
+externDeclnSpecs mtq ts = C.DeclnSpecsStorage C.SExtern $ Just $
+  declnSpecsQualListMaybe mtq (C.DeclnSpecsType ts Nothing)
+
+declnSpecsQualListMaybe :: Maybe C.TypeQualList -> C.DeclnSpecs -> C.DeclnSpecs
+declnSpecsQualListMaybe Nothing   ds = ds
+declnSpecsQualListMaybe (Just qs) ds = declnSpecsQualList qs ds
+
+-- | Prepend the type qualifier list to a decln specs.
+declnSpecsQualList :: C.TypeQualList -> C.DeclnSpecs -> C.DeclnSpecs
+declnSpecsQualList (C.TypeQualBase tq)     specs = C.DeclnSpecsQual tq (Just specs)
+declnSpecsQualList (C.TypeQualCons tqs tq) specs = declnSpecsQualList tqs (C.DeclnSpecsQual tq (Just specs))
 
 -- | A monad to ease the expression of code generation, which carries some
 -- state and may exit early with error cases.
@@ -1975,12 +2383,14 @@ evalCodeGen
 evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
   initialState = CodeGenState
-    { cgsOptions    = opts
-    , cgsDeclns     = []
-    , cgsBlockItems = []
-    , cgsScope      = scope_init NE.:| []
-    , cgsProducts   = mempty
-    , cgsSums       = mempty
+    { cgsOptions       = opts
+    , cgsTypeDeclns    = []
+    , cgsExterns       = mempty
+    , cgsStaticStreams = mempty
+    , cgsBlockItems    = []
+    , cgsScope         = scope_init NE.:| []
+    , cgsProducts      = mempty
+    , cgsSums          = mempty
     }
 
 -- | Run a CodeGen term and generate a translation unit.
@@ -2040,8 +2450,10 @@ genTransUnit opts cg = fmap mkTransUnit outcome
         exprBlockItem :: C.BlockItem
         exprBlockItem = C.BlockItemStmt $ C.StmtJump $ C.JumpReturn $ Just $
           condExprIsExpr expr
+        allBlockItems :: [C.BlockItem]
+        allBlockItems = staticMemoryStreamBlockItems (cgsStaticStreams cgs') ++ cgsBlockItems cgs'
         compoundStmt :: C.CompoundStmt
-        compoundStmt = C.Compound $ Just $ case blockItemList (cgsBlockItems cgs') of
+        compoundStmt = C.Compound $ Just $ case blockItemList allBlockItems of
           Nothing  -> C.BlockItemBase exprBlockItem
           Just bil -> C.BlockItemCons bil exprBlockItem
     in  C.FunDef declnSpecs declr args compoundStmt
@@ -2179,7 +2591,16 @@ write_point_expr fp b expr = codeGenToFile fp opts (eval_point expr)
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
 
-
+{-
+write_stream_expr
+  :: String
+  -> Bool
+  -> StreamExpr s t
+  -> IO ()
+write_stream_expr fp b expr = codeGenToFile fp opts (eval_stream expr)
+  where
+  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
+-}
 
 codeGenError :: CodeGenError -> CodeGen s x
 codeGenError err = CodeGen (throwE err)
@@ -2248,6 +2669,21 @@ addExprIsCondExpr :: C.AddExpr -> C.CondExpr
 addExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd
 
+addExprIsMultExpr :: C.AddExpr -> C.MultExpr
+addExprIsMultExpr = condExprIsMultExpr . addExprIsCondExpr
+
+multExprIsExpr :: C.MultExpr -> C.Expr
+multExprIsExpr = C.ExprAssign . C.AssignCond . multExprIsCondExpr
+
+multExprIsCondExpr :: C.MultExpr -> C.CondExpr
+multExprIsCondExpr = addExprIsCondExpr . multExprIsAddExpr
+
+multExprIsAddExpr :: C.MultExpr -> C.AddExpr
+multExprIsAddExpr = C.AddMult
+
+multExprIsAssignExpr :: C.MultExpr -> C.AssignExpr
+multExprIsAssignExpr = condExprIsAssignExpr . addExprIsCondExpr . C.AddMult
+
 lorExprIsCondExpr :: C.LOrExpr -> C.CondExpr
 lorExprIsCondExpr = C.CondLOr
 
@@ -2289,6 +2725,9 @@ identIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
   C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
 
+identIsAssignExpr :: C.Ident -> C.AssignExpr
+identIsAssignExpr = condExprIsAssignExpr . identIsCondExpr
+
 identIsRelExpr :: C.Ident -> C.RelExpr
 identIsRelExpr = C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
   C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
@@ -2299,10 +2738,16 @@ identIsUnaryExpr = C.UnaryPostfix . C.PostfixPrim . C.PrimIdent
 identIsPostfixExpr :: C.Ident -> C.PostfixExpr
 identIsPostfixExpr = condExprIsPostfixExpr . identIsCondExpr
 
+identIsAddExpr :: C.Ident -> C.AddExpr
+identIsAddExpr = C.AddMult . C.MultCast . C.CastUnary . identIsUnaryExpr
+
 postfixExprIsCondExpr :: C.PostfixExpr -> C.CondExpr
 postfixExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
   C.CastUnary . C.UnaryPostfix
+
+postfixExprIsUnaryExpr :: C.PostfixExpr -> C.UnaryExpr
+postfixExprIsUnaryExpr = C.UnaryPostfix
 
 postfixExprIsAssignExpr :: C.PostfixExpr -> C.AssignExpr
 postfixExprIsAssignExpr = C.AssignCond . postfixExprIsCondExpr
@@ -2341,6 +2786,15 @@ constIsCondExpr = postfixExprIsCondExpr . C.PostfixPrim . C.PrimConst
 constIsCastExpr :: C.Const -> C.CastExpr
 constIsCastExpr = C.CastUnary . C.UnaryPostfix . C.PostfixPrim . C.PrimConst
 
+constIsAssignExpr :: C.Const -> C.AssignExpr
+constIsAssignExpr = condExprIsAssignExpr . constIsCondExpr
+
+constIsMultExpr :: C.Const -> C.MultExpr
+constIsMultExpr = C.MultCast . constIsCastExpr
+
+constIsAddExpr :: C.Const -> C.AddExpr
+constIsAddExpr = C.AddMult . C.MultCast . constIsCastExpr
+
 unaryExprIsCondExpr :: C.UnaryExpr -> C.CondExpr
 unaryExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
   C.AndEq . C.EqRel . C.RelShift . C.ShiftAdd . C.AddMult . C.MultCast .
@@ -2365,6 +2819,11 @@ const_restrict_ptr_to (Just ptr) = C.PtrCons (Just const_restrict) ptr
 -- since 0 is not a decimal number, but rather an octal one.
 hex_const :: Natural -> C.HexConst
 hex_const = hexConst . hexDigits
+
+assertValidStringIdentifier :: String -> C.Ident
+assertValidStringIdentifier str = case stringIdentifier str of
+  Nothing -> error ("assertValidStringIdentifier: bad identifier " ++ str)
+  Just id -> id
 
 assertValidIdentifier :: String -> Maybe C.Ident -> C.Ident
 assertValidIdentifier msg Nothing  = error msg

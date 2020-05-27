@@ -22,6 +22,7 @@ module Pilot.EDSL.Expr
   , Expr (..)
   , evalExprM
   , value
+  , known
   , exprF
   , exprM
   , expr
@@ -162,7 +163,10 @@ evalExprM interp name expr = runExprM expr interp name
 
 -- | TODO better name
 value :: Applicative f => val t -> Expr edsl val f t
-value v = Expr $ pure v
+value v = known (pure v)
+
+known :: f (val t) -> Expr edsl val f t
+known m = Expr $ ExprM $ \_ _ -> m
 
 -- | Use a base EDSL term in the expression, yielding a value (in `val`) within
 -- the interpreter context (`f`).
