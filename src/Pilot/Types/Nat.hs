@@ -163,6 +163,17 @@ vecReplicate :: NatRep n -> t -> Vec n t
 vecReplicate Z_t     _ = VNil
 vecReplicate (S_t n) t = VCons t (vecReplicate n t)
 
+-- | If we can make a t for any offset up to a given number (including 0)
+-- then we can make a vector of size 1 larger: if n ~ 'Z then we can use
+-- the 0th offset to generate the sole element.
+vecGenerateWithOffset
+  :: forall n t .
+     NatRep n
+  -> (Offset n -> t)
+  -> Vec ('S n) t
+vecGenerateWithOffset Z_t     k = VCons (k Current) VNil
+vecGenerateWithOffset (S_t n) k = VCons (k Current) (vecGenerateWithOffset n (k . Next))
+
 index :: Index n -> Vec n t -> t
 index Here (VCons t _) = t
 index (There idx) (VCons _ vs) = index idx vs

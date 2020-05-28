@@ -1008,15 +1008,20 @@ eval_lift_stream argsrep trep nrep k args = do
   -- all offsets. Instead we use a function
   --   Offset n -> CodeGen s C.CondExpr
   --
-  let f :: Offset n -> CodeGen s C.CondExpr
-      f = \offset -> do
+  let genAtOffset :: Offset n -> CodeGen s C.CondExpr
+      genAtOffset = \offset -> do
         let args  = streamArgsToPointArgs offset nrep argsrep streamArgs
             pexpr = k args
         point <- eval_point pexpr
         return $ pointExpr point
 
+      -- What we need is a vector of CodeGens such that, for each offset,
+      -- it runs the function at that offset.
+      vec :: Vec ('S n) (CodeGen s C.CondExpr)
+      vec = vecGenerateWithOffset nrep genAtOffset
+
       streamVal :: StreamVal s ('Stream.Stream n t)
-      streamVal = undefined -- StreamValFunction f
+      streamVal = StreamValNonStatic vec
 
   pure $ Stream
     { streamVal       = streamVal
