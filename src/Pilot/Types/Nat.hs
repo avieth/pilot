@@ -155,6 +155,14 @@ vecSnoc :: Vec n t -> t -> Vec (S n) t
 vecSnoc VNil t = VCons t VNil
 vecSnoc (VCons t ts) t' = VCons t (vecSnoc ts t')
 
+vecDropLast :: Vec (S n) t -> Vec n t
+vecDropLast (VCons _ VNil)           = VNil
+vecDropLast (VCons v vs@(VCons _ _)) = VCons v (vecDropLast vs)
+
+vecReplicate :: NatRep n -> t -> Vec n t
+vecReplicate Z_t     _ = VNil
+vecReplicate (S_t n) t = VCons t (vecReplicate n t)
+
 index :: Index n -> Vec n t -> t
 index Here (VCons t _) = t
 index (There idx) (VCons _ vs) = index idx vs

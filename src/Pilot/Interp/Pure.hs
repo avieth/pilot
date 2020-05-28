@@ -180,7 +180,7 @@ eval_point_expr (Point.ElimSum _ _ s cs) = eval_point s >>= cases cs
         -> Point ('Point.Sum variants)
         -> F (Point r)
   cases (And _ cs)               (Sum (Or s))  = cases cs (Sum s)
-  cases (And (Point.Case _ k) _) (Sum (Any t)) = eval_point (k (value t))
+  cases (And (Point.Case _ k) _) (Sum (Any t)) = eval_point (k (knownValue t))
   cases All                      (Sum s)       = case s of {}
 
 eval_point_literal :: Point.IntegerLiteral signedness width -> F (Point ('Point.Integer signedness width))
@@ -308,7 +308,7 @@ eval_stream_expr (Stream.LiftStream argsrep _ nrep f args) = do
     -> Args Stream (MapArgs ('Stream.Stream m) args)
     -> Args (Pure.Stream (Expr Point.ExprF Point F) m) args
   make_args (Arg _ argsrep) (Arg (Stream st) args) = Arg
-    (Pure.streamMap value st) (make_args argsrep args)
+    (Pure.streamMap knownValue st) (make_args argsrep args)
   make_args Args            Args                   = Args
 
 eval_stream_expr (Stream.DropStream _ nrep expr) = do
@@ -324,7 +324,7 @@ eval_stream_expr (Stream.ShiftStream _ nrep expr) = do
 eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S m)) inits k) = do
   pts <- vecTraverse eval_point inits
   let suffix :: Pure.Stream Point 'Z s
-      suffix = case runIdentity (eval_stream (k (value (Stream shifted)))) of
+      suffix = case runIdentity (eval_stream (k (knownValue (Stream shifted)))) of
         Stream s -> s
       stream :: Pure.Stream Point ('S m) s
       stream = Pure.streamFromInitVec pts suffix

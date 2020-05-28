@@ -241,9 +241,9 @@ example_16 = integral c f
 -- Also uses Stream.drop so that the value of the integral returned is
 -- the latest, not the most recent sum.
 example_17 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Int32)
-example_17 = Stream.drop auto auto (integral (Point.int32 0) f)
-  where
-  f = special_ (C.externInput "f" Point.int32_t)
+example_17 = Expr $ do
+  f <- special (C.externInput "f" Point.int32_t)
+  expr $ Stream.drop auto auto (integral (Point.int32 0) f)
 
 example_17_1 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z Unit)
 example_17_1 = Expr $ do
@@ -319,15 +319,15 @@ example_19 :: StreamExpr cval cf sval sf (C.Stream s) (C.CodeGen s) ('Stream 'Z 
 example_19 = Expr $ do
 
   -- Use the C backend to get inputs.
-  inputA <- value <$> special (C.externInput "a" (Point.maybe_t Point.int32_t))
-  inputB <- value <$> special (C.externInput "b" (Point.maybe_t Point.int32_t))
-  inputC <- value <$> special (C.externInput "c" (Point.maybe_t Point.int32_t))
+  inputA <- special (C.externInput "a" (Point.maybe_t Point.int32_t))
+  inputB <- special (C.externInput "b" (Point.maybe_t Point.int32_t))
+  inputC <- special (C.externInput "c" (Point.maybe_t Point.int32_t))
 
   -- Apply a pointwise function over those inputs.
-  ret <- expr $ ap f <@> arg inputA <&> arg inputB <&> arg inputC
+  let ret = ap f <@> arg inputA <&> arg inputB <&> arg inputC
 
   -- Put the result of that function to an output.
-  () <- special (C.externOutput "x" (value ret))
+  () <- special (C.externOutput "x" ret)
 
   -- The program itself returns a stream of unit.
   expr $ Stream.constant auto auto Point.unit

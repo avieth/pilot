@@ -21,9 +21,8 @@ module Pilot.EDSL.Expr
   , ExprM (..)
   , Expr (..)
   , evalExprM
-  , value
   , special
-  , special_
+  , knownValue
   , exprF
   , exprM
   , expr
@@ -92,12 +91,6 @@ evalExprM :: (forall x . edsl (Expr edsl val f) x -> f (val x))
           -> f t
 evalExprM interp name expr = runExprM expr interp name
 
--- | Use a "value" with no interpreter context as an expression.
---
--- TODO better name
-value :: Applicative f => val t -> Expr edsl val f t
-value v = special_ (pure v)
-
 -- | Use an interpreter-specific thing in the expression.
 --
 -- It's called "special" because it fixes the `f` types (and probably `val` as
@@ -105,9 +98,9 @@ value v = special_ (pure v)
 special :: f t -> ExprM edsl val f t
 special m = ExprM $ \_ _ -> m
 
--- | Like 'special' but it does not need to give a value.
-special_ :: f (val t) -> Expr edsl val f t
-special_ = Expr . special
+-- | Use a "value" with no interpreter context as an expression.
+knownValue :: Applicative f => val t -> Expr edsl val f t
+knownValue v = Expr $ special (pure v)
 
 -- | Use a base EDSL term in the expression, yielding a value (in `val`) within
 -- the interpreter context (`f`).
@@ -126,7 +119,7 @@ name :: Monad f => Expr edsl val f t -> ExprM edsl val f (val t)
 name exp = ExprM $ \interp name -> runExprM (runExpr exp) interp name >>= name
 
 subst :: Applicative f => val t -> Expr edsl val f t
-subst = value
+subst = knownValue
 
 -- | Names the expression and gives a reference to it.
 bind :: Monad f => Expr edsl val f t -> ExprM edsl val f (Expr edsl val f t)

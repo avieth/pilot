@@ -24,7 +24,6 @@ module Pilot.Interp.C.CodeGen
   , streamPtr
   , streamTypeSpec
   , StreamVal (..)
-  , ExternStream (..)
   , StaticStreamVal (..)
   , staticStreamAtOffset
   , streamExprAtOffset
@@ -139,17 +138,25 @@ streamTypeSpec :: Stream s t -> C.TypeSpec
 streamTypeSpec = ctypeSpec . streamCTypeInfo
 
 data StreamVal s (t :: Stream.Type Point.Type) where
-  StreamValConstant :: !C.CondExpr -> StreamVal s ('Stream.Stream n t)
-  StreamValStatic   :: !StaticStreamVal -> StreamVal s ('Stream.Stream n t)
-  -- | The expression at this offset, and a way to get the expression at
-  -- later offsets.
-  StreamValFunction :: !(Offset n -> CodeGen s C.CondExpr)
-                    -> StreamVal s ('Stream.Stream n t)
 
-data ExternStream = ExternStream
-  { esGlobal :: !C.Ident
-  , esLocal  :: !C.Ident
-  }
+  -- | A static stream (used to implement memory streams). It's a C static
+  -- array with a static current index value.
+  StreamValStatic :: !StaticStreamVal -> StreamVal s ('Stream.Stream n t)
+
+  -- | Each of the n prefix values in the stream.
+  -- The vector is length at least one because even streams with no prefix have
+  -- their current value.
+  StreamValNonStatic
+    :: !(Vec ('S n) (CodeGen s C.CondExpr))
+    -> StreamVal s ('Stream.Stream n t)
+
+nonStaticStreamAtOffset
+  :: Offset n
+  -> Vec ('S n) (CodeGen s C.CondExpr)
+  -> CodeGen s C.CondExpr
+nonStaticStreamAtOffset Current       (VCons c _)              = c
+nonStaticStreamAtOffset (Next offset) (VCons _ vs@(VCons _ _)) =
+  nonStaticStreamAtOffset offset vs
 
 data StaticStreamVal = StaticStreamVal
   { ssvIndex  :: !C.Ident
@@ -182,9 +189,8 @@ staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
   modulus = C.ConstInt $ C.IntHex (hex_const (ssvSize ssv)) Nothing
 
 streamExprAtOffset :: Offset n -> StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
-streamExprAtOffset _   (StreamValConstant c) = pure c
-streamExprAtOffset off (StreamValStatic ssv) = pure $ staticStreamAtOffset (offsetToNatural off) ssv
-streamExprAtOffset off (StreamValFunction k) = k off
+streamExprAtOffset off (StreamValStatic ssv)   = pure $ staticStreamAtOffset (offsetToNatural off) ssv
+streamExprAtOffset off (StreamValNonStatic cs) = nonStaticStreamAtOffset off cs
 
 streamExprNow :: StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
 streamExprNow = streamExprAtOffset Current
@@ -194,7 +200,7 @@ streamArgToPointArg
   -> NatRep n
   -> Stream s ('Stream.Stream n t)
   -> Expr Point.ExprF (Point s) (CodeGen s) t
-streamArgToPointArg offset nrep stream = Pilot.EDSL.Expr.special_ $ do
+streamArgToPointArg offset nrep stream = Expr $ Pilot.EDSL.Expr.special $ do
   expr <- streamExprAtOffset offset (streamVal stream)
   pure $ Point
     { pointExpr      = expr

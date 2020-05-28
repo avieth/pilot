@@ -25,6 +25,7 @@ import Data.Maybe (isJust)
 
 import qualified Language.C99.AST as C
 
+import Pilot.EDSL.Expr
 import qualified Pilot.EDSL.Point as Point
 import qualified Pilot.EDSL.Stream as Stream
 
@@ -36,7 +37,25 @@ import Pilot.Interp.C.Eval
 
 -- | Create a stream which will appear as a C extern. This is the way in
 -- which external real world _input_ appears.
-externInput :: String -> Point.TypeRep t -> CodeGen s (Stream s ('Stream.Stream 'Z t))
+--
+-- NB: this gives a stream expression, but it's behind the C CodeGen monad. In
+-- order to get and use that expression, one must run it in the ExprM monad
+-- by way of 'Pilot.EDSL.Expr.special'.
+--
+-- Also note that, unlike externOutput, this does not fix the static stream
+-- value and interpreter parts to be in the pure interpreter. That's because
+-- externInput does not actually need to evaluate any streams (i.e. generate
+-- any C for a stream).
+externInput
+  :: String
+  -> Point.TypeRep t
+  -> CodeGen s
+       (Expr
+         (Stream.ExprF (Expr Point.ExprF cval cf) (Expr Point.ExprF sval sf))
+         (Stream s)
+         (CodeGen s)
+         ('Stream.Stream 'Z t)
+       )
 externInput name trep = do
   exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExternInputs
   when exists $ codeGenError $ CodeGenDuplicateExternName name
@@ -55,13 +74,13 @@ externInput name trep = do
         ident
       !cexpr = identIsCondExpr ident
       stream = Stream
-        { streamVal       = StreamValConstant cexpr
+        { streamVal       = StreamValNonStatic (VCons (pure cexpr) VNil)
         , streamTypeRep   = Stream.Stream_t Z_t trep
         , streamCTypeInfo = tinfo
         }
   CodeGen $ Trans.lift $ modify' $ \cgs ->
     cgs { cgsExternInputs = Map.insert name externDeclr (cgsExternInputs cgs) }
-  pure stream
+  pure $ knownValue stream
 
 -- | Use this stream to make an output. It will appear as an uninitialized
 -- C static variable, which will be written on each evalauation of the system

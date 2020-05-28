@@ -128,11 +128,9 @@ stream_drop stream = Stream
 
   val :: StreamVal s ('Stream.Stream n t)
   val = case streamVal stream of
-    -- Dropping from a constant? Same thing.
-    StreamValConstant c -> StreamValConstant c
+    StreamValNonStatic (VCons _ cs) -> StreamValNonStatic cs
     -- Dropping from a static memory stream: bump the index.
     StreamValStatic   s -> StreamValStatic $ s { ssvOffset = 1 + ssvOffset s }
-    StreamValFunction k -> StreamValFunction (withNextOffset k)
 
 stream_shift
   :: forall s n t .
@@ -150,9 +148,8 @@ stream_shift stream = Stream
 
   val :: StreamVal s ('Stream.Stream n t)
   val = case streamVal stream of
-    StreamValConstant c -> StreamValConstant c
-    StreamValStatic   s -> StreamValStatic s
-    StreamValFunction k -> StreamValFunction (withSameOffset k)
+    StreamValNonStatic vs  -> StreamValNonStatic (vecDropLast vs)
+    StreamValStatic   s    -> StreamValStatic s
 
 -- | For integral types we use the C standard explicit types like uint8_t.
 --
@@ -956,8 +953,10 @@ eval_constant_stream
   -> CodeGen s (Stream s ('Stream.Stream n t))
 eval_constant_stream trep nrep pexpr = do
   point <- eval_point pexpr
+  let genPoint = pure (pointExpr point)
+      pvec = VCons genPoint (vecReplicate nrep genPoint)
   pure $ Stream
-    { streamVal       = StreamValConstant (pointExpr point)
+    { streamVal       = StreamValNonStatic pvec
     , streamTypeRep   = Stream.Stream_t nrep (pointTypeRep point)
     , streamCTypeInfo = pointCTypeInfo point
     }
@@ -1017,7 +1016,7 @@ eval_lift_stream argsrep trep nrep k args = do
         return $ pointExpr point
 
       streamVal :: StreamVal s ('Stream.Stream n t)
-      streamVal = StreamValFunction f
+      streamVal = undefined -- StreamValFunction f
 
   pure $ Stream
     { streamVal       = streamVal
@@ -1109,7 +1108,7 @@ eval_memory_stream trep nrep initExprs k = do
   -- NB: this recursive call may declare more memory streams, updating the
   -- cgsStaticStreams list, but that's OK, it just means the suffix on the
   -- names will not necessarily be consistent with the order in the list.
-  sval' <- eval_stream (k (value streamRec))
+  sval' <- eval_stream (k (knownValue streamRec))
   nextValueExpr <- streamExprNow (streamVal sval')
 
   let !sms = StaticMemoryStream
@@ -1443,7 +1442,7 @@ eval_elim_sum_cases ctt n rrep tagExpr variantExpr resultIdent (And (Case trep k
   -- TODO check on that. Should be ok, since `value valInThisCase` will never
   -- elaborate to anything that needs to happen at the top level of the
   -- evaluation function.
-  (expr, blockItems) <- withNewScope $ eval_point (k (value valInThisCase))
+  (expr, blockItems) <- withNewScope $ eval_point (k (knownValue valInThisCase))
   let -- Here we have the result assignment and the case break, the final two
       -- statements in the compound statement.
       resultAssignment :: C.BlockItem
@@ -1481,16 +1480,25 @@ declare_initialized_point prefix point = do
 -- depends upon the nature of the stream. Sometimes it is the same as for
 -- points. For memory streams, it's essentially a no-op since these already have
 -- static declarations.
--- For composite streams with nonzero prefix, what happens when you drop the
--- bound thing? Do you get a new binder?
+--
+-- For composite streams with nonzero prefix, a binder is made to the value
+-- _now_. Taking a later offset will not give a new binder. You'd have to
+-- bind to the dropped thing to get another binder.
 declare_initialized_stream :: String -> Stream s t -> CodeGen s (Stream s t)
-declare_initialized_stream _ _ = error "declare_initialized_stream not defined"
-{-
-declare_initialized_stream prefix stream = do
-  expr <- streamExprNow (streamVal stream)
-  ident <- declare_initialized prefix expr (streamCTypeInfo stream)
-  pure $ 
--}
+declare_initialized_stream prefix stream = case streamVal stream of
+
+  -- Nothing needs to be done here; the static stream's representation is...
+  -- static... it's already named.
+  StreamValStatic _ -> pure stream
+
+  StreamValNonStatic (VCons cgen cs) -> do
+    cexpr <- cgen
+    !ident <- declare_initialized prefix cexpr (streamCTypeInfo stream)
+    pure $ Stream
+      { streamVal       = StreamValNonStatic (VCons (pure (identIsCondExpr ident)) cs)
+      , streamTypeRep   = streamTypeRep stream
+      , streamCTypeInfo = streamCTypeInfo stream
+      }
 
 -- | Make a declaration assigning the given value to a new identifier.
 -- The declaration appears in the CodeGen state, and the resulting C identifier
