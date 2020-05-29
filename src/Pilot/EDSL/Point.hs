@@ -260,6 +260,19 @@ data IntegerLiteral (signedness :: Signedness) (width :: Width) where
   Int32 :: Haskell.Int32 -> IntegerLiteral 'Signed 'ThirtyTwo
   Int64 :: Haskell.Int64 -> IntegerLiteral 'Signed 'SixtyFour
 
+-- | Characterization of safe casts with no need for a check. That's any
+-- cast from a smaller to a wider type, of the same signedness.
+data UncheckedCast (w1 :: Width) (w2 :: Width) where
+
+  Cast_Unchecked_Eight_Sixteen   :: UncheckedCast 'Eight 'Sixteen
+  Cast_Unchecked_Eight_ThirtyTwo :: UncheckedCast 'Eight 'ThirtyTwo
+  Cast_Unchecked_Eight_SxityFour :: UncheckedCast 'Eight 'SixtyFour
+
+  Cast_Unchekced_Sixteen_ThirtyTwo :: UncheckedCast 'Sixteen 'ThirtyTwo
+  Cast_Unchecked_Sixteen_SixtyFour :: UncheckedCast 'Sixteen 'SixtyFour
+
+  Cast_Unchecked_ThirtyTwo_SixtyFour :: UncheckedCast 'ThirtyTwo 'SixtyFour
+
 -- | Value-level representation of 'Type' data kinds.
 data TypeRep (t :: Type) where
 
@@ -462,8 +475,19 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
 
   PrimOp :: PrimOpF expr t -> ExprF expr t
 
-  -- TODO safe upcasts
-  -- TODO checked downcasts
+  -- | An unchecked cast may be done whenver it's guaranteed to fit into the
+  -- result type. No sign change is possible.
+  UncheckedCastOp :: SignednessRep signedness
+                  -> UncheckedCast w1 w2
+                  -> expr ('Integer signedness w1)
+                  -> ExprF expr ('Integer signedness w2)
+
+  -- | A checked cast may be done for any integer types (even if they are the
+  -- same).
+  CheckedCastOp :: TypeRep ('Integer s1 w1)
+                -> TypeRep ('Integer s2 w2)
+                -> expr ('Integer s1 w2)
+                -> ExprF expr (Maybe ('Integer s2 w2))
 
   -- Compound data: algebraic datatypes
 
