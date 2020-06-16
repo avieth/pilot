@@ -23,7 +23,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE BangPatterns #-}
 
 module Pilot.EDSL.Point
-  ( module Expr
+  ( Pointwise
 
   , Type (..)
   , TypeRep (..)
@@ -51,6 +51,8 @@ module Pilot.EDSL.Point
   , ArithmeticOpF (..)
   , BitwiseOpF (..)
   , RelativeOpF (..)
+
+  , UncheckedCast (..)
 
   , UInt8
   , uint8_t
@@ -138,9 +140,11 @@ import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
-import Pilot.EDSL.Expr as Expr
+import Pilot.EDSL.Expr.Initial as Initial
 import Pilot.Types.Represented
 import Pilot.Types.Logic
+
+type Pointwise = AST ExprF
 
 -- | Types for the pointwise EDSL: various numeric types, with finite sums and
 -- products. As usual, the empty product is unit, and the empty sum is void.
@@ -266,9 +270,9 @@ data UncheckedCast (w1 :: Width) (w2 :: Width) where
 
   Cast_Unchecked_Eight_Sixteen   :: UncheckedCast 'Eight 'Sixteen
   Cast_Unchecked_Eight_ThirtyTwo :: UncheckedCast 'Eight 'ThirtyTwo
-  Cast_Unchecked_Eight_SxityFour :: UncheckedCast 'Eight 'SixtyFour
+  Cast_Unchecked_Eight_SixtyFour :: UncheckedCast 'Eight 'SixtyFour
 
-  Cast_Unchekced_Sixteen_ThirtyTwo :: UncheckedCast 'Sixteen 'ThirtyTwo
+  Cast_Unchecked_Sixteen_ThirtyTwo :: UncheckedCast 'Sixteen 'ThirtyTwo
   Cast_Unchecked_Sixteen_SixtyFour :: UncheckedCast 'Sixteen 'SixtyFour
 
   Cast_Unchecked_ThirtyTwo_SixtyFour :: UncheckedCast 'ThirtyTwo 'SixtyFour
@@ -484,6 +488,8 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
 
   -- | A checked cast may be done for any integer types (even if they are the
   -- same).
+  --
+  -- TODO better building block for this?
   CheckedCastOp :: TypeRep ('Integer s1 w1)
                 -> TypeRep ('Integer s2 w2)
                 -> expr ('Integer s1 w2)
@@ -573,8 +579,8 @@ unit_t :: TypeRep Unit
 unit_t = Product_t All
 
 -- | An empty product can be introduced, but it cannot be eliminated.
-unit :: Expr ExprF expr f Unit
-unit = exprF $ IntroProduct unit_t All
+unit :: AST ExprF i Unit
+unit = intra $ IntroProduct unit_t All
 
 type Void = 'Sum '[]
 
@@ -582,8 +588,8 @@ void_t :: TypeRep Void
 void_t = Sum_t All
 
 -- | An empty sum can be eliminated, but it cannot be introduced.
-absurd :: TypeRep x -> Expr ExprF expr f Void -> Expr ExprF expr f x
-absurd x_t impossible = exprF $ ElimSum void_t x_t impossible All
+absurd :: TypeRep x -> AST ExprF i Void -> AST ExprF i x
+absurd x_t impossible = intra $ ElimSum void_t x_t impossible All
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
 -- stands for true. An interpreter may need to know that. A C backend could,
@@ -618,41 +624,41 @@ either_t s t = Sum_t (And s $ And t $ All)
 
 pair :: TypeRep a
      -> TypeRep b
-     -> Expr ExprF expr f a
-     -> Expr ExprF expr f b
-     -> Expr ExprF expr f (Pair a b)
-pair ta tb va vb = exprF $ IntroProduct (pair_t ta tb)
+     -> AST ExprF i a
+     -> AST ExprF i b
+     -> AST ExprF i (Pair a b)
+pair ta tb va vb = intra $ IntroProduct (pair_t ta tb)
   (And va $
    And vb $
    All)
 
 fst :: TypeRep a
     -> TypeRep b
-    -> Expr ExprF expr f (Pair a b)
-    -> Expr ExprF expr f a
-fst ta tb vp = exprF $ ElimProduct (pair_t ta tb) ta (Any Selector) vp
+    -> AST ExprF i (Pair a b)
+    -> AST ExprF i a
+fst ta tb vp = intra $ ElimProduct (pair_t ta tb) ta (Any Selector) vp
 
 snd :: TypeRep a
     -> TypeRep b
-    -> Expr ExprF expr f (Pair a b)
-    -> Expr ExprF expr f b
-snd ta tb vp = exprF $ ElimProduct (pair_t ta tb) tb (Or $ Any Selector) vp
+    -> AST ExprF i (Pair a b)
+    -> AST ExprF i b
+snd ta tb vp = intra $ ElimProduct (pair_t ta tb) tb (Or $ Any Selector) vp
 
-just :: TypeRep t -> Expr ExprF expr f t -> Expr ExprF expr f (Maybe t)
-just tt t = exprF $ IntroSum (maybe_t tt) tt (Or (Any t))
+just :: TypeRep t -> AST ExprF i t -> AST ExprF i (Maybe t)
+just tt t = intra $ IntroSum (maybe_t tt) tt (Or (Any t))
 
-nothing :: TypeRep t -> Expr ExprF expr f (Maybe t)
-nothing tt = exprF $ IntroSum (maybe_t tt) unit_t (Any unit)
+nothing :: TypeRep t -> AST ExprF i (Maybe t)
+nothing tt = intra $ IntroSum (maybe_t tt) unit_t (Any unit)
 
 elim_maybe
-  :: forall expr f t r .
+  :: forall expr i t r .
      TypeRep t
   -> TypeRep r
-  -> Expr ExprF expr f (Maybe t)
-  -> (Expr ExprF expr f Unit -> Expr ExprF expr f r)
-  -> (Expr ExprF expr f t    -> Expr ExprF expr f r)
-  -> Expr ExprF expr f r
-elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
+  ->  AST ExprF i (Maybe t)
+  -> (AST ExprF i Unit -> AST ExprF i r)
+  -> (AST ExprF i t    -> AST ExprF i r)
+  ->  AST ExprF i r
+elim_maybe trt trr v cNothing cJust = intra $ ElimSum trs trr
   v
   (And (Case unit_t cNothing) $
    And (Case trt    cJust   ) $
@@ -663,92 +669,92 @@ elim_maybe trt trr v cNothing cJust = exprF $ ElimSum trs trr
 left
   :: TypeRep a
   -> TypeRep b
-  -> Expr ExprF expr f a
-  -> Expr ExprF expr f (Either a b)
-left ta tb va = exprF $ IntroSum (either_t ta tb) ta (Any va)
+  -> AST ExprF i a
+  -> AST ExprF i (Either a b)
+left ta tb va = intra $ IntroSum (either_t ta tb) ta (Any va)
 
 right
   :: TypeRep a
   -> TypeRep b
-  -> Expr ExprF expr f b
-  -> Expr ExprF expr f (Either a b)
-right ta tb vb = exprF $ IntroSum (either_t ta tb) tb (Or (Any vb))
+  -> AST ExprF i b
+  -> AST ExprF i (Either a b)
+right ta tb vb = intra $ IntroSum (either_t ta tb) tb (Or (Any vb))
 
 elim_either
-  :: forall a b c val f .
+  :: forall a b c i .
      TypeRep a
   -> TypeRep b
   -> TypeRep c
-  -> Expr ExprF val f (Either a b)
-  -> (Expr ExprF val f a -> Expr ExprF val f c)
-  -> (Expr ExprF val f b -> Expr ExprF val f c)
-  -> Expr ExprF val f c
-elim_either tra trb trc v cLeft cRight = exprF $ ElimSum
+  ->  AST ExprF i (Either a b)
+  -> (AST ExprF i a -> AST ExprF i c)
+  -> (AST ExprF i b -> AST ExprF i c)
+  ->  AST ExprF i c
+elim_either tra trb trc v cLeft cRight = intra $ ElimSum
   (either_t tra trb) trc
   v
   (And (Case tra cLeft ) $
    And (Case trb cRight) $
    All)
 
-false :: Expr ExprF expr f Boolean
-false = exprF $ IntroSum boolean_t unit_t (Any $ unit)
+false :: AST ExprF i Boolean
+false = intra $ IntroSum boolean_t unit_t (Any $ unit)
 
-true :: Expr ExprF expr f Boolean
-true = exprF $ IntroSum boolean_t unit_t (Or $ Any $ unit)
+true :: AST ExprF i Boolean
+true = intra $ IntroSum boolean_t unit_t (Or $ Any $ unit)
 
 elim_boolean
-  :: forall val r f .
+  :: forall r i .
      TypeRep r
-  -> Expr ExprF val f Boolean
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-elim_boolean trep vb cFalse cTrue = exprF $ ElimSum boolean_t trep
+  -> AST ExprF i Boolean
+  -> AST ExprF i r
+  -> AST ExprF i r
+  -> AST ExprF i r
+elim_boolean trep vb cFalse cTrue = intra $ ElimSum boolean_t trep
   vb
   (And (Case unit_t (\_ -> cFalse)) $
    And (Case unit_t (\_ -> cTrue)) $
    All)
 
 if_else
-  :: forall val r f .
+  :: forall r i .
      TypeRep r
-  -> Expr ExprF val f Boolean
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
+  -> AST ExprF i Boolean
+  -> AST ExprF i r
+  -> AST ExprF i r
+  -> AST ExprF i r
 if_else = elim_boolean
 
-and :: Expr ExprF val f Boolean
-    -> Expr ExprF val f Boolean
-    -> Expr ExprF val f Boolean
+and :: AST ExprF i Boolean
+    -> AST ExprF i Boolean
+    -> AST ExprF i Boolean
 and a b = if_else boolean_t a false b
 
-or :: Expr ExprF val f Boolean
-   -> Expr ExprF val f Boolean
-   -> Expr ExprF val f Boolean
+or :: AST ExprF i Boolean
+   -> AST ExprF i Boolean
+   -> AST ExprF i Boolean
 or a b = if_else boolean_t a b true
 
-not :: Expr ExprF val f Boolean -> Expr ExprF val f Boolean
+not :: AST ExprF i Boolean -> AST ExprF i Boolean
 not a = if_else boolean_t a true false
 
-lt :: Expr ExprF val f Ordering
-lt = exprF $ IntroSum ordering_t unit_t (Any $ unit)
+lt :: AST ExprF i Ordering
+lt = intra $ IntroSum ordering_t unit_t (Any $ unit)
 
-eq :: Expr ExprF val f Ordering
-eq = exprF $ IntroSum ordering_t unit_t (Or $ Any $ unit)
+eq :: AST ExprF i Ordering
+eq = intra $ IntroSum ordering_t unit_t (Or $ Any $ unit)
 
-gt :: Expr ExprF val f Ordering
-gt = exprF $ IntroSum ordering_t unit_t (Or $ Or $ Any $ unit)
+gt :: AST ExprF i Ordering
+gt = intra $ IntroSum ordering_t unit_t (Or $ Or $ Any $ unit)
 
 elim_ordering
-  :: forall val r f .
+  :: forall r i .
      TypeRep r
-  -> Expr ExprF val f Ordering
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-  -> Expr ExprF val f r
-elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
+  -> AST ExprF i Ordering
+  -> AST ExprF i r
+  -> AST ExprF i r
+  -> AST ExprF i r
+  -> AST ExprF i r
+elim_ordering trep vo cLt cEq cGt = intra $ ElimSum ordering_t trep
   vo
   (And (Case unit_t (\_ -> cLt)) $
    And (Case unit_t (\_ -> cEq)) $ 
@@ -757,108 +763,108 @@ elim_ordering trep vo cLt cEq cGt = exprF $ ElimSum ordering_t trep
 
 cmp :: TypeRep ('Integer signedness width)
     -> TypeRep r
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f r -- ^ First less than second
-    -> Expr ExprF val f r -- ^ Equal
-    -> Expr ExprF val f r -- ^ First greater than second
-    -> Expr ExprF val f r
-cmp trep trepr x y cLT cEQ cGT = exprF $ PrimOp $ Relative $ Cmp trep trepr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i r -- ^ First less than second
+    -> AST ExprF i r -- ^ Equal
+    -> AST ExprF i r -- ^ First greater than second
+    -> AST ExprF i r
+cmp trep trepr x y cLT cEQ cGT = intra $ PrimOp $ Relative $ Cmp trep trepr x y
   cLT cEQ cGT
 
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
 
-uint8 :: Haskell.Word8 -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
-uint8 w8 = exprF $ IntroInteger uint8_t (UInt8 w8)
+uint8 :: Haskell.Word8 -> AST ExprF i ('Integer 'Unsigned 'Eight)
+uint8 w8 = intra $ IntroInteger uint8_t (UInt8 w8)
 
-uint16 :: Haskell.Word16 -> Expr ExprF val f ('Integer 'Unsigned 'Sixteen)
-uint16 w16 = exprF $ IntroInteger uint16_t (UInt16 w16)
+uint16 :: Haskell.Word16 -> AST ExprF i ('Integer 'Unsigned 'Sixteen)
+uint16 w16 = intra $ IntroInteger uint16_t (UInt16 w16)
 
-uint32 :: Haskell.Word32 -> Expr ExprF val f ('Integer 'Unsigned 'ThirtyTwo)
-uint32 w32 = exprF $ IntroInteger uint32_t (UInt32 w32)
+uint32 :: Haskell.Word32 -> AST ExprF i ('Integer 'Unsigned 'ThirtyTwo)
+uint32 w32 = intra $ IntroInteger uint32_t (UInt32 w32)
 
-uint64 :: Haskell.Word64 -> Expr ExprF val f ('Integer 'Unsigned 'SixtyFour)
-uint64 w64 = exprF $ IntroInteger uint64_t (UInt64 w64)
+uint64 :: Haskell.Word64 -> AST ExprF i ('Integer 'Unsigned 'SixtyFour)
+uint64 w64 = intra $ IntroInteger uint64_t (UInt64 w64)
 
-int8 :: Haskell.Int8 -> Expr ExprF val f ('Integer 'Signed 'Eight)
-int8 i8 = exprF $ IntroInteger int8_t (Int8 i8)
+int8 :: Haskell.Int8 -> AST ExprF i ('Integer 'Signed 'Eight)
+int8 i8 = intra $ IntroInteger int8_t (Int8 i8)
 
-int16 :: Haskell.Int16 -> Expr ExprF val f ('Integer 'Signed 'Sixteen)
-int16 i16 = exprF $ IntroInteger int16_t (Int16 i16)
+int16 :: Haskell.Int16 -> AST ExprF i ('Integer 'Signed 'Sixteen)
+int16 i16 = intra $ IntroInteger int16_t (Int16 i16)
 
-int32 :: Haskell.Int32 -> Expr ExprF val f ('Integer 'Signed 'ThirtyTwo)
-int32 i32 = exprF $ IntroInteger int32_t (Int32 i32)
+int32 :: Haskell.Int32 -> AST ExprF i ('Integer 'Signed 'ThirtyTwo)
+int32 i32 = intra $ IntroInteger int32_t (Int32 i32)
 
-int64 :: Haskell.Int64 -> Expr ExprF val f ('Integer 'Signed 'SixtyFour)
-int64 i64 = exprF $ IntroInteger int64_t (Int64 i64)
+int64 :: Haskell.Int64 -> AST ExprF i ('Integer 'Signed 'SixtyFour)
+int64 i64 = intra $ IntroInteger int64_t (Int64 i64)
 
 add :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-add tr x y = exprF $ PrimOp $ Arithmetic $ AddInteger tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+add tr x y = intra $ PrimOp $ Arithmetic $ AddInteger tr x y
 
 sub :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-sub tr x y = exprF $ PrimOp $ Arithmetic $ SubInteger tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+sub tr x y = intra $ PrimOp $ Arithmetic $ SubInteger tr x y
 
 mul :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-mul tr x y = exprF $ PrimOp $ Arithmetic $ MulInteger tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+mul tr x y = intra $ PrimOp $ Arithmetic $ MulInteger tr x y
 
 div :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-div tr x y = exprF $ PrimOp $ Arithmetic $ DivInteger tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+div tr x y = intra $ PrimOp $ Arithmetic $ DivInteger tr x y
 
 mod :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-mod tr x y = exprF $ PrimOp $ Arithmetic $ ModInteger tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+mod tr x y = intra $ PrimOp $ Arithmetic $ ModInteger tr x y
 
 neg :: TypeRep ('Integer 'Signed width)
-    -> Expr ExprF val f ('Integer 'Signed width)
-    -> Expr ExprF val f ('Integer 'Signed width)
-neg tr x = exprF $ PrimOp $ Arithmetic $ NegInteger tr x
+    -> AST ExprF i ('Integer 'Signed width)
+    -> AST ExprF i ('Integer 'Signed width)
+neg tr x = intra $ PrimOp $ Arithmetic $ NegInteger tr x
 
 andB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-andB tr x y = exprF $ PrimOp $ Bitwise $ AndB tr x y
+     -> AST ExprF i ('Integer signedness width)
+     -> AST ExprF i ('Integer signedness width)
+     -> AST ExprF i ('Integer signedness width)
+andB tr x y = intra $ PrimOp $ Bitwise $ AndB tr x y
 
 orB :: TypeRep ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-    -> Expr ExprF val f ('Integer signedness width)
-orB tr x y = exprF $ PrimOp $ Bitwise $ OrB tr x y
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+    -> AST ExprF i ('Integer signedness width)
+orB tr x y = intra $ PrimOp $ Bitwise $ OrB tr x y
 
 xorB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-xorB tr x y = exprF $ PrimOp $ Bitwise $ XOrB tr x y
+     -> AST ExprF i ('Integer signedness width)
+     -> AST ExprF i ('Integer signedness width)
+     -> AST ExprF i ('Integer signedness width)
+xorB tr x y = intra $ PrimOp $ Bitwise $ XOrB tr x y
 
 notB :: TypeRep ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-     -> Expr ExprF val f ('Integer signedness width)
-notB tr x = exprF $ PrimOp $ Bitwise $ NotB tr x
+     -> AST ExprF i ('Integer signedness width)
+     -> AST ExprF i ('Integer signedness width)
+notB tr x = intra $ PrimOp $ Bitwise $ NotB tr x
 
 shiftL :: TypeRep ('Integer signedness width)
-       -> Expr ExprF val f ('Integer signedness width)
-       -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
-       -> Expr ExprF val f ('Integer signedness width)
-shiftL tr x y = exprF $ PrimOp $ Bitwise $ ShiftL tr x y
+       -> AST ExprF i ('Integer signedness width)
+       -> AST ExprF i ('Integer 'Unsigned 'Eight)
+       -> AST ExprF i ('Integer signedness width)
+shiftL tr x y = intra $ PrimOp $ Bitwise $ ShiftL tr x y
 
 shiftR :: TypeRep ('Integer signedness width)
-       -> Expr ExprF val f ('Integer signedness width)
-       -> Expr ExprF val f ('Integer 'Unsigned 'Eight)
-       -> Expr ExprF val f ('Integer signedness width)
-shiftR tr x y = exprF $ PrimOp $ Bitwise $ ShiftR tr x y
+       -> AST ExprF i ('Integer signedness width)
+       -> AST ExprF i ('Integer 'Unsigned 'Eight)
+       -> AST ExprF i ('Integer signedness width)
+shiftR tr x y = intra $ PrimOp $ Bitwise $ ShiftR tr x y
