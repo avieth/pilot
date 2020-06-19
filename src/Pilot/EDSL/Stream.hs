@@ -42,12 +42,12 @@ module Pilot.EDSL.Stream
 import Prelude hiding (drop)
 import qualified Data.Kind as Haskell (Type)
 
-import Pilot.EDSL.Expr.Initial as Initial
+import Pilot.EDSL.Expr as Expr
 import Pilot.Types.Fun as Fun
 import Pilot.Types.Nat
 import Pilot.Types.Represented
 
-type Streamwise point static = AST (ExprF point static)
+type Streamwise point static = Expr (ExprF point static)
 
 data Type t where
   -- | A stream with a given number of "prefix" values (memory).
@@ -133,30 +133,30 @@ constant
      Rep p t
   -> NatRep n
   -> pexpr t
-  -> AST (ExprF pexpr static) i ('Stream n t)
-constant trep nrep p = intra $ ConstantStream trep nrep p
+  -> Expr (ExprF pexpr static) i ('Stream n t)
+constant trep nrep p = edsl $ ConstantStream trep nrep p
 
 drop :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
         Rep p t
      -> NatRep ('S n)
-     -> AST (ExprF pexpr static) i ('Stream ('S n) t)
-     -> AST (ExprF pexpr static) i ('Stream     n  t)
-drop trep nrep s = intra $ DropStream trep nrep s
+     -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
+     -> Expr (ExprF pexpr static) i ('Stream     n  t)
+drop trep nrep s = edsl $ DropStream trep nrep s
 
 shift :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
          Rep p t
       -> NatRep ('S n)
-      -> AST (ExprF pexpr static) i ('Stream ('S n) t)
-      -> AST (ExprF pexpr static) i ('Stream     n  t)
-shift trep nrep s = intra $ ShiftStream trep nrep s
+      -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
+      -> Expr (ExprF pexpr static) i ('Stream     n  t)
+shift trep nrep s = edsl $ ShiftStream trep nrep s
 
 memory :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
           Rep p t
        -> NatRep ('S n)
        -> Vec ('S n) (static t)
-       -> (AST (ExprF pexpr static) i ('Stream n t) -> AST (ExprF pexpr static) i ('Stream 'Z t))
-       -> AST (ExprF pexpr static) i ('Stream ('S n) t)
-memory trep nrep inits k = intra $ MemoryStream trep nrep inits k
+       -> (Expr (ExprF pexpr static) i ('Stream n t) -> Expr (ExprF pexpr static) i ('Stream 'Z t))
+       -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
+memory trep nrep inits k = edsl $ MemoryStream trep nrep inits k
 
 -- TODO remove? probably not useful. 'lift' seems like a better type from a
 -- usability perspective.
@@ -165,9 +165,9 @@ liftF_ :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n args 
        -> Rep p r
        -> NatRep n
        -> (Args pexpr args -> pexpr r)
-       -> Args (AST (ExprF pexpr static) i) (MapArgs ('Stream n) args)
-       -> AST (ExprF pexpr static) i ('Stream n r)
-liftF_ argsrep trep nrep f args = intra $ LiftStream argsrep trep nrep f args
+       -> Args (Expr (ExprF pexpr static) i) (MapArgs ('Stream n) args)
+       -> Expr (ExprF pexpr static) i ('Stream n r)
+liftF_ argsrep trep nrep f args = edsl $ LiftStream argsrep trep nrep f args
 
 -- | Any first-order function over expressions can be "lifted" over streams:
 -- all of the arguments and the result become streams.
@@ -179,9 +179,9 @@ liftF :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n args i
       -> Rep p r
       -> NatRep n
       -> Fun pexpr ('Sig args r)
-      -> Fun (AST (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
+      -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
 liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
-  intra $ LiftStream argsrep trep nrep (Fun.apply f) sargs
+  edsl $ LiftStream argsrep trep nrep (Fun.apply f) sargs
 
 -- | "Lift" the argument type reps into streams for a given prefix length.
 mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)
@@ -197,31 +197,31 @@ mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep ar
 
 ap :: (KnownArgs args, Auto r, Auto n)
    => Fun pexpr ('Sig args r)
-   -> Fun (AST (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
+   -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
 ap f = liftF autoArgs auto auto f
 
-(<#>) :: Fun (AST (ExprF pexpr static) i) ('Sig (t ': ts) r)
-      -> AST (ExprF pexpr static) i t
-      -> Fun (AST (ExprF pexpr static) i) ('Sig ts r)
+(<#>) :: Fun (Expr (ExprF pexpr static) i) ('Sig (t ': ts) r)
+      -> Expr (ExprF pexpr static) i t
+      -> Fun (Expr (ExprF pexpr static) i) ('Sig ts r)
 (<#>) = Fun.at
 
-arg :: AST expr i t
-    -> Args (AST expr i) ts
-    -> Args (AST expr i) (t ': ts)
+arg :: Expr expr i t
+    -> Args (Expr expr i) ts
+    -> Args (Expr expr i) (t ': ts)
 arg e = Arg e
 
 -- NB: only the left is universally quantified on the tail. The right, in
 -- repeated right-associative applications, will have a particular tail type.
-(<&>) :: (forall xs . Args (AST expr i) xs -> Args (AST expr i) (t ': xs))
-      -> (Args (AST expr i) ts -> Args (AST expr i) ts')
-      -> (Args (AST expr i) ts -> Args (AST expr i) (t ': ts'))
+(<&>) :: (forall xs . Args (Expr expr i) xs -> Args (Expr expr i) (t ': xs))
+      -> (Args (Expr expr i) ts -> Args (Expr expr i) ts')
+      -> (Args (Expr expr i) ts -> Args (Expr expr i) (t ': ts'))
 (<&>) left right args = left (right args)
 
 infixr 2 <&>
 
-(<@>) :: Fun (AST (ExprF pexpr static) i) ('Sig args r)
-      -> (Args (AST (ExprF pexpr static) i) '[] -> Args (AST (ExprF pexpr static) i) args)
-      -> AST (ExprF pexpr static) i r
+(<@>) :: Fun (Expr (ExprF pexpr static) i) ('Sig args r)
+      -> (Args (Expr (ExprF pexpr static) i) '[] -> Args (Expr (ExprF pexpr static) i) args)
+      -> Expr (ExprF pexpr static) i r
 (<@>) f xs = Fun.apply f (xs Args)
 
 infix 1 <@>

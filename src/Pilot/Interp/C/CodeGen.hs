@@ -17,7 +17,10 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Pilot.Interp.C.CodeGen
-  ( Point (..)
+  ( StreamExpr
+  , StreamExprF
+
+  , Point (..)
   , pointPtr
   , pointTypeSpec
   , Stream (..)
@@ -29,8 +32,6 @@ module Pilot.Interp.C.CodeGen
   , streamExprAtOffset
   , streamExprNow
   , streamArgsToPointArgs
-
-  , CTypeInfo (..)
 
   , CodeGen (..)
   , evalCodeGen
@@ -72,6 +73,8 @@ module Pilot.Interp.C.CodeGen
   , staticMemoryStreamUpdateArrayBlockItem
 
   , prettyPrint
+
+  , CTypeInfo (..)
   ) where
 
 import qualified Data.Kind as Haskell (Type)
@@ -102,7 +105,20 @@ import Pilot.Types.Fun
 import Pilot.Types.Logic
 import Pilot.Types.Nat
 
+import qualified Pilot.Interp.Pure as Pure (Point)
 import Pilot.Interp.C.AST
+
+-- | We can only run stream expressions which unify with this.
+-- NB: the "static" part must unify with the "pure" interpreter types. These
+-- points can be and are precomputed at code generation time.
+type StreamExpr s = Expr
+  (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point))
+  (Stream s)
+
+type StreamExprF s = Stream.ExprF
+  (Expr Point.ExprF (Point s))
+  (Expr Point.ExprF Pure.Point)
+  (StreamExpr s)
 
 -- | The C type specifier, and whether it should be taken through a pointer.
 data CTypeInfo = CTypeInfo
@@ -188,7 +204,10 @@ staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
   modulus :: C.Const
   modulus = C.ConstInt $ C.IntHex (hex_const (ssvSize ssv)) Nothing
 
-streamExprAtOffset :: Offset n -> StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
+streamExprAtOffset
+  :: Offset n
+  -> StreamVal s ('Stream.Stream n t)
+  -> CodeGen s C.CondExpr
 streamExprAtOffset off (StreamValStatic ssv)   = pure $ staticStreamAtOffset (offsetToNatural off) ssv
 streamExprAtOffset off (StreamValNonStatic cs) = nonStaticStreamAtOffset off cs
 
@@ -199,10 +218,10 @@ streamArgToPointArg
   :: Offset n
   -> NatRep n
   -> Stream s ('Stream.Stream n t)
-  -> Expr Point.ExprF (Point s) (CodeGen s) t
-streamArgToPointArg offset nrep stream = Expr $ Pilot.EDSL.Expr.special $ do
+  -> CodeGen s (Expr Point.ExprF (Point s) t)
+streamArgToPointArg offset nrep stream = do
   expr <- streamExprAtOffset offset (streamVal stream)
-  pure $ Point
+  pure $ Pilot.EDSL.Expr.value $ Point
     { pointExpr      = expr
     , pointTypeRep   = case streamTypeRep stream of
         Stream.Stream_t _ trep -> trep
@@ -214,11 +233,12 @@ streamArgsToPointArgs
   -> NatRep n
   -> Args Point.TypeRep args
   -> Args (Stream s) (MapArgs ('Stream.Stream n) args)
-  -> Args (Expr Point.ExprF (Point s) (CodeGen s)) args
-streamArgsToPointArgs offset nrep Args              Args           = Args
-streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = Arg
-  (streamArgToPointArg   offset nrep arg)
-  (streamArgsToPointArgs offset nrep argsrep args)
+  -> CodeGen s (Args (Expr Point.ExprF (Point s)) args)
+streamArgsToPointArgs offset nrep Args              Args           = pure Args
+streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = do
+  a  <- streamArgToPointArg   offset nrep arg
+  as <- streamArgsToPointArgs offset nrep argsrep args
+  pure $ Arg a as
 
 -- | A monad to ease the expression of code generation, which carries some
 -- state and may exit early with error cases.
@@ -420,7 +440,7 @@ staticMemoryArrayInits (cexpr NE.:| []) = C.InitBase
   Nothing
   (C.InitExpr (C.AssignCond cexpr))
 staticMemoryArrayInits (cexpr NE.:| (cexpr' : cexprs)) = C.InitCons
-  (staticMemoryArrayInits (cexpr NE.:| cexprs))
+  (staticMemoryArrayInits (cexpr' NE.:| cexprs))
   Nothing
   (C.InitExpr (C.AssignCond cexpr))
 

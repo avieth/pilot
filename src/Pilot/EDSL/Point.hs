@@ -95,6 +95,12 @@ module Pilot.EDSL.Point
 
   , cmp
 
+  , typeOfExpr
+  , exprFTypeRep
+  , arithOpFTypeRep
+  , bitOpFTypeRep
+  , relOpFTypeRep
+
   , Unit
   , unit_t
   , unit
@@ -140,11 +146,11 @@ import qualified Data.Int as Haskell (Int8, Int16, Int32, Int64)
 import qualified Data.Kind as Haskell (Type)
 import qualified Data.Word as Haskell (Word8, Word16, Word32, Word64)
 
-import Pilot.EDSL.Expr.Initial as Initial
+import Pilot.EDSL.Expr as Expr
 import Pilot.Types.Represented
 import Pilot.Types.Logic
 
-type Pointwise = AST ExprF
+type Pointwise = Expr ExprF
 
 -- | Types for the pointwise EDSL: various numeric types, with finite sums and
 -- products. As usual, the empty product is unit, and the empty sum is void.
@@ -405,6 +411,11 @@ data PrimOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   Bitwise    :: BitwiseOpF    expr t -> PrimOpF expr t
   Relative   :: RelativeOpF   expr t -> PrimOpF expr t
 
+primOpFTypeRep :: PrimOpF expr t -> TypeRep t
+primOpFTypeRep (Arithmetic aop) = arithOpFTypeRep aop
+primOpFTypeRep (Bitwise    bop) = bitOpFTypeRep bop
+primOpFTypeRep (Relative   rop) = relOpFTypeRep rop
+
 data ArithmeticOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   AddInteger :: TypeRep ('Integer signedness width)
              -> expr ('Integer signedness width)
@@ -429,6 +440,14 @@ data ArithmeticOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   NegInteger :: TypeRep ('Integer 'Signed width)
              -> expr ('Integer 'Signed width)
              -> ArithmeticOpF expr ('Integer 'Signed width)
+
+arithOpFTypeRep :: ArithmeticOpF expr t -> TypeRep t
+arithOpFTypeRep (AddInteger trep _ _) = trep
+arithOpFTypeRep (SubInteger trep _ _) = trep
+arithOpFTypeRep (MulInteger trep _ _) = trep
+arithOpFTypeRep (DivInteger trep _ _) = trep
+arithOpFTypeRep (ModInteger trep _ _) = trep
+arithOpFTypeRep (NegInteger trep _)   = trep
 
 -- | Bitwise operations are permitted on all integral types. TODO maybe this
 -- is not ideal. Should we give bit types which do not allow for arithmetic,
@@ -458,6 +477,14 @@ data BitwiseOpF (expr :: Type -> Haskell.Type) (t :: Type) where
          -> expr ('Integer 'Unsigned 'Eight)
          -> BitwiseOpF expr ('Integer signedness width)
 
+bitOpFTypeRep :: BitwiseOpF expr t -> TypeRep t
+bitOpFTypeRep (AndB   trep _ _) = trep
+bitOpFTypeRep (OrB    trep _ _) = trep
+bitOpFTypeRep (XOrB   trep _ _) = trep
+bitOpFTypeRep (NotB   trep _)   = trep
+bitOpFTypeRep (ShiftL trep _ _) = trep
+bitOpFTypeRep (ShiftR trep _ _) = trep
+
 data RelativeOpF (expr :: Type -> Haskell.Type) (t :: Type) where
   Cmp :: TypeRep ('Integer signedness width)
       -> TypeRep r
@@ -467,6 +494,9 @@ data RelativeOpF (expr :: Type -> Haskell.Type) (t :: Type) where
       -> expr r -- ^ Equal
       -> expr r -- ^ First greater than second
       -> RelativeOpF expr r
+
+relOpFTypeRep :: RelativeOpF expr t -> TypeRep t
+relOpFTypeRep (Cmp _ trep _ _ _ _ _) = trep
 
 -- | Expressions in the pointwise EDSL. The `f` parameter represents the
 -- _target_ or object language, for instance generated C code, or an in-Haskell
@@ -481,7 +511,9 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
 
   -- | An unchecked cast may be done whenver it's guaranteed to fit into the
   -- result type. No sign change is possible.
-  UncheckedCastOp :: SignednessRep signedness
+  UncheckedCastOp :: TypeRep ('Integer signedness w1)
+                  -> TypeRep ('Integer signedness w2)
+                  -> SignednessRep signedness
                   -> UncheckedCast w1 w2
                   -> expr ('Integer signedness w1)
                   -> ExprF expr ('Integer signedness w2)
@@ -502,21 +534,32 @@ data ExprF (expr :: Type -> Haskell.Type) (t :: Type) where
                -> ExprF expr ('Product fields)
 
   IntroSum     :: TypeRep ('Sum variants)
-               -> TypeRep variant
                -> Any expr variants variant
                -> ExprF expr ('Sum variants)
 
   ElimProduct :: TypeRep ('Product fields)
-              -> TypeRep field
-              -> Any Selector fields field
               -> expr ('Product fields)
+              -> Any Selector fields field
               -> ExprF expr field
 
+  -- TODO why is sum elimination so special? It's not symmetric with product
+  -- elimination at all.
   ElimSum     :: TypeRep ('Sum variants)
               -> TypeRep r
               -> expr ('Sum variants)
               -> All (Case expr r) variants
               -> ExprF expr r
+
+exprFTypeRep :: ExprF expr t -> TypeRep t
+exprFTypeRep (IntroInteger    trep _)       = trep
+exprFTypeRep (PrimOp          pop)          = primOpFTypeRep pop
+exprFTypeRep (UncheckedCastOp _ trep _ _ _) = trep
+exprFTypeRep (CheckedCastOp   _ trep _)     = maybe_t trep
+exprFTypeRep (IntroProduct    trep _)       = trep
+exprFTypeRep (IntroSum        trep _)       = trep
+exprFTypeRep (ElimSum         _ trep _ _)   = trep
+exprFTypeRep (ElimProduct (Product_t fields) _ selector) = case oneOf fields selector of
+  P field _ -> field
 
 data Selector (t :: k) where
   Selector :: Selector t
@@ -536,6 +579,20 @@ allCases
   -> All TypeRep ts
   -> All (Any (Case f r) ts) ts
 allCases f = forAll (\trep -> Case trep (f trep))
+
+typeOfExpr
+  :: forall val t .
+     (forall x . val x -> TypeRep x)
+  -> Expr ExprF val t
+  -> TypeRep t
+typeOfExpr typeOfVal = evalExpr typeOfPoint typeOfVal typeOfLet
+  where
+
+  typeOfPoint :: forall x . ExprF (Expr ExprF val) x -> TypeRep x
+  typeOfPoint = exprFTypeRep
+
+  typeOfLet :: forall x y . Expr ExprF val x -> (Expr ExprF val x -> Expr ExprF val y) -> TypeRep y
+  typeOfLet x k = typeOfExpr typeOfVal (k x)
 
 -- Some examples of 'Type's and 'TypeRep's
 
@@ -579,8 +636,8 @@ unit_t :: TypeRep Unit
 unit_t = Product_t All
 
 -- | An empty product can be introduced, but it cannot be eliminated.
-unit :: AST ExprF i Unit
-unit = intra $ IntroProduct unit_t All
+unit :: Expr ExprF i Unit
+unit = edsl $ IntroProduct unit_t All
 
 type Void = 'Sum '[]
 
@@ -588,8 +645,8 @@ void_t :: TypeRep Void
 void_t = Sum_t All
 
 -- | An empty sum can be eliminated, but it cannot be introduced.
-absurd :: TypeRep x -> AST ExprF i Void -> AST ExprF i x
-absurd x_t impossible = intra $ ElimSum void_t x_t impossible All
+absurd :: TypeRep x -> Expr ExprF i Void -> Expr ExprF i x
+absurd x_t impossible = edsl $ ElimSum void_t x_t impossible All
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
 -- stands for true. An interpreter may need to know that. A C backend could,
@@ -624,41 +681,41 @@ either_t s t = Sum_t (And s $ And t $ All)
 
 pair :: TypeRep a
      -> TypeRep b
-     -> AST ExprF i a
-     -> AST ExprF i b
-     -> AST ExprF i (Pair a b)
-pair ta tb va vb = intra $ IntroProduct (pair_t ta tb)
+     -> Expr ExprF i a
+     -> Expr ExprF i b
+     -> Expr ExprF i (Pair a b)
+pair ta tb va vb = edsl $ IntroProduct (pair_t ta tb)
   (And va $
    And vb $
    All)
 
 fst :: TypeRep a
     -> TypeRep b
-    -> AST ExprF i (Pair a b)
-    -> AST ExprF i a
-fst ta tb vp = intra $ ElimProduct (pair_t ta tb) ta (Any Selector) vp
+    -> Expr ExprF i (Pair a b)
+    -> Expr ExprF i a
+fst ta tb vp = edsl $ ElimProduct (pair_t ta tb) vp (Any Selector)
 
 snd :: TypeRep a
     -> TypeRep b
-    -> AST ExprF i (Pair a b)
-    -> AST ExprF i b
-snd ta tb vp = intra $ ElimProduct (pair_t ta tb) tb (Or $ Any Selector) vp
+    -> Expr ExprF i (Pair a b)
+    -> Expr ExprF i b
+snd ta tb vp = edsl $ ElimProduct (pair_t ta tb) vp (Or $ Any Selector)
 
-just :: TypeRep t -> AST ExprF i t -> AST ExprF i (Maybe t)
-just tt t = intra $ IntroSum (maybe_t tt) tt (Or (Any t))
+just :: TypeRep t -> Expr ExprF i t -> Expr ExprF i (Maybe t)
+just tt t = edsl $ IntroSum (maybe_t tt) (Or (Any t))
 
-nothing :: TypeRep t -> AST ExprF i (Maybe t)
-nothing tt = intra $ IntroSum (maybe_t tt) unit_t (Any unit)
+nothing :: TypeRep t -> Expr ExprF i (Maybe t)
+nothing tt = edsl $ IntroSum (maybe_t tt) (Any unit)
 
 elim_maybe
   :: forall expr i t r .
      TypeRep t
   -> TypeRep r
-  ->  AST ExprF i (Maybe t)
-  -> (AST ExprF i Unit -> AST ExprF i r)
-  -> (AST ExprF i t    -> AST ExprF i r)
-  ->  AST ExprF i r
-elim_maybe trt trr v cNothing cJust = intra $ ElimSum trs trr
+  ->  Expr ExprF i (Maybe t)
+  -> (Expr ExprF i Unit -> Expr ExprF i r)
+  -> (Expr ExprF i t    -> Expr ExprF i r)
+  ->  Expr ExprF i r
+elim_maybe trt trr v cNothing cJust = edsl $ ElimSum trs trr
   v
   (And (Case unit_t cNothing) $
    And (Case trt    cJust   ) $
@@ -669,47 +726,47 @@ elim_maybe trt trr v cNothing cJust = intra $ ElimSum trs trr
 left
   :: TypeRep a
   -> TypeRep b
-  -> AST ExprF i a
-  -> AST ExprF i (Either a b)
-left ta tb va = intra $ IntroSum (either_t ta tb) ta (Any va)
+  -> Expr ExprF i a
+  -> Expr ExprF i (Either a b)
+left ta tb va = edsl $ IntroSum (either_t ta tb) (Any va)
 
 right
   :: TypeRep a
   -> TypeRep b
-  -> AST ExprF i b
-  -> AST ExprF i (Either a b)
-right ta tb vb = intra $ IntroSum (either_t ta tb) tb (Or (Any vb))
+  -> Expr ExprF i b
+  -> Expr ExprF i (Either a b)
+right ta tb vb = edsl $ IntroSum (either_t ta tb) (Or (Any vb))
 
 elim_either
   :: forall a b c i .
      TypeRep a
   -> TypeRep b
   -> TypeRep c
-  ->  AST ExprF i (Either a b)
-  -> (AST ExprF i a -> AST ExprF i c)
-  -> (AST ExprF i b -> AST ExprF i c)
-  ->  AST ExprF i c
-elim_either tra trb trc v cLeft cRight = intra $ ElimSum
+  ->  Expr ExprF i (Either a b)
+  -> (Expr ExprF i a -> Expr ExprF i c)
+  -> (Expr ExprF i b -> Expr ExprF i c)
+  ->  Expr ExprF i c
+elim_either tra trb trc v cLeft cRight = edsl $ ElimSum
   (either_t tra trb) trc
   v
   (And (Case tra cLeft ) $
    And (Case trb cRight) $
    All)
 
-false :: AST ExprF i Boolean
-false = intra $ IntroSum boolean_t unit_t (Any $ unit)
+false :: Expr ExprF i Boolean
+false = edsl $ IntroSum boolean_t (Any $ unit)
 
-true :: AST ExprF i Boolean
-true = intra $ IntroSum boolean_t unit_t (Or $ Any $ unit)
+true :: Expr ExprF i Boolean
+true = edsl $ IntroSum boolean_t (Or $ Any $ unit)
 
 elim_boolean
   :: forall r i .
      TypeRep r
-  -> AST ExprF i Boolean
-  -> AST ExprF i r
-  -> AST ExprF i r
-  -> AST ExprF i r
-elim_boolean trep vb cFalse cTrue = intra $ ElimSum boolean_t trep
+  -> Expr ExprF i Boolean
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+elim_boolean trep vb cFalse cTrue = edsl $ ElimSum boolean_t trep
   vb
   (And (Case unit_t (\_ -> cFalse)) $
    And (Case unit_t (\_ -> cTrue)) $
@@ -718,43 +775,43 @@ elim_boolean trep vb cFalse cTrue = intra $ ElimSum boolean_t trep
 if_else
   :: forall r i .
      TypeRep r
-  -> AST ExprF i Boolean
-  -> AST ExprF i r
-  -> AST ExprF i r
-  -> AST ExprF i r
+  -> Expr ExprF i Boolean
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+  -> Expr ExprF i r
 if_else = elim_boolean
 
-and :: AST ExprF i Boolean
-    -> AST ExprF i Boolean
-    -> AST ExprF i Boolean
+and :: Expr ExprF i Boolean
+    -> Expr ExprF i Boolean
+    -> Expr ExprF i Boolean
 and a b = if_else boolean_t a false b
 
-or :: AST ExprF i Boolean
-   -> AST ExprF i Boolean
-   -> AST ExprF i Boolean
+or :: Expr ExprF i Boolean
+   -> Expr ExprF i Boolean
+   -> Expr ExprF i Boolean
 or a b = if_else boolean_t a b true
 
-not :: AST ExprF i Boolean -> AST ExprF i Boolean
+not :: Expr ExprF i Boolean -> Expr ExprF i Boolean
 not a = if_else boolean_t a true false
 
-lt :: AST ExprF i Ordering
-lt = intra $ IntroSum ordering_t unit_t (Any $ unit)
+lt :: Expr ExprF i Ordering
+lt = edsl $ IntroSum ordering_t (Any $ unit)
 
-eq :: AST ExprF i Ordering
-eq = intra $ IntroSum ordering_t unit_t (Or $ Any $ unit)
+eq :: Expr ExprF i Ordering
+eq = edsl $ IntroSum ordering_t (Or $ Any $ unit)
 
-gt :: AST ExprF i Ordering
-gt = intra $ IntroSum ordering_t unit_t (Or $ Or $ Any $ unit)
+gt :: Expr ExprF i Ordering
+gt = edsl $ IntroSum ordering_t (Or $ Or $ Any $ unit)
 
 elim_ordering
   :: forall r i .
      TypeRep r
-  -> AST ExprF i Ordering
-  -> AST ExprF i r
-  -> AST ExprF i r
-  -> AST ExprF i r
-  -> AST ExprF i r
-elim_ordering trep vo cLt cEq cGt = intra $ ElimSum ordering_t trep
+  -> Expr ExprF i Ordering
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+  -> Expr ExprF i r
+elim_ordering trep vo cLt cEq cGt = edsl $ ElimSum ordering_t trep
   vo
   (And (Case unit_t (\_ -> cLt)) $
    And (Case unit_t (\_ -> cEq)) $ 
@@ -763,108 +820,108 @@ elim_ordering trep vo cLt cEq cGt = intra $ ElimSum ordering_t trep
 
 cmp :: TypeRep ('Integer signedness width)
     -> TypeRep r
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i r -- ^ First less than second
-    -> AST ExprF i r -- ^ Equal
-    -> AST ExprF i r -- ^ First greater than second
-    -> AST ExprF i r
-cmp trep trepr x y cLT cEQ cGT = intra $ PrimOp $ Relative $ Cmp trep trepr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i r -- ^ First less than second
+    -> Expr ExprF i r -- ^ Equal
+    -> Expr ExprF i r -- ^ First greater than second
+    -> Expr ExprF i r
+cmp trep trepr x y cLT cEQ cGT = edsl $ PrimOp $ Relative $ Cmp trep trepr x y
   cLT cEQ cGT
 
 -- NB: we cannot have the typical Haskell list type. Recursive types are not
 -- allowed.
 
-uint8 :: Haskell.Word8 -> AST ExprF i ('Integer 'Unsigned 'Eight)
-uint8 w8 = intra $ IntroInteger uint8_t (UInt8 w8)
+uint8 :: Haskell.Word8 -> Expr ExprF i ('Integer 'Unsigned 'Eight)
+uint8 w8 = edsl $ IntroInteger uint8_t (UInt8 w8)
 
-uint16 :: Haskell.Word16 -> AST ExprF i ('Integer 'Unsigned 'Sixteen)
-uint16 w16 = intra $ IntroInteger uint16_t (UInt16 w16)
+uint16 :: Haskell.Word16 -> Expr ExprF i ('Integer 'Unsigned 'Sixteen)
+uint16 w16 = edsl $ IntroInteger uint16_t (UInt16 w16)
 
-uint32 :: Haskell.Word32 -> AST ExprF i ('Integer 'Unsigned 'ThirtyTwo)
-uint32 w32 = intra $ IntroInteger uint32_t (UInt32 w32)
+uint32 :: Haskell.Word32 -> Expr ExprF i ('Integer 'Unsigned 'ThirtyTwo)
+uint32 w32 = edsl $ IntroInteger uint32_t (UInt32 w32)
 
-uint64 :: Haskell.Word64 -> AST ExprF i ('Integer 'Unsigned 'SixtyFour)
-uint64 w64 = intra $ IntroInteger uint64_t (UInt64 w64)
+uint64 :: Haskell.Word64 -> Expr ExprF i ('Integer 'Unsigned 'SixtyFour)
+uint64 w64 = edsl $ IntroInteger uint64_t (UInt64 w64)
 
-int8 :: Haskell.Int8 -> AST ExprF i ('Integer 'Signed 'Eight)
-int8 i8 = intra $ IntroInteger int8_t (Int8 i8)
+int8 :: Haskell.Int8 -> Expr ExprF i ('Integer 'Signed 'Eight)
+int8 i8 = edsl $ IntroInteger int8_t (Int8 i8)
 
-int16 :: Haskell.Int16 -> AST ExprF i ('Integer 'Signed 'Sixteen)
-int16 i16 = intra $ IntroInteger int16_t (Int16 i16)
+int16 :: Haskell.Int16 -> Expr ExprF i ('Integer 'Signed 'Sixteen)
+int16 i16 = edsl $ IntroInteger int16_t (Int16 i16)
 
-int32 :: Haskell.Int32 -> AST ExprF i ('Integer 'Signed 'ThirtyTwo)
-int32 i32 = intra $ IntroInteger int32_t (Int32 i32)
+int32 :: Haskell.Int32 -> Expr ExprF i ('Integer 'Signed 'ThirtyTwo)
+int32 i32 = edsl $ IntroInteger int32_t (Int32 i32)
 
-int64 :: Haskell.Int64 -> AST ExprF i ('Integer 'Signed 'SixtyFour)
-int64 i64 = intra $ IntroInteger int64_t (Int64 i64)
+int64 :: Haskell.Int64 -> Expr ExprF i ('Integer 'Signed 'SixtyFour)
+int64 i64 = edsl $ IntroInteger int64_t (Int64 i64)
 
 add :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-add tr x y = intra $ PrimOp $ Arithmetic $ AddInteger tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+add tr x y = edsl $ PrimOp $ Arithmetic $ AddInteger tr x y
 
 sub :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-sub tr x y = intra $ PrimOp $ Arithmetic $ SubInteger tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+sub tr x y = edsl $ PrimOp $ Arithmetic $ SubInteger tr x y
 
 mul :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-mul tr x y = intra $ PrimOp $ Arithmetic $ MulInteger tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+mul tr x y = edsl $ PrimOp $ Arithmetic $ MulInteger tr x y
 
 div :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-div tr x y = intra $ PrimOp $ Arithmetic $ DivInteger tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+div tr x y = edsl $ PrimOp $ Arithmetic $ DivInteger tr x y
 
 mod :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-mod tr x y = intra $ PrimOp $ Arithmetic $ ModInteger tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+mod tr x y = edsl $ PrimOp $ Arithmetic $ ModInteger tr x y
 
 neg :: TypeRep ('Integer 'Signed width)
-    -> AST ExprF i ('Integer 'Signed width)
-    -> AST ExprF i ('Integer 'Signed width)
-neg tr x = intra $ PrimOp $ Arithmetic $ NegInteger tr x
+    -> Expr ExprF i ('Integer 'Signed width)
+    -> Expr ExprF i ('Integer 'Signed width)
+neg tr x = edsl $ PrimOp $ Arithmetic $ NegInteger tr x
 
 andB :: TypeRep ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-andB tr x y = intra $ PrimOp $ Bitwise $ AndB tr x y
+     -> Expr ExprF i ('Integer signedness width)
+     -> Expr ExprF i ('Integer signedness width)
+     -> Expr ExprF i ('Integer signedness width)
+andB tr x y = edsl $ PrimOp $ Bitwise $ AndB tr x y
 
 orB :: TypeRep ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-    -> AST ExprF i ('Integer signedness width)
-orB tr x y = intra $ PrimOp $ Bitwise $ OrB tr x y
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+    -> Expr ExprF i ('Integer signedness width)
+orB tr x y = edsl $ PrimOp $ Bitwise $ OrB tr x y
 
 xorB :: TypeRep ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-xorB tr x y = intra $ PrimOp $ Bitwise $ XOrB tr x y
+     -> Expr ExprF i ('Integer signedness width)
+     -> Expr ExprF i ('Integer signedness width)
+     -> Expr ExprF i ('Integer signedness width)
+xorB tr x y = edsl $ PrimOp $ Bitwise $ XOrB tr x y
 
 notB :: TypeRep ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-     -> AST ExprF i ('Integer signedness width)
-notB tr x = intra $ PrimOp $ Bitwise $ NotB tr x
+     -> Expr ExprF i ('Integer signedness width)
+     -> Expr ExprF i ('Integer signedness width)
+notB tr x = edsl $ PrimOp $ Bitwise $ NotB tr x
 
 shiftL :: TypeRep ('Integer signedness width)
-       -> AST ExprF i ('Integer signedness width)
-       -> AST ExprF i ('Integer 'Unsigned 'Eight)
-       -> AST ExprF i ('Integer signedness width)
-shiftL tr x y = intra $ PrimOp $ Bitwise $ ShiftL tr x y
+       -> Expr ExprF i ('Integer signedness width)
+       -> Expr ExprF i ('Integer 'Unsigned 'Eight)
+       -> Expr ExprF i ('Integer signedness width)
+shiftL tr x y = edsl $ PrimOp $ Bitwise $ ShiftL tr x y
 
 shiftR :: TypeRep ('Integer signedness width)
-       -> AST ExprF i ('Integer signedness width)
-       -> AST ExprF i ('Integer 'Unsigned 'Eight)
-       -> AST ExprF i ('Integer signedness width)
-shiftR tr x y = intra $ PrimOp $ Bitwise $ ShiftR tr x y
+       -> Expr ExprF i ('Integer signedness width)
+       -> Expr ExprF i ('Integer 'Unsigned 'Eight)
+       -> Expr ExprF i ('Integer signedness width)
+shiftR tr x y = edsl $ PrimOp $ Bitwise $ ShiftR tr x y

@@ -30,7 +30,7 @@ import qualified Data.Int as Haskell
 import qualified Data.Word as Haskell
 import Data.List (intercalate)
 
-import Pilot.EDSL.Expr.Initial as Initial
+import Pilot.EDSL.Expr
 import qualified Pilot.EDSL.Point as Point
 import Pilot.EDSL.Point (SignednessRep (..), UncheckedCast (..))
 import qualified Pilot.EDSL.Stream as Stream
@@ -41,7 +41,7 @@ import Pilot.Types.Nat
 import qualified Pilot.Types.Stream as Pure
 
 streamExprToList
-  :: AST (Stream.ExprF (AST Point.ExprF (Terminal Point)) (AST Point.ExprF (Terminal Point))) (Terminal Stream) ('Stream.Stream n t)
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Stream n t)
   -> [Point t]
 streamExprToList expr = streamToList (eval_stream expr)
 
@@ -123,38 +123,38 @@ data Stream (t :: Stream.Type Point.Type) where
 streamToList :: Stream ('Stream.Stream n t) -> [Point t]
 streamToList (Stream stream) = Pure.streamToList stream
 
-eval_point :: AST Point.ExprF (Terminal Point) t -> Point t
-eval_point = evalAST eval_point_expr getTerminal (\x k -> eval_point (k x))
+eval_point :: Expr Point.ExprF Point t -> Point t
+eval_point = evalExpr eval_point_expr id eval_point_let_binding
 
 eval_stream
-  :: AST (Stream.ExprF (AST Point.ExprF (Terminal Point)) (AST Point.ExprF (Terminal Point)))
-         (Terminal Stream) t
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream t
   -> Stream t
-eval_stream = evalAST eval_stream_expr getTerminal (\x k -> eval_stream (k x))
+eval_stream = evalExpr eval_stream_expr id eval_stream_let_binding
 
 stream_to_list
-  :: AST (Stream.ExprF (AST Point.ExprF (Terminal Point)) (AST Point.ExprF (Terminal Point)))
-         (Terminal Stream) ('Stream.Stream n t)
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Stream n t)
   -> [Point t]
 stream_to_list expr = case eval_stream expr of
   Stream st -> Pure.streamToList st
 
-eval_point_expr :: Point.ExprF (AST Point.ExprF (Terminal Point)) t -> Point t
+eval_point_expr :: Point.ExprF (Expr Point.ExprF Point) t -> Point t
 
 eval_point_expr (Point.IntroInteger _ lit)    = eval_point_literal lit
 
 eval_point_expr (Point.PrimOp primop)         = eval_point_primop primop
 
-eval_point_expr (Point.UncheckedCastOp s uc x) =
+eval_point_expr (Point.UncheckedCastOp _ _ s uc x) =
   eval_point_unchecked_castop s uc (eval_point x)
+
+eval_point_expr (Point.CheckedCastOp _ _ _) = error "eval_point_expr not defined for CheckedCastOp"
 
 eval_point_expr (Point.IntroProduct _ fields) = Product $
   mapAll eval_point fields
 
-eval_point_expr (Point.IntroSum _ _ variant)  = Sum $
+eval_point_expr (Point.IntroSum _ variant)    = Sum $
   mapAny eval_point variant
 
-eval_point_expr (Point.ElimProduct _ _ s p)   = select s (eval_point p)
+eval_point_expr (Point.ElimProduct _ p s)   = select s (eval_point p)
   where
   select :: Any f ts t -> Point ('Point.Product ts) -> Point t
   select (Any _) (Product (And t _)) = t
@@ -162,18 +162,14 @@ eval_point_expr (Point.ElimProduct _ _ s p)   = select s (eval_point p)
 
 eval_point_expr (Point.ElimSum _ _ s cs) = cases cs (eval_point s)
   where
-  cases :: All (Point.Case (AST Point.ExprF (Terminal Point)) r) variants
+  cases :: All (Point.Case (Expr Point.ExprF Point) r) variants
         -> Point ('Point.Sum variants)
         -> Point r
   -- To evaluate the case, we need to put the evaluated point back into the
   -- AST, as this is what the Haskell function giving the case branch expects.
   -- But we've already evaluated the thing, we wouldn't want to re-encode it
-  -- in the DSL. No problem: use the "extra" part of the AST.
-  --
-  -- TODO this won't work in the C backend though, or any interpreter in which
-  -- we would like for the EDSL interpreter-specific part to be initial, and
-  -- the target type to be some monad.
-  cases (And (Point.Case _ k) _) (Sum (Any t)) = eval_point (k (extra (Terminal t)))
+  -- in the DSL. No problem: use the "value" constructor of the AST.
+  cases (And (Point.Case _ k) _) (Sum (Any t)) = eval_point (k (value t))
   cases (And _ cs)               (Sum (Or s))  = cases cs (Sum s)
   cases All                      (Sum s)       = case s of {}
 
@@ -190,14 +186,14 @@ eval_point_literal (Point.Int32 w)  = Int32 w
 eval_point_literal (Point.Int64 w)  = Int64 w
 
 eval_point_primop
-  :: Point.PrimOpF (AST Point.ExprF (Terminal Point)) t
+  :: Point.PrimOpF (Expr Point.ExprF Point) t
   -> Point t
 eval_point_primop (Point.Arithmetic arithop) = eval_point_arithop arithop
 eval_point_primop (Point.Bitwise bitop)      = eval_point_bitop bitop
 eval_point_primop (Point.Relative relop)     = eval_point_relop relop
 
 eval_point_arithop
-  :: Point.ArithmeticOpF (AST Point.ExprF (Terminal Point)) t
+  :: Point.ArithmeticOpF (Expr Point.ExprF Point) t
   -> Point t
 
 eval_point_arithop (Point.AddInteger _ x y) = lift_integral_2 (+) vx vy
@@ -228,7 +224,7 @@ eval_point_arithop (Point.ModInteger _ x y) = lift_integral_2 mod vx vy
 eval_point_arithop (Point.NegInteger _ x) = lift_integral_1 negate (eval_point x)
 
 eval_point_bitop
-  :: Point.BitwiseOpF (AST Point.ExprF (Terminal Point)) t
+  :: Point.BitwiseOpF (Expr Point.ExprF Point) t
   -> Point t
 
 eval_point_bitop (Point.AndB _ x y) = lift_bits_2 (.&.) vx vy
@@ -261,7 +257,7 @@ eval_point_bitop (Point.ShiftL _ x y) = lift_bits_1 (flip shiftL i) vx
   i  = case vy of { UInt8 w -> fromIntegral w }
 
 eval_point_relop
-  :: Point.RelativeOpF (AST Point.ExprF (Terminal Point)) t
+  :: Point.RelativeOpF (Expr Point.ExprF Point) t
   -> Point t
 eval_point_relop (Point.Cmp _ _ x y cLT cEQ cGT) = case cmp vx vy of
   LT -> eval_point cLT
@@ -322,9 +318,9 @@ eval_point_unchecked_castop Signed_t Cast_Unchecked_ThirtyTwo_SixtyFour (Int32 i
 eval_stream_expr
   :: forall t .
      Stream.ExprF
-       (AST Point.ExprF (Terminal Point))
-       (AST Point.ExprF (Terminal Point))
-       (AST (Stream.ExprF (AST Point.ExprF (Terminal Point)) (AST Point.ExprF (Terminal Point))) (Terminal Stream))
+       (Expr Point.ExprF Point)
+       (Expr Point.ExprF Point)
+       (Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream)
        t
   -> Stream t
 
@@ -344,12 +340,12 @@ eval_stream_expr (Stream.LiftStream argsrep _ nrep f args) = Stream $
     :: forall proxy args m .
        Args proxy args
     -> Args Stream (MapArgs ('Stream.Stream m) args)
-    -> Args (Pure.Stream (AST Point.ExprF (Terminal Point)) m) args
+    -> Args (Pure.Stream (Expr Point.ExprF Point) m) args
   make_args Args            Args                   = Args
   make_args (Arg _ argsrep) (Arg (Stream st) args) = Arg
     -- Here, as in case elimination for points, we put the already-evaluated
     -- points back into the AST by way of the "extra" part.
-    (Pure.streamMap (extra . Terminal) st)
+    (Pure.streamMap value st)
     (make_args argsrep args)
 
 eval_stream_expr (Stream.DropStream _ nrep expr) = case eval_stream expr of
@@ -366,7 +362,7 @@ eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S m)
   pts = vecMap eval_point inits
 
   suffix :: Pure.Stream Point 'Z s
-  suffix = case eval_stream (k (extra (Terminal (Stream shifted)))) of
+  suffix = case eval_stream (k (value (Stream shifted))) of
     Stream s -> s
 
   -- The continuation `k` does not get access to the full prefix, we need to
@@ -379,3 +375,16 @@ eval_stream_expr (Stream.MemoryStream (_ :: Point.TypeRep s) (_ :: NatRep ('S m)
 
   stream :: Pure.Stream Point ('S m) s
   stream = Pure.streamFromInitVec pts suffix
+
+eval_point_let_binding
+  ::  Expr Point.ExprF Point x
+  -> (Expr Point.ExprF Point x -> Expr Point.ExprF Point t)
+  -> Point t
+eval_point_let_binding x k = eval_point (k x)
+
+eval_stream_let_binding
+  ::  Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream x
+  -> (Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream x ->
+      Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream t)
+  -> Stream t
+eval_stream_let_binding x k = eval_stream (k x)

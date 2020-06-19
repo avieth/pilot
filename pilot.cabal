@@ -18,6 +18,9 @@ library
                        Pilot.EDSL.Point
                        Pilot.EDSL.Stream
 
+                       Pilot.EDSL.Expr.Bind
+
+                       Pilot.Interp.Exec
                        Pilot.Interp.Pure
 
                        Pilot.Interp.C

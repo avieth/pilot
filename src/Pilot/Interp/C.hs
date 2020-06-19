@@ -15,8 +15,11 @@ module Pilot.Interp.C
   , Stream
   , Point
   , module Util
+  , StreamExpr
+  , StreamExprF
   ) where
 
 import Pilot.Interp.C.CodeGen
 import Pilot.Interp.C.IO as IO
 import Pilot.Interp.C.Util as Util
+import Pilot.Interp.C.CodeGen (StreamExpr, StreamExprF)

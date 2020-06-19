@@ -15,18 +15,22 @@ module Pilot.Interp.C.Util
   , codeGenToFile
   , writePointExpr
   , writeStreamExpr
+  , writeStreamExec
   ) where
 
 import Control.Exception (throwIO)
 
 import Pilot.EDSL.Expr
 import qualified Pilot.EDSL.Stream as EDSL
+import qualified Pilot.EDSL.Stream as Stream
 import qualified Pilot.EDSL.Point as EDSL
 import qualified Pilot.EDSL.Point as Point
 
 import Pilot.Types.Represented
 import Pilot.Types.Nat
 
+import Pilot.Interp.Exec
+import qualified Pilot.Interp.Pure as Pure
 import Pilot.Interp.C.CodeGen
 import Pilot.Interp.C.Eval
 
@@ -61,7 +65,8 @@ writePointExpr
   :: (EDSL.KnownType t)
   => String
   -> Bool
-  -> Expr Point.ExprF (Point s) (CodeGen s) t -> IO ()
+  -> Expr Point.ExprF (Point s) t
+  -> IO ()
 writePointExpr fp b expr = writeStreamExpr fp b (EDSL.constant auto Z_t expr)
 
 writeStreamExpr
@@ -70,5 +75,19 @@ writeStreamExpr
   -> StreamExpr s ('EDSL.Stream n x)
   -> IO ()
 writeStreamExpr fp b expr = codeGenToFile fp opts (eval_stream expr)
+  where
+  opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }
+
+writeStreamExec
+  :: String
+  -> Bool
+  -> Exec (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point))
+          (Stream s)
+          (CodeGen s)
+          -- TODO should not need this. Translation unit generation should not
+          -- demand an expression at the end.
+          (Stream s ('EDSL.Stream n x))
+  -> IO ()
+writeStreamExec fp b exec = codeGenToFile fp opts (runExec exec eval_stream)
   where
   opts = CodeGenOptions { cgoCompoundTypeTreatment = if b then Shared else NotShared }

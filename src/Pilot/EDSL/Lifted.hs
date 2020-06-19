@@ -50,8 +50,8 @@ lift = Lifted
 unlift :: Lifted f t -> f (EmbedT domain t)
 unlift (Lifted f) = f
 
-liftExpr :: Expr edsl expr f (EmbedT domain t) -> Lifted (Expr edsl expr f) t
+liftExpr :: Expr edsl f (EmbedT domain t) -> Lifted (Expr edsl f) t
 liftExpr = lift
 
-unliftExpr :: Lifted (Expr edsl expr f) t -> Expr edsl expr f (EmbedT domain t)
+unliftExpr :: Lifted (Expr edsl f) t -> Expr edsl f (EmbedT domain t)
 unliftExpr = unlift
