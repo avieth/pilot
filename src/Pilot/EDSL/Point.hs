@@ -649,7 +649,7 @@ absurd :: TypeRep x -> Expr ExprF i Void -> Expr ExprF i x
 absurd x_t impossible = edsl $ ElimSum void_t x_t impossible All
 
 -- | Use a 1 + 1 type for boolean. Important to note that the first disjunct
--- stands for true. An interpreter may need to know that. A C backend could,
+-- stands for false. An interpreter may need to know that. A C backend could,
 -- for instance, represent this as a byte, and use typical logical operators.
 type Boolean = 'Sum '[ Unit, Unit ]
 
@@ -763,8 +763,8 @@ elim_boolean
   :: forall r i .
      TypeRep r
   -> Expr ExprF i Boolean
-  -> Expr ExprF i r
-  -> Expr ExprF i r
+  -> Expr ExprF i r -- false
+  -> Expr ExprF i r -- true
   -> Expr ExprF i r
 elim_boolean trep vb cFalse cTrue = edsl $ ElimSum boolean_t trep
   vb
@@ -772,6 +772,7 @@ elim_boolean trep vb cFalse cTrue = edsl $ ElimSum boolean_t trep
    And (Case unit_t (\_ -> cTrue)) $
    All)
 
+-- | 'elim_boolean' but the true case comes first, in typical if/else style.
 if_else
   :: forall r i .
      TypeRep r
@@ -779,7 +780,7 @@ if_else
   -> Expr ExprF i r
   -> Expr ExprF i r
   -> Expr ExprF i r
-if_else = elim_boolean
+if_else trep b ifTrue ifFalse = elim_boolean trep b ifFalse ifTrue
 
 and :: Expr ExprF i Boolean
     -> Expr ExprF i Boolean
