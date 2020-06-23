@@ -16,6 +16,7 @@ Portability : non-portable (GHC only)
 
 module Pilot.Types.Represented
   ( Represented (..)
+
   , Auto (..)
   , auto
 

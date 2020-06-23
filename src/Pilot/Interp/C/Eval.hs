@@ -117,7 +117,7 @@ stream_drop stream = Stream
   , streamCTypeInfo = streamCTypeInfo stream
   }
   where
-  typeRep :: Stream.TypeRep ('Stream.Stream n t)
+  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Stream n t)
   typeRep = case streamTypeRep stream of
     Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
 
@@ -137,7 +137,7 @@ stream_shift stream = Stream
   , streamCTypeInfo = streamCTypeInfo stream
   }
   where
-  typeRep :: Stream.TypeRep ('Stream.Stream n t)
+  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Stream n t)
   typeRep = case streamTypeRep stream of
     Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
 

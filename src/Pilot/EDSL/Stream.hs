@@ -53,8 +53,11 @@ data Type t where
   -- | A stream with a given number of "prefix" values (memory).
   Stream   :: Nat -> t -> Type t
 
-data TypeRep (t :: Type s) where
-  Stream_t   :: NatRep n -> Rep s t -> TypeRep ('Stream n t)
+instance Represented t => Represented (Type t) where
+  type Rep (Type t) = TypeRep (Rep t)
+
+data TypeRep (rep :: s -> Haskell.Type) (t :: Type s) where
+  Stream_t :: NatRep n -> rep t -> TypeRep rep ('Stream n t)
 
 -- | TODO document
 data ExprF
@@ -184,7 +187,10 @@ liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
   edsl $ LiftStream argsrep trep nrep (Fun.apply f) sargs
 
 -- | "Lift" the argument type reps into streams for a given prefix length.
-mkStreamRep :: NatRep n -> Args (Rep s) ts -> Args TypeRep (MapArgs ('Stream n) ts)
+mkStreamRep
+  :: NatRep n
+  -> Args          rep                       ts
+  -> Args (TypeRep rep) (MapArgs ('Stream n) ts)
 mkStreamRep _    Args            = Args
 mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
 

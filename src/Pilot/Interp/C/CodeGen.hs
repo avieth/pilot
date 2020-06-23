@@ -143,7 +143,7 @@ pointTypeSpec = ctypeSpec . pointCTypeInfo
 -- the pointwise EDSL).
 data Stream s (t :: Stream.Type Point.Type) = Stream
   { streamVal       :: !(StreamVal s t)
-  , streamTypeRep   :: !(Stream.TypeRep t)
+  , streamTypeRep   :: !(Stream.TypeRep Point.TypeRep t)
   , streamCTypeInfo :: !CTypeInfo
   }
 
