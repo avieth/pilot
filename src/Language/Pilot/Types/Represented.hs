@@ -14,7 +14,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Pilot.Types.Represented
+module Language.Pilot.Types.Represented
   ( Represented (..)
 
   , Auto (..)

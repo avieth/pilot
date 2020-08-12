@@ -15,30 +15,30 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Pilot.Types.Nat where
+module Language.Pilot.Types.Nat where
 
 import Numeric.Natural
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
-import Pilot.Types.Represented
+import Language.Pilot.Types.Represented
 
 data Nat where
   S :: Nat -> Nat
   Z :: Nat
 
 data NatRep (n :: Nat) where
-  S_t :: NatRep t -> NatRep ('S t)
-  Z_t :: NatRep 'Z
+  S_Rep :: NatRep t -> NatRep ('S t)
+  Z_Rep :: NatRep 'Z
 
 instance Represented Nat where
   type Rep Nat = NatRep
 
 instance Auto 'Z where
-  repVal _ = Z_t
+  repVal _ = Z_Rep
 
 instance Auto n => Auto ('S n) where
-  repVal _ = S_t (repVal (Proxy :: Proxy n))
+  repVal _ = S_Rep (repVal (Proxy :: Proxy n))
 
 data SomeNatRep where
   SomeNatRep :: NatRep n -> SomeNatRep
@@ -47,24 +47,24 @@ instance Eq SomeNatRep where
   n == m = (n `compare` m) == EQ
 
 instance Ord SomeNatRep where
-  SomeNatRep Z_t     `compare` SomeNatRep Z_t     = EQ
-  SomeNatRep Z_t     `compare` SomeNatRep _       = LT
-  SomeNatRep _       `compare` SomeNatRep Z_t     = GT
-  SomeNatRep (S_t n) `compare` SomeNatRep (S_t m) =
+  SomeNatRep Z_Rep     `compare` SomeNatRep Z_Rep     = EQ
+  SomeNatRep Z_Rep     `compare` SomeNatRep _         = LT
+  SomeNatRep _         `compare` SomeNatRep Z_Rep     = GT
+  SomeNatRep (S_Rep n) `compare` SomeNatRep (S_Rep m) =
     SomeNatRep n `compare` SomeNatRep m
 
 natVal :: SomeNatRep -> Natural
-natVal (SomeNatRep Z_t) = 0
-natVal (SomeNatRep (S_t n)) = 1 + natVal (SomeNatRep n)
+natVal (SomeNatRep Z_Rep) = 0
+natVal (SomeNatRep (S_Rep n)) = 1 + natVal (SomeNatRep n)
 
 class KnownNat (n :: Nat) where
   natRep :: proxy n -> NatRep n
 
 instance KnownNat Z where
-  natRep _ = Z_t
+  natRep _ = Z_Rep
 
 instance KnownNat n => KnownNat (S n) where
-  natRep _ = S_t (natRep (Proxy :: Proxy n))
+  natRep _ = S_Rep (natRep (Proxy :: Proxy n))
 
 type family Plus (n :: Nat) (m :: Nat) :: Nat where
   Plus n Z = n
@@ -160,8 +160,8 @@ vecDropLast (VCons _ VNil)           = VNil
 vecDropLast (VCons v vs@(VCons _ _)) = VCons v (vecDropLast vs)
 
 vecReplicate :: NatRep n -> t -> Vec n t
-vecReplicate Z_t     _ = VNil
-vecReplicate (S_t n) t = VCons t (vecReplicate n t)
+vecReplicate Z_Rep     _ = VNil
+vecReplicate (S_Rep n) t = VCons t (vecReplicate n t)
 
 -- | If we can make a t for any offset up to a given number (including 0)
 -- then we can make a vector of size 1 larger: if n ~ 'Z then we can use
@@ -171,8 +171,8 @@ vecGenerateWithOffset
      NatRep n
   -> (Offset n -> t)
   -> Vec ('S n) t
-vecGenerateWithOffset Z_t     k = VCons (k Current) VNil
-vecGenerateWithOffset (S_t n) k = VCons (k Current) (vecGenerateWithOffset n (k . Next))
+vecGenerateWithOffset Z_Rep     k = VCons (k Current) VNil
+vecGenerateWithOffset (S_Rep n) k = VCons (k Current) (vecGenerateWithOffset n (k . Next))
 
 index :: Index n -> Vec n t -> t
 index Here (VCons t _) = t

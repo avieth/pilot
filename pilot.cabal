@@ -13,40 +13,22 @@ maintainer:          aovieth@gmail.com
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Pilot.EDSL.Expr
-                       Pilot.EDSL.Lifted
-                       Pilot.EDSL.Point
-                       Pilot.EDSL.Stream
+  exposed-modules:     Language.Pilot
+                       Language.Pilot.Expr
+                       Language.Pilot.Meta
+                       Language.Pilot.Object
 
-                       Pilot.EDSL.Expr.Bind
+                       Language.Pilot.Types
+                       Language.Pilot.Types.Nat
+                       Language.Pilot.Types.Represented
 
-                       Pilot.Interp.Exec
-                       Pilot.Interp.Pure
+                       Language.Pilot.Interp.Pure
+                       Language.Pilot.Interp.Pure.PrefixList
+                       Language.Pilot.Interp.Pure.Point
 
-                       Pilot.Interp.C
-                       Pilot.Interp.C.AST
-                       Pilot.Interp.C.CodeGen
-                       Pilot.Interp.C.Eval
-                       Pilot.Interp.C.Iface
-                       Pilot.Interp.C.IO
-                       Pilot.Interp.C.Util
+                       Language.Pilot.Examples
 
-                       Pilot.Language.Types
-
-                       Pilot.Types.Fun
-                       Pilot.Types.Logic
-                       Pilot.Types.Nat
-                       Pilot.Types.Represented
-                       Pilot.Types.Stream
-
-                       Examples
-
-  build-depends:       base,
-                       containers,
-                       language-c99,
-                       language-c99-simple,
-                       pretty,
-                       transformers
+  build-depends:       base
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -fwarn-incomplete-patterns
