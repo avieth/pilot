@@ -24,6 +24,7 @@ module Pilot.EDSL.Lifted
   ( Embed (..)
   , Lifted (..)
   , lift
+  , lift1
   , unlift
   ) where
 
@@ -49,6 +50,10 @@ lift = Lifted
 
 unlift :: Lifted f t -> f (EmbedT domain t)
 unlift (Lifted f) = f
+
+lift1 :: (a (EmbedT domain x) -> b (EmbedT domain y))
+      -> (Lifted a x -> Lifted b y)
+lift1 f = lift . f . unlift
 
 liftExpr :: Expr edsl f (EmbedT domain t) -> Lifted (Expr edsl f) t
 liftExpr = lift

@@ -56,7 +56,7 @@ import Pilot.Interp.C.Eval
 externInput
   :: String
   -> Point.TypeRep t
-  -> Exec edsl (C.Stream s) (C.CodeGen s) (C.Stream s ('Stream.Stream 'Z t))
+  -> Exec edsl (C.Stream s) (C.CodeGen s) (C.Stream s ('Stream.Prefix 'Z t))
 externInput name trep = Exec.impl (codeGenExternInput name trep)
 
 -- | Declare an output of the C program. It will appear as an extern of the
@@ -65,7 +65,7 @@ externInput name trep = Exec.impl (codeGenExternInput name trep)
 -- TODO same TODOs as for externInput.
 externOutput
   :: String
-  -> Stream s ('Stream.Stream 'Z t)
+  -> Stream s ('Stream.Prefix 'Z t)
   -> Exec edsl (C.Stream s) (C.CodeGen s) ()
 externOutput name stream = Exec.impl (codeGenExternOutput name stream)
 
@@ -79,9 +79,9 @@ codeGenExternInput
   :: forall s t .
      String
   -> Point.TypeRep t
-  -> CodeGen s (C.Stream s ('Stream.Stream 'Z t))
+  -> CodeGen s (C.Stream s ('Stream.Prefix 'Z t))
 codeGenExternInput name trep = do
-  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExternInputs
+  exists <- codeGenGets $ isJust . Map.lookup name . cgsExternInputs
   when exists $ codeGenError $ CodeGenDuplicateExternName name
   -- Prefix with "input_" so that it's impossible to clash with names
   -- that we choose internally for other things.
@@ -99,18 +99,18 @@ codeGenExternInput name trep = do
       !cexpr = identIsCondExpr ident
       !stream = Stream
         { streamVal       = StreamValNonStatic (VCons (pure cexpr) VNil)
-        , streamTypeRep   = Stream.Stream_t Z_t trep
+        , streamTypeRep   = Stream.Prefix_t Z_t trep
         , streamCTypeInfo = tinfo
         }
-  CodeGen $ Trans.lift $ modify' $ \cgs ->
+  codeGenModify $ \cgs ->
     cgs { cgsExternInputs = Map.insert name externDeclr (cgsExternInputs cgs) }
   pure stream
 
 -- | Given a stream value, this will assign its value at each frame to an
 -- extern of the given name.
-codeGenExternOutput :: String -> Stream s ('Stream.Stream 'Z t) -> CodeGen s ()
+codeGenExternOutput :: String -> Stream s ('Stream.Prefix 'Z t) -> CodeGen s ()
 codeGenExternOutput name stream = do
-  exists <- CodeGen $ Trans.lift $ gets $ isJust . Map.lookup name . cgsExternOutputs
+  exists <- codeGenGets $ isJust . Map.lookup name . cgsExternOutputs
   when exists $ codeGenError $ CodeGenDuplicateExternName name
   ident <- maybeError
     (CodeGenInvalidExternName name)
@@ -135,5 +135,5 @@ codeGenExternOutput name stream = do
       !assignItem = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $
         C.ExprAssign assignExpr
   addBlockItem assignItem
-  CodeGen $ Trans.lift $ modify' $ \cgs ->
+  codeGenModify $ \cgs ->
     cgs { cgsExternOutputs = Map.insert name externDeclr (cgsExternOutputs cgs) }

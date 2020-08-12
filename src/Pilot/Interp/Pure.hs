@@ -41,7 +41,7 @@ import Pilot.Types.Nat
 import qualified Pilot.Types.Stream as Pure
 
 streamExprToList
-  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Stream n t)
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Prefix n t)
   -> [Point t]
 streamExprToList expr = streamToList (eval_stream expr)
 
@@ -118,9 +118,9 @@ lift_bits_2 f (Int32 x)  (Int32 y)  = Int32  $ f x y
 lift_bits_2 f (Int64 x)  (Int64 y)  = Int64  $ f x y
 
 data Stream (t :: Stream.Type Point.Type) where
-  Stream   :: Pure.Stream Point n t -> Stream ('Stream.Stream n t)
+  Stream   :: Pure.Stream Point n t -> Stream ('Stream.Prefix n t)
 
-streamToList :: Stream ('Stream.Stream n t) -> [Point t]
+streamToList :: Stream ('Stream.Prefix n t) -> [Point t]
 streamToList (Stream stream) = Pure.streamToList stream
 
 eval_point :: Expr Point.ExprF Point t -> Point t
@@ -132,7 +132,7 @@ eval_stream
 eval_stream = evalExpr eval_stream_expr id eval_stream_let_binding
 
 stream_to_list
-  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Stream n t)
+  :: Expr (Stream.ExprF (Expr Point.ExprF Point) (Expr Point.ExprF Point)) Stream ('Stream.Prefix n t)
   -> [Point t]
 stream_to_list expr = case eval_stream expr of
   Stream st -> Pure.streamToList st
@@ -339,7 +339,7 @@ eval_stream_expr (Stream.LiftStream argsrep _ nrep f args) = Stream $
   make_args
     :: forall proxy args m .
        Args proxy args
-    -> Args Stream (MapArgs ('Stream.Stream m) args)
+    -> Args Stream (MapArgs ('Stream.Prefix m) args)
     -> Args (Pure.Stream (Expr Point.ExprF Point) m) args
   make_args Args            Args                   = Args
   make_args (Arg _ argsrep) (Arg (Stream st) args) = Arg

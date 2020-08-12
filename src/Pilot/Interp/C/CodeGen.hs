@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Pilot.Interp.C.CodeGen
   ( StreamExpr
@@ -33,7 +34,11 @@ module Pilot.Interp.C.CodeGen
   , streamExprNow
   , streamArgsToPointArgs
 
-  , CodeGen (..)
+  , CodeGen
+  , codeGenModify
+  , codeGenGet
+  , codeGenGets
+
   , evalCodeGen
   , codeGenTransUnit
 
@@ -157,14 +162,14 @@ data StreamVal s (t :: Stream.Type Point.Type) where
 
   -- | A static stream (used to implement memory streams). It's a C static
   -- array with a static current index value.
-  StreamValStatic :: !StaticStreamVal -> StreamVal s ('Stream.Stream n t)
+  StreamValStatic :: !StaticStreamVal -> StreamVal s ('Stream.Prefix n t)
 
   -- | Each of the n prefix values in the stream.
   -- The vector is length at least one because even streams with no prefix have
   -- their current value.
   StreamValNonStatic
     :: !(Vec ('S n) (CodeGen s C.CondExpr))
-    -> StreamVal s ('Stream.Stream n t)
+    -> StreamVal s ('Stream.Prefix n t)
 
 nonStaticStreamAtOffset
   :: Offset n
@@ -206,25 +211,25 @@ staticStreamAtOffset n ssv = postfixExprIsCondExpr $ C.PostfixIndex
 
 streamExprAtOffset
   :: Offset n
-  -> StreamVal s ('Stream.Stream n t)
+  -> StreamVal s ('Stream.Prefix n t)
   -> CodeGen s C.CondExpr
 streamExprAtOffset off (StreamValStatic ssv)   = pure $ staticStreamAtOffset (offsetToNatural off) ssv
 streamExprAtOffset off (StreamValNonStatic cs) = nonStaticStreamAtOffset off cs
 
-streamExprNow :: StreamVal s ('Stream.Stream n t) -> CodeGen s C.CondExpr
+streamExprNow :: StreamVal s ('Stream.Prefix n t) -> CodeGen s C.CondExpr
 streamExprNow = streamExprAtOffset Current
 
 streamArgToPointArg
   :: Offset n
   -> NatRep n
-  -> Stream s ('Stream.Stream n t)
+  -> Stream s ('Stream.Prefix n t)
   -> CodeGen s (Expr Point.ExprF (Point s) t)
 streamArgToPointArg offset nrep stream = do
   expr <- streamExprAtOffset offset (streamVal stream)
   pure $ Pilot.EDSL.Expr.value $ Point
     { pointExpr      = expr
     , pointTypeRep   = case streamTypeRep stream of
-        Stream.Stream_t _ trep -> trep
+        Stream.Prefix_t _ trep -> trep
     , pointCTypeInfo = streamCTypeInfo stream
     }
 
@@ -232,7 +237,7 @@ streamArgsToPointArgs
   :: Offset n
   -> NatRep n
   -> Args Point.TypeRep args
-  -> Args (Stream s) (MapArgs ('Stream.Stream n) args)
+  -> Args (Stream s) (MapArgs ('Stream.Prefix n) args)
   -> CodeGen s (Args (Expr Point.ExprF (Point s)) args)
 streamArgsToPointArgs offset nrep Args              Args           = pure Args
 streamArgsToPointArgs offset nrep (Arg rep argsrep) (Arg arg args) = do
@@ -252,9 +257,20 @@ deriving instance Functor (CodeGen s)
 deriving instance Applicative (CodeGen s)
 deriving instance Monad (CodeGen s)
 
+codeGenGet :: CodeGen s CodeGenState
+codeGenGet = CodeGen $ Trans.lift $ get
+
+codeGenGets :: (CodeGenState -> r) -> CodeGen s r
+codeGenGets f = CodeGen $ Trans.lift $ gets f
+
+codeGenModify :: (CodeGenState -> CodeGenState) -> CodeGen s ()
+codeGenModify f = CodeGen $ Trans.lift $ modify' f
+
+-- | Uses the ST type parameter trick to ensure that no references can escape
+-- (the Point and Stream types in this module are like STRefs).
 evalCodeGen
   :: CodeGenOptions
-  -> CodeGen s t
+  -> (forall s . CodeGen s t)
   -> (Either CodeGenError t, CodeGenState)
 evalCodeGen opts cgm = runIdentity (runStateT (runExceptT (runCodeGen cgm)) initialState)
   where
@@ -588,8 +604,6 @@ withCompoundTypeTreatment ctt cg = do
     st { cgsOptions = (cgsOptions st) { cgoCompoundTypeTreatment = origCtt } }
   pure t
 
-
-
 -- | The Haskell TypeRep of a composite type's fields determines its C
 -- representation(s).
 type CompoundTypeIdentifier = Point.SomeTypeRep
@@ -677,10 +691,9 @@ addBlockItem !bitem = CodeGen $ do
   Trans.lift $ put st'
 
 -- | The C translation unit for a CodeGenState. This is the type declarations,
---
--- Must give a function definition which serves as the "main" function for
--- this CodeGen. This ensures we always have at least one declaration and
--- therefore do indeed get a translation unit.
+-- static variables for memory streams, externs for I/O, and a void function
+-- "eval" with no arguments, which updates state and output according to state
+-- and input.
 --
 -- TODO make a header, too.
 codeGenTransUnit :: CodeGenState -> C.FunDef -> C.TransUnit

@@ -20,32 +20,33 @@ module Pilot.Interp.Exec
 
 import Pilot.EDSL.Expr
 
--- | Within the 'Exec' monad, interpreter-specific things may be introduced and
--- then used within 'Expr's, by way of the `val` type parameter, which serves
--- as the glue between the 'Exec' and the 'Expr'.
+-- | This is a monad transformer within which some formal thing `form` can be
+-- made into `val`ues within some context `f`.
 --
--- If 'Expr' corresponds to Haskell values, 'Exec' corresponds to an RTS which
--- runs IOs built from 'Expr's.
+-- This is the glue between formal expressions (see 'Pilot.EDSL.Expr.Expr')
+-- and interpreter-specific values. The latter may be constructed within this
+-- monad (in general this will require ordering) and then used within the
+-- former (which probably does not want any imposed ordering on terms).
 --
--- Expressions may use values from a given interpretation, and those special
--- values come about within an execution context, which is represented by
--- this type Exec.
-newtype Exec (edsl :: EDSL domain) (val :: domain -> Hask) (f :: Hask -> Hask) (t :: Hask) = Exec
-  { runExec :: (forall x . Expr edsl val x -> f (val x)) -> f t }
+newtype Exec (form :: (domain -> Hask) -> domain -> Hask)
+             (val :: domain -> Hask)
+             (f :: Hask -> Hask)
+             (t :: Hask) =
+  Exec { runExec :: (forall x . form val x -> f (val x)) -> f t }
 
-instance Functor f => Functor (Exec edsl val f) where
+instance Functor f => Functor (Exec form val f) where
   fmap f e = Exec $ \interp -> fmap f (runExec e interp)
 
-instance Applicative f => Applicative (Exec edsl val f) where
+instance Applicative f => Applicative (Exec form val f) where
   pure x = Exec $ \_ -> pure x
   ef <*> ex = Exec $ \interp -> runExec ef interp <*> runExec ex interp
 
-instance Monad f => Monad (Exec edsl val f) where
+instance Monad f => Monad (Exec form val f) where
   return = pure
   ex >>= k = Exec $ \interp -> runExec ex interp >>= \x -> runExec (k x) interp
 
-expr :: Expr edsl val t -> Exec edsl val f (val t)
+expr :: form val t -> Exec form val f (val t)
 expr e = Exec $ \interp -> interp e
 
-impl :: f t -> Exec edsl val f t
+impl :: f t -> Exec form val f t
 impl x = Exec $ const x

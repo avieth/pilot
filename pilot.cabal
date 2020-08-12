@@ -27,8 +27,11 @@ library
                        Pilot.Interp.C.AST
                        Pilot.Interp.C.CodeGen
                        Pilot.Interp.C.Eval
+                       Pilot.Interp.C.Iface
                        Pilot.Interp.C.IO
                        Pilot.Interp.C.Util
+
+                       Pilot.Language.Types
 
                        Pilot.Types.Fun
                        Pilot.Types.Logic

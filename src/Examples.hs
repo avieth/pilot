@@ -24,13 +24,11 @@ Portability : non-portable (GHC only)
 module Examples where
 
 import Prelude hiding ((>>=), (>>))
-import qualified Prelude
 import Pilot.EDSL.Expr.Bind
 
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
-import Pilot.EDSL.Expr
 import Pilot.EDSL.Point
 import qualified Pilot.EDSL.Point as Point
 import Pilot.EDSL.Stream
@@ -171,10 +169,10 @@ type StreamExpr constf staticf streamf = Expr
 -- example_13 and example_14 show how to crate constant streams from points.
 -- Any prefix size index can be chosen.
 
-example_13 :: NatRep n -> StreamExpr cf sf f ('Stream n UInt8)
+example_13 :: NatRep n -> StreamExpr cf sf f ('Prefix n UInt8)
 example_13 nrep = Stream.constant auto nrep example_12
 
-example_14 :: StreamExpr cf sf f ('Stream 'Z (Pair UInt8 Int8))
+example_14 :: StreamExpr cf sf f ('Prefix 'Z (Pair UInt8 Int8))
 example_14 = Stream.constant auto auto p
   where
   p = Point.pair auto auto d e
@@ -189,7 +187,7 @@ example_14 = Stream.constant auto auto p
 -- a different notion of binding for d and e: it's not recursive (imposes an
 -- ordering) and the interpreter may actually observe and use it.
 
-example_14_1 :: StreamExpr cf sf f ('Stream 'Z (Pair UInt8 Int8))
+example_14_1 :: StreamExpr cf sf f ('Prefix 'Z (Pair UInt8 Int8))
 example_14_1 = Stream.constant auto auto $ 
   local (Point.add auto a c) $ \d ->
   local (Point.mul auto b b) $ \e ->
@@ -202,7 +200,7 @@ example_14_1 = Stream.constant auto auto $
 -- The same as example_14_1 but we use the rebindable syntax do notation, to
 -- show how it may look when nested within a stream expression. It also works
 -- for streams directly, but that isn't shown here.
-example_14_2 :: StreamExpr cf sf f ('Stream 'Z (Pair UInt8 Int8))
+example_14_2 :: StreamExpr cf sf f ('Prefix 'Z (Pair UInt8 Int8))
 example_14_2 = Stream.constant auto auto $ do
   d <- Point.add auto a c
   e <- Point.mul auto b b
@@ -220,7 +218,7 @@ example_14_2 = Stream.constant auto auto $ do
 -- Note that a constraint on sf appears, since the vector of initial values
 -- uses the static value and interpreter parameters. The Monad constraint
 -- therefore comes from example_12.
-example_15 :: StreamExpr cf sf f ('Stream ('S 'Z) UInt8)
+example_15 :: StreamExpr cf sf f ('Prefix ('S 'Z) UInt8)
 example_15 = Stream.memory auto auto inits $ \_ ->
   -- The _ parameter is the resulting stream, so that we can make 
   Stream.constant auto auto example_12
@@ -235,8 +233,8 @@ example_15 = Stream.memory auto auto inits $ \_ ->
 integral
   :: forall cf sf f .
      Expr Point.ExprF sf Int32
-  -> StreamExpr cf sf f ('Stream 'Z Int32)
-  -> StreamExpr cf sf f ('Stream ('S 'Z) Int32)
+  -> StreamExpr cf sf f ('Prefix 'Z Int32)
+  -> StreamExpr cf sf f ('Prefix ('S 'Z) Int32)
 integral c f = Stream.memory auto auto (VCons c VNil) $ \sums ->
   -- Here `sums` is the stream itself, but with a prefix of size zero (one less
   -- than the prefix) so that only values which have already been computed may
@@ -247,7 +245,7 @@ integral c f = Stream.memory auto auto (VCons c VNil) $ \sums ->
   plus = fun $ \a -> fun $ \b -> lit $ Point.add auto a b
 
 -- The integral of constant 3.
-example_16 :: StreamExpr cf sf f ('Stream ('S 'Z) Int32)
+example_16 :: StreamExpr cf sf f ('Prefix ('S 'Z) Int32)
 example_16 = integral c f
 
   where
@@ -257,7 +255,7 @@ example_16 = integral c f
   c :: Expr Point.ExprF f Int32
   c = Point.int32 0
 
-  f :: StreamExpr cf sf f ('Stream 'Z Int32)
+  f :: StreamExpr cf sf f ('Prefix 'Z Int32)
   f = Stream.constant auto auto (Point.int32 3)
 
 -- Here are some examples of integrating a particular interpreter, namely the
@@ -271,10 +269,10 @@ example_16 = integral c f
 -- Note the clever (abusive? evil?) overloading of do notation: it still works
 -- here for Exec which is a typical Haskell monad.
 example_17
-  :: Exec (Stream.ExprF (Expr Point.ExprF (C.Point s)) (Expr Point.ExprF Pure.Point))
+  :: Exec (Expr (Stream.ExprF (Expr Point.ExprF (C.Point s)) (Expr Point.ExprF Pure.Point)))
           (C.Stream s)
           (C.CodeGen s)
-          (C.Stream s ('Stream 'Z Int32))
+          (C.Stream s ('Prefix 'Z Int32))
 example_17 = do
   i <- C.externInput "input" Point.int32_t
   o <- expr (Stream.drop auto auto (integral (Point.int32 0) (value i)))
@@ -286,8 +284,8 @@ example_17 = do
 -- the older one is false.
 rising_edge
   :: forall cval sval val .
-     StreamExpr cval sval val ('Stream 'Z Boolean)
-  -> StreamExpr cval sval val ('Stream 'Z Boolean)
+     StreamExpr cval sval val ('Prefix 'Z Boolean)
+  -> StreamExpr cval sval val ('Prefix 'Z Boolean)
 rising_edge bs = do
   ms <- Stream.memory auto auto inits $ \_ -> bs
   -- We have to "shift" the stream to match the nat indices. What we get is
@@ -298,7 +296,7 @@ rising_edge bs = do
   where
   inits = VCons Point.false VNil
 
-example_18 :: StreamExpr cval sval val ('Stream 'Z Boolean)
+example_18 :: StreamExpr cval sval val ('Prefix 'Z Boolean)
 -- NB: if local is not used here, the memory stream in `signal` will be
 -- duplicated by `rising_edge`. You'll get the same results but the C program
 -- will take twice as much space and time.
@@ -309,7 +307,7 @@ example_18 = local signal rising_edge
   -- To use our signal on rising edge, we have to make its prefix 'Z. We do
   -- that by "shifting" rather than "dropping". This means the prefix values
   -- all remain but appear closer to the suffix.
-  signal :: StreamExpr cval sval val ('Stream 'Z Boolean)
+  signal :: StreamExpr cval sval val ('Prefix 'Z Boolean)
   signal =
     Stream.shift auto auto $
     Stream.shift auto auto $
@@ -340,10 +338,10 @@ example_18 = local signal rising_edge
     VNil
 
 example_19
-  :: Exec (Stream.ExprF (Expr Point.ExprF (C.Point s)) (Expr Point.ExprF Pure.Point))
+  :: Exec (Expr (Stream.ExprF (Expr Point.ExprF (C.Point s)) (Expr Point.ExprF Pure.Point)))
           (C.Stream s)
           (C.CodeGen s)
-          (C.Stream s ('Stream 'Z Unit))
+          (C.Stream s ('Prefix 'Z Unit))
 example_19 = do
   -- Use the C backend to get inputs.
   inputA <- C.externInput "inputA" (Point.maybe_t Point.int32_t)
@@ -377,8 +375,8 @@ example_19 = do
 -- TODO see if we can make it polymorphic over integral types.
 counter
   :: Expr Point.ExprF sval Point.UInt32
-  -> StreamExpr cval sval val ('Stream 'Z Point.UInt32)
-  -> StreamExpr cval sval val ('Stream 'Z Point.UInt32)
+  -> StreamExpr cval sval val ('Prefix 'Z Point.UInt32)
+  -> StreamExpr cval sval val ('Prefix 'Z Point.UInt32)
 counter initial modulus = Stream.shift auto auto $ Stream.memory auto auto inits $ \self ->
   ap incrModulo <@> arg self <&> arg modulus
   where
@@ -408,7 +406,7 @@ clock
   :: forall cval sval val .
      Expr Point.ExprF cval Point.UInt32 -- ^ Period
   -> Expr Point.ExprF cval Point.UInt32 -- ^ Phase
-  -> StreamExpr cval sval val ('Stream 'Z Boolean)
+  -> StreamExpr cval sval val ('Prefix 'Z Boolean)
 clock period phase = unlit $ Stream.liftF autoArgs auto auto f `at` cnt
 
   where
@@ -443,7 +441,7 @@ clock_lifted
   :: forall cval sval val .
      Lifted (Expr Point.ExprF cval) Period
   -> Lifted (Expr Point.ExprF cval) Phase
-  -> StreamExpr cval sval val ('Stream 'Z Boolean)
+  -> StreamExpr cval sval val ('Prefix 'Z Boolean)
 clock_lifted period phase = clock (unlift period) (unlift phase)
 
 instance Embed Point.Type Haskell.Word8 where

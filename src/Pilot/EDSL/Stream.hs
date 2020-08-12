@@ -51,13 +51,13 @@ type Streamwise point static = Expr (ExprF point static)
 
 data Type t where
   -- | A stream with a given number of "prefix" values (memory).
-  Stream   :: Nat -> t -> Type t
+  Prefix :: Nat -> t -> Type t
 
 instance Represented t => Represented (Type t) where
   type Rep (Type t) = TypeRep (Rep t)
 
 data TypeRep (rep :: s -> Haskell.Type) (t :: Type s) where
-  Stream_t :: NatRep n -> rep t -> TypeRep rep ('Stream n t)
+  Prefix_t :: NatRep n -> rep t -> TypeRep rep ('Prefix n t)
 
 -- | TODO document
 data ExprF
@@ -77,7 +77,7 @@ data ExprF
                  -- different EDSL, and we want the embedding of that one into
                  -- this one to be represented here (by the `ConstantPoint`
                  -- term).
-                 -> ExprF point static expr ('Stream n t)
+                 -> ExprF point static expr ('Prefix n t)
 
   -- | Any first-order function within expr can be "lifted" so that all of its
   -- arguments and its results are now streams. It must be fully applied, since
@@ -91,21 +91,21 @@ data ExprF
              -- ^ The function being lifted. NB: the arguments are all point
              -- _expressions_. Problem? You'd think they should be vals but
              -- we don't have the point val constructor.
-             -> Args expr (MapArgs ('Stream n) args)
+             -> Args expr (MapArgs ('Prefix n) args)
              -- ^ The arguments to the lifted function, but their types now have
              -- Stream n applied out front.
              -- An interpretation of this term therefore must be able to
              -- use `Stream n t` wherever `t` is required, so long as the result
              -- also has `Stream n` in front. This is like applicative functor
              -- style.
-             -> ExprF point static expr ('Stream n r)
+             -> ExprF point static expr ('Prefix n r)
 
   -- TODO rename? Drop suggests that we drop x-many things, but the number we
   -- give is (the NatRep) is what the size will be after dropping 1.
   DropStream :: Rep a t
              -> NatRep ('S n)
-             -> expr ('Stream ('S n) t)
-             -> ExprF point static expr ('Stream n t)
+             -> expr ('Prefix ('S n) t)
+             -> ExprF point static expr ('Prefix n t)
 
   -- Like DropStream it lowers the nat index, but the value at an instant of the
   -- stream doesn't change. This just says that a stream with more memory can
@@ -113,8 +113,8 @@ data ExprF
   -- can forget memory.
   ShiftStream :: Rep a t
               -> NatRep ('S n)
-              -> expr ('Stream ('S n) t)
-              -> ExprF point static expr ('Stream n t)
+              -> expr ('Prefix ('S n) t)
+              -> ExprF point static expr ('Prefix n t)
 
   MemoryStream :: Rep a t
                -> NatRep ('S n)
@@ -124,41 +124,49 @@ data ExprF
                -- is suggested by connotation, but left up to the interpreter.
                -- Some interpreters may be able to use any pexpr expression
                -- here, some may not be so lenient.
-               -> (expr ('Stream n t) -> expr ('Stream 'Z t))
+               -> (expr ('Prefix n t) -> expr ('Prefix 'Z t))
                -- ^ The stream itself may be used to determine the rest of
                -- the stream, but the nat index is one less, so that a cyclic
                -- definition is not possible (only values already known may
                -- be used).
-               -> ExprF point static expr ('Stream ('S n) t)
+               -> ExprF point static expr ('Prefix ('S n) t)
+
+  -- Include meta-language finite products and exponents in the expression and
+  -- do this
+  --MemoryStream :: Rep a t
+  --             -> NatRep ('S n)
+  --             -> Vec ('S n) (static t)
+  --             -> (expr ('Arrow ('Prefix n t) ('Product s ('Prefix 'Z t))))
+  --             -> ExprF point static expr ('Product s ('Prefix ('S n) t))
 
 constant
   :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
      Rep p t
   -> NatRep n
   -> pexpr t
-  -> Expr (ExprF pexpr static) i ('Stream n t)
+  -> Expr (ExprF pexpr static) i ('Prefix n t)
 constant trep nrep p = edsl $ ConstantStream trep nrep p
 
 drop :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
         Rep p t
      -> NatRep ('S n)
-     -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
-     -> Expr (ExprF pexpr static) i ('Stream     n  t)
+     -> Expr (ExprF pexpr static) i ('Prefix ('S n) t)
+     -> Expr (ExprF pexpr static) i ('Prefix     n  t)
 drop trep nrep s = edsl $ DropStream trep nrep s
 
 shift :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
          Rep p t
       -> NatRep ('S n)
-      -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
-      -> Expr (ExprF pexpr static) i ('Stream     n  t)
+      -> Expr (ExprF pexpr static) i ('Prefix ('S n) t)
+      -> Expr (ExprF pexpr static) i ('Prefix     n  t)
 shift trep nrep s = edsl $ ShiftStream trep nrep s
 
 memory :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n i t .
           Rep p t
        -> NatRep ('S n)
        -> Vec ('S n) (static t)
-       -> (Expr (ExprF pexpr static) i ('Stream n t) -> Expr (ExprF pexpr static) i ('Stream 'Z t))
-       -> Expr (ExprF pexpr static) i ('Stream ('S n) t)
+       -> (Expr (ExprF pexpr static) i ('Prefix n t) -> Expr (ExprF pexpr static) i ('Prefix 'Z t))
+       -> Expr (ExprF pexpr static) i ('Prefix ('S n) t)
 memory trep nrep inits k = edsl $ MemoryStream trep nrep inits k
 
 -- TODO remove? probably not useful. 'lift' seems like a better type from a
@@ -168,8 +176,8 @@ liftF_ :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n args 
        -> Rep p r
        -> NatRep n
        -> (Args pexpr args -> pexpr r)
-       -> Args (Expr (ExprF pexpr static) i) (MapArgs ('Stream n) args)
-       -> Expr (ExprF pexpr static) i ('Stream n r)
+       -> Args (Expr (ExprF pexpr static) i) (MapArgs ('Prefix n) args)
+       -> Expr (ExprF pexpr static) i ('Prefix n r)
 liftF_ argsrep trep nrep f args = edsl $ LiftStream argsrep trep nrep f args
 
 -- | Any first-order function over expressions can be "lifted" over streams:
@@ -182,7 +190,7 @@ liftF :: forall (p :: Haskell.Type) (pexpr :: p -> Haskell.Type) static n args i
       -> Rep p r
       -> NatRep n
       -> Fun pexpr ('Sig args r)
-      -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
+      -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Prefix n) ('Sig args r))
 liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
   edsl $ LiftStream argsrep trep nrep (Fun.apply f) sargs
 
@@ -190,9 +198,9 @@ liftF argsrep trep nrep f = Fun.unapply (mkStreamRep nrep argsrep) $ \sargs ->
 mkStreamRep
   :: NatRep n
   -> Args          rep                       ts
-  -> Args (TypeRep rep) (MapArgs ('Stream n) ts)
+  -> Args (TypeRep rep) (MapArgs ('Prefix n) ts)
 mkStreamRep _    Args            = Args
-mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep args)
+mkStreamRep nrep (Arg arep args) = Arg (Prefix_t nrep arep) (mkStreamRep nrep args)
 
 -- With the following functions you can often write
 --
@@ -203,7 +211,7 @@ mkStreamRep nrep (Arg arep args) = Arg (Stream_t nrep arep) (mkStreamRep nrep ar
 
 ap :: (KnownArgs args, Auto r, Auto n)
    => Fun pexpr ('Sig args r)
-   -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Stream n) ('Sig args r))
+   -> Fun (Expr (ExprF pexpr static) i) (Fun.Lift ('Prefix n) ('Sig args r))
 ap f = liftF autoArgs auto auto f
 
 (<#>) :: Fun (Expr (ExprF pexpr static) i) ('Sig (t ': ts) r)

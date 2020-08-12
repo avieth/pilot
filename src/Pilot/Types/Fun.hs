@@ -46,6 +46,7 @@ module Pilot.Types.Fun
 import Prelude hiding (curry, uncurry)
 import qualified Data.Kind as Haskell (Type)
 import Pilot.Types.Represented
+import GHC.TypeLits (TypeError (..), ErrorMessage (..))
 
 -- We're interested in functions of the form
 --
@@ -60,6 +61,34 @@ import Pilot.Types.Represented
 --
 -- This could be represented with a list of types and a result type, but
 -- we prefer to use one just data kind, called Sig.
+--
+-- TODO possible to give a nice kind of magic "auto lifting" for first order
+-- functions over a given `expr` type? Overlapping instances and type families
+-- ought to be able to do it. Custom type errors could maybe even make it
+-- not terrible to use.
+
+type family FunArgs (expr :: domain -> Haskell.Type) (f :: Haskell.Type) :: [domain] where
+  FunArgs expr (expr s -> r) = s ': FunArgs expr r
+  FunArgs expr (expr r)      = '[]
+  FunArgs expr x             = TypeError
+    (    ShowType x
+    :<>: Text "is not a first-order function over"
+    :<>: ShowType expr
+    )
+
+type family FunResult (expr :: domain -> Haskell.Type) (f :: Haskell.Type) :: domain where
+  FunResult expr (expr s -> r) = FunResult expr r
+  FunResult expr (expr r)      = r
+  FunResult expr x             = TypeError
+    (    ShowType x
+    :<>: Text "is not a first-order function over"
+    :<>: ShowType expr
+    )
+
+{-
+class LiftFun (expr :: domain -> Haskell.Type) (f :: Haskell.Type) where
+  liftFun :: f -> Fun expr ('Sig (FunArgs expr f) (FunResult expr f))
+-}
 
 -- | A first-order function type signature: arguments and result type.
 data Sig t where

@@ -109,19 +109,19 @@ eval_stream_expr (Stream.LiftStream argsrep trep nrep k args) = eval_lift_stream
 
 stream_drop
   :: forall s n t .
-     Stream s ('Stream.Stream ('S n) t)
-  -> Stream s ('Stream.Stream     n  t)
+     Stream s ('Stream.Prefix ('S n) t)
+  -> Stream s ('Stream.Prefix     n  t)
 stream_drop stream = Stream
   { streamVal       = val
   , streamTypeRep   = typeRep
   , streamCTypeInfo = streamCTypeInfo stream
   }
   where
-  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Stream n t)
+  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Prefix n t)
   typeRep = case streamTypeRep stream of
-    Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
+    Stream.Prefix_t (S_t nrep) trep -> Stream.Prefix_t nrep trep
 
-  val :: StreamVal s ('Stream.Stream n t)
+  val :: StreamVal s ('Stream.Prefix n t)
   val = case streamVal stream of
     StreamValNonStatic (VCons _ cs) -> StreamValNonStatic cs
     -- Dropping from a static memory stream: bump the index.
@@ -129,19 +129,19 @@ stream_drop stream = Stream
 
 stream_shift
   :: forall s n t .
-     Stream s ('Stream.Stream ('S n) t)
-  -> Stream s ('Stream.Stream     n  t)
+     Stream s ('Stream.Prefix ('S n) t)
+  -> Stream s ('Stream.Prefix     n  t)
 stream_shift stream = Stream
   { streamVal       = val
   , streamTypeRep   = typeRep
   , streamCTypeInfo = streamCTypeInfo stream
   }
   where
-  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Stream n t)
+  typeRep :: Stream.TypeRep Point.TypeRep ('Stream.Prefix n t)
   typeRep = case streamTypeRep stream of
-    Stream.Stream_t (S_t nrep) trep -> Stream.Stream_t nrep trep
+    Stream.Prefix_t (S_t nrep) trep -> Stream.Prefix_t nrep trep
 
-  val :: StreamVal s ('Stream.Stream n t)
+  val :: StreamVal s ('Stream.Prefix n t)
   val = case streamVal stream of
     StreamValNonStatic vs  -> StreamValNonStatic (vecDropLast vs)
     StreamValStatic   s    -> StreamValStatic s
@@ -252,7 +252,7 @@ declare_product
   -> CodeGen s C.TypeSpec
 declare_product _        (Point.Product_t All)               = pure $ C.TVoid
 declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
-  st <- CodeGen $ Trans.lift get
+  st <- codeGenGet
   let someTypeRep :: Point.SomeTypeRep
       someTypeRep = Point.SomeTypeRep trep
   case Map.lookup someTypeRep (cgsProducts st) of
@@ -285,7 +285,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
 
             cdeclns = [productDecln]
 
-        CodeGen $ Trans.lift $ modify' $ \st -> 
+        codeGenModify $ \st -> 
           st { cgsProducts = Map.insert someTypeRep declr' (cgsProducts st)
              , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
@@ -304,7 +304,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
 
             cdeclns = [productDecln]
 
-        CodeGen $ Trans.lift $ modify' $ \st -> 
+        codeGenModify $ \st -> 
           st { cgsProducts = Map.insert someTypeRep declr' (cgsProducts st)
              , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
@@ -341,7 +341,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
             then ComplexCompoundType root typeSpecNotShared typeSpecShared usage
             else SimpleCompoundType typeSpecNotShared
 
-      CodeGen $ Trans.lift $ modify' $ \st ->
+      codeGenModify $ \st ->
         st { cgsProducts = Map.insert someTypeRep declr (cgsProducts st) }
 
       declnList <- field_declns ctt product_field_name 0 (NonEmptyFields fields)
@@ -357,7 +357,7 @@ declare_product ctt trep@(Point.Product_t fields@(And t ts)) = do
 
           cdeclns = [productDecln]
 
-      CodeGen $ Trans.lift $ modify' $ \st ->
+      codeGenModify $ \st ->
         st { cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st }
       pure productSpec
 
@@ -378,7 +378,7 @@ declare_sum
   -> CodeGen s C.TypeSpec
 declare_sum _        (Point.Sum_t All)                 = pure $ C.TVoid
 declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
-  st <- CodeGen $ Trans.lift get
+  st <- codeGenGet
   let someTypeRep :: Point.SomeTypeRep
       someTypeRep = Point.SomeTypeRep trep
   case Map.lookup someTypeRep (cgsSums st) of
@@ -445,7 +445,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
 
             cdeclns = [sumDecln, variantDecln]
 
-        CodeGen $ Trans.lift $ modify' $ \st -> 
+        codeGenModify $ \st -> 
           st { cgsSums = Map.insert someTypeRep declr' (cgsSums st)
              , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
@@ -477,7 +477,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
 
             cdeclns = [sumDecln, variantDecln]
 
-        CodeGen $ Trans.lift $ modify' $ \st -> 
+        codeGenModify $ \st -> 
           st { cgsSums = Map.insert someTypeRep declr' (cgsSums st)
              , cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st
              }
@@ -514,7 +514,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
             then ComplexCompoundType root typeSpecNotShared typeSpecShared usage
             else SimpleCompoundType typeSpecNotShared
 
-      CodeGen $ Trans.lift $ modify' $ \st ->
+      codeGenModify $ \st ->
         st { cgsSums = Map.insert someTypeRep declr (cgsSums st) }
 
       -- This will recursively delcare every type referenced by this one,
@@ -551,7 +551,7 @@ declare_sum ctt trep@(Point.Sum_t variants@(And t ts)) = do
           -- Order is key: they'll appear in the C source in reverse order.
           cdeclns = [sumDecln, variantDecln, tagDecln]
 
-      CodeGen $ Trans.lift $ modify' $ \st ->
+      codeGenModify $ \st ->
         st { cgsTypeDeclns = cdeclns ++ cgsTypeDeclns st }
       pure sumSpec
 
@@ -945,14 +945,14 @@ eval_constant_stream
   :: Point.TypeRep t
   -> NatRep n
   -> Expr Point.ExprF (Point s) t
-  -> CodeGen s (Stream s ('Stream.Stream n t))
+  -> CodeGen s (Stream s ('Stream.Prefix n t))
 eval_constant_stream trep nrep pexpr = do
   point <- eval_point pexpr
   let genPoint = pure (pointExpr point)
       pvec = VCons genPoint (vecReplicate nrep genPoint)
   pure $ Stream
     { streamVal       = StreamValNonStatic pvec
-    , streamTypeRep   = Stream.Stream_t nrep (pointTypeRep point)
+    , streamTypeRep   = Stream.Prefix_t nrep (pointTypeRep point)
     , streamCTypeInfo = pointCTypeInfo point
     }
 
@@ -962,8 +962,8 @@ eval_drop_stream
   -> Expr
        (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point))
        (Stream s)
-       ('Stream.Stream ('S n) t)
-  -> CodeGen s (Stream s ('Stream.Stream n t))
+       ('Stream.Prefix ('S n) t)
+  -> CodeGen s (Stream s ('Stream.Prefix n t))
 eval_drop_stream trep nrep expr = do
   stream <- eval_stream expr
   pure $ stream_drop stream
@@ -974,8 +974,8 @@ eval_shift_stream
   -> Expr
        (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point))
        (Stream s)
-       ('Stream.Stream ('S n) t)
-  -> CodeGen s (Stream s ('Stream.Stream n t))
+       ('Stream.Prefix ('S n) t)
+  -> CodeGen s (Stream s ('Stream.Prefix n t))
 eval_shift_stream trep nrep expr = do
   stream <- eval_stream expr
   pure $ stream_shift stream
@@ -986,15 +986,15 @@ eval_lift_stream
   -> Point.TypeRep r
   -> NatRep n
   -> (Args (Expr Point.ExprF (Point s)) args -> Expr Point.ExprF (Point s) r)
-  -> Args (StreamExpr s) (MapArgs ('Stream.Stream n) args)
-  -> CodeGen s (Stream s ('Stream.Stream n r))
+  -> Args (StreamExpr s) (MapArgs ('Stream.Prefix n) args)
+  -> CodeGen s (Stream s ('Stream.Prefix n r))
 eval_lift_stream argsrep trep nrep k args = do
 
   ctt <- compoundTypeTreatment
   tinfo <- type_info ctt trep
 
   -- Evaluate all of the stream arguments.
-  streamArgs :: Args (Stream s) (MapArgs ('Stream.Stream n) args)
+  streamArgs :: Args (Stream s) (MapArgs ('Stream.Prefix n) args)
     <- traverseArgs eval_stream args
 
   -- If this stream has a nonzero prefix, we do not elaborate the code at
@@ -1013,12 +1013,12 @@ eval_lift_stream argsrep trep nrep k args = do
       vec :: Vec ('S n) (CodeGen s C.CondExpr)
       vec = vecGenerateWithOffset nrep genAtOffset
 
-      streamVal :: StreamVal s ('Stream.Stream n t)
+      streamVal :: StreamVal s ('Stream.Prefix n t)
       streamVal = StreamValNonStatic vec
 
   pure $ Stream
     { streamVal       = streamVal
-    , streamTypeRep   = Stream.Stream_t nrep trep
+    , streamTypeRep   = Stream.Prefix_t nrep trep
     , streamCTypeInfo = tinfo
     }
 
@@ -1027,10 +1027,10 @@ eval_memory_stream
      Point.TypeRep t
   -> NatRep ('S n)
   -> Vec ('S n) (Expr Point.ExprF Pure.Point t)
-  -> (   Expr (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point)) (Stream s) ('Stream.Stream n t)
-      -> Expr (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point)) (Stream s) ('Stream.Stream 'Z t)
+  -> (   Expr (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point)) (Stream s) ('Stream.Prefix n t)
+      -> Expr (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point)) (Stream s) ('Stream.Prefix 'Z t)
      )
-  -> CodeGen s (Stream s ('Stream.Stream ('S n) t))
+  -> CodeGen s (Stream s ('Stream.Prefix ('S n) t))
 eval_memory_stream trep nrep initExprs k = do
 
   -- Storing in stream: always not shared, since we must copy the entire data
@@ -1073,7 +1073,7 @@ eval_memory_stream trep nrep initExprs k = do
   -- data: array, index, and copy
   -- We compute it from the size of the list of streams, so it's essential that
   -- we update that list before doing any recursion.
-  n :: Natural <- CodeGen $ Trans.lift $ gets $ fromIntegral . Seq.length . cgsStaticStreams
+  n :: Natural <- codeGenGets $ fromIntegral . Seq.length . cgsStaticStreams
 
   let !arrayIdentifier = assertValidStringIdentifier ("memory_array_" ++ show n)
       !indexIdentifier = assertValidStringIdentifier ("memory_index_" ++ show n)
@@ -1088,10 +1088,10 @@ eval_memory_stream trep nrep initExprs k = do
         , ssvOffset = 0
         }
 
-      stream :: Stream s ('Stream.Stream ('S n) t)
+      stream :: Stream s ('Stream.Prefix ('S n) t)
       stream = Stream
         { streamVal       = StreamValStatic sval
-        , streamTypeRep   = Stream.Stream_t nrep trep
+        , streamTypeRep   = Stream.Prefix_t nrep trep
         , streamCTypeInfo = tinfo
         }
 
@@ -1100,10 +1100,10 @@ eval_memory_stream trep nrep initExprs k = do
         S_t n -> n
 
       -- NB: it's `n`, not `'S n`.
-      streamRec :: Stream s ('Stream.Stream n t)
+      streamRec :: Stream s ('Stream.Prefix n t)
       streamRec = Stream
         { streamVal       = StreamValStatic sval
-        , streamTypeRep   = Stream.Stream_t nrep' trep
+        , streamTypeRep   = Stream.Prefix_t nrep' trep
         , streamCTypeInfo = tinfo
         }
 
@@ -1119,7 +1119,7 @@ eval_memory_stream trep nrep initExprs k = do
         , smsCTypeInfo   = tinfo
         }
 
-  CodeGen $ Trans.lift $ modify' $ \cgs -> cgs
+  codeGenModify $ \cgs -> cgs
     { cgsStaticStreams = cgsStaticStreams cgs Seq.|> sms
     }
 
@@ -1131,7 +1131,7 @@ eval_memory_stream trep nrep initExprs k = do
   -- This block item updates the stream at the "write index"
   let bi = staticMemoryStreamUpdateArrayBlockItem sms (condExprIsAssignExpr nextValueExpr)
 
-  CodeGen $ Trans.lift $ modify' $ \cgs -> cgs
+  codeGenModify $ \cgs -> cgs
     { cgsBlockItems    = bi : cgsBlockItems cgs
     }
 
@@ -1662,7 +1662,7 @@ is_compound _                           = Nothing
 -- streams I think.
 genTransUnit
   :: CodeGenOptions
-  -> CodeGen s (Stream s ('Stream.Stream n x))
+  -> (forall s . CodeGen s (Stream s ('Stream.Prefix n x)))
   -> Either CodeGenError C.TransUnit
 genTransUnit opts expr = fst $ evalCodeGen opts $ do
   stream <- expr
@@ -1685,7 +1685,7 @@ genTransUnit opts expr = fst $ evalCodeGen opts $ do
   -- expression uses one of those, then it could become incorrect.
   ident <- declare_initialized "return_value" cexpr tinfo
   let returnexpr = identIsCondExpr ident
-  st <- CodeGen $ Trans.lift $ get
+  st <- codeGenGet
   let evalFun = mainFun st stream returnexpr
   pure $ codeGenTransUnit st evalFun
 

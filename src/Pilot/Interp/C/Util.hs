@@ -9,6 +9,7 @@ Portability : non-portable (GHC only)
 -}
 
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Pilot.Interp.C.Util
   ( codeGenString
@@ -37,7 +38,7 @@ import Pilot.Interp.C.Eval
 -- | Generates the concrete syntax for the translation unit.
 codeGenString
   :: CodeGenOptions
-  -> CodeGen s (Stream s ('EDSL.Stream n x))
+  -> (forall s . CodeGen s (Stream s ('EDSL.Prefix n x)))
   -> Either CodeGenError String
 codeGenString opts cg = fmap prettyPrint (genTransUnit opts cg)
 
@@ -47,7 +48,7 @@ codeGenString opts cg = fmap prettyPrint (genTransUnit opts cg)
 codeGenToFile
   :: String
   -> CodeGenOptions
-  -> CodeGen s (Stream s ('EDSL.Stream n x))
+  -> (forall s . CodeGen s (Stream s ('EDSL.Prefix n x)))
   -> IO ()
 codeGenToFile fp opts cg = case codeGenString opts cg of
   Left  err -> throwIO (userError (show err))
@@ -65,14 +66,14 @@ writePointExpr
   :: (EDSL.KnownType t)
   => String
   -> Bool
-  -> Expr Point.ExprF (Point s) t
+  -> (forall s . Expr Point.ExprF (Point s) t)
   -> IO ()
 writePointExpr fp b expr = writeStreamExpr fp b (EDSL.constant auto Z_t expr)
 
 writeStreamExpr
   :: String
   -> Bool
-  -> StreamExpr s ('EDSL.Stream n x)
+  -> (forall s . StreamExpr s ('EDSL.Prefix n x))
   -> IO ()
 writeStreamExpr fp b expr = codeGenToFile fp opts (eval_stream expr)
   where
@@ -81,12 +82,12 @@ writeStreamExpr fp b expr = codeGenToFile fp opts (eval_stream expr)
 writeStreamExec
   :: String
   -> Bool
-  -> Exec (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point))
+  -> (forall s . Exec (Expr (Stream.ExprF (Expr Point.ExprF (Point s)) (Expr Point.ExprF Pure.Point)))
           (Stream s)
           (CodeGen s)
           -- TODO should not need this. Translation unit generation should not
           -- demand an expression at the end.
-          (Stream s ('EDSL.Stream n x))
+          (Stream s ('EDSL.Prefix n x)))
   -> IO ()
 writeStreamExec fp b exec = codeGenToFile fp opts (runExec exec eval_stream)
   where
