@@ -18,7 +18,7 @@ Portability : non-portable (GHC only)
 module Language.Pilot.Examples
   ( module Language.Pilot.Examples
   , module Pilot
-  , Pure.interp
+  , Pure.interp_pure
   , Meta.metaInterp
   ) where
 
@@ -31,8 +31,12 @@ import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
 showPureStream :: Prelude.Maybe Int -> E Pure.Repr (Obj (Varying n t)) -> String
-showPureStream n e = Meta.withObject (runExpr (metaInterp interp) e) $ \t -> case t of
+showPureStream n e = Meta.withObject (runExpr (metaInterp interp_pure) e) $ \t -> case t of
   Pure.Varying_r pl -> PrefixList.prettyPrint n Point.prettyPrint pl
+
+showPurePoint :: E Pure.Repr (Obj (Constant t)) -> String
+showPurePoint e = Meta.withObject (runExpr (metaInterp interp_pure) e) $ \t -> case t of
+  Pure.Constant_r p -> Point.prettyPrint p
 
 example_1 :: E repr (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
 example_1 = pair <@> true <@> false
@@ -56,12 +60,12 @@ example_3 :: forall repr n . ( Auto n ) => E repr
 example_3 = fun $ \x -> fun $ \y ->
   lift (repVal (Proxy :: Proxy n)) <@> f <@> x <@> y
   where
-  f = Pilot.flip maybe_ <@> (plus <@> u8 1)
+  f = Pilot.flip Pilot.maybe <@> (plus <@> u8 1)
 
--- Notice that we can't lift maybe_ itself, since one of its arguments is
+-- Notice that we can't lift maybe itself, since one of its arguments is
 -- a function, and we cannot have varying functions. But this doesn't mean that
 -- we can't use the value of another varying within the "just" case for the
--- maybe_ eliminator; we just have to juggle the definition so that the just
+-- maybe eliminator; we just have to juggle the definition so that the just
 -- case always appear fully-applied, like this example, which adds the
 -- value in the second varying rather than always 1 as in example_3.
 --
@@ -81,8 +85,7 @@ example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
   f = fun $ \x -> fun $ \y -> fun $ \z ->
         -- Here will fully apply the just case eliminator, so that the function
         -- f--which we shall lift--is first-order over constants.
-        maybe_ <@> x <@> (plus_u8 <@> y) <@> z
-
+        Pilot.maybe <@> x <@> (plus_u8 <@> y) <@> z
 
 -- | This is one of the simplest examples of a memory stream recursive knot.
 -- It creates a memory stream of size 1, and each step uses the previous value

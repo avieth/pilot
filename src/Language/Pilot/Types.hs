@@ -10,11 +10,13 @@ Portability : non-portable (GHC only)
 
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Language.Pilot.Types
   ( Hask
   , Form_k
   , Repr_k
+  , Interp
   , module Nat
   , module Rep
   ) where
@@ -29,3 +31,6 @@ type Hask = Haskell.Type
 type Form_k (domain :: Hask) = (domain -> Hask) -> domain -> Hask
 
 type Repr_k (domain :: Hask) = domain -> Hask
+
+type Interp (form :: Form_k domain) (repr :: Repr_k domain) =
+  forall x . form repr x -> repr x

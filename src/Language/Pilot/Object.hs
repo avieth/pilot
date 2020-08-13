@@ -72,15 +72,15 @@ module Language.Pilot.Object
 
   , unit
   , absurd
-  , pair
   , true
   , false
   , if_then_else
-  , if_then_else_
   , maybe
-  , maybe_
   , just
   , nothing
+  , pair
+  , fst
+  , snd
 
   , u8
   , i8
@@ -91,13 +91,13 @@ module Language.Pilot.Object
 
   ) where
 
-import Prelude hiding (Bool, Maybe, Either, maybe, id, drop)
+import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd, const)
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
 import Language.Pilot.Expr
 import qualified Language.Pilot.Meta as Meta
-import Language.Pilot.Meta hiding (Type (..), Form)
+import Language.Pilot.Meta hiding (Type (..), Form, fst, snd)
 import Language.Pilot.Types
 
 data Width where
@@ -250,15 +250,28 @@ data Form (repr :: Meta.Type Type -> Hask) (t :: Meta.Type Type) where
     :-> Obj (Constant ('Bytes_t width))
     )
 
+  -- | Product introduction takes a meta-language product containing all of
+  -- the fields. The `Fields` value constrains `r` to be such a product, or
+  -- the meta-language terminal object in case there are no fields, giving the
+  -- object-language unit.
   Product_Intro_f :: Fields r fields -> Form repr
     (r :-> Obj (Constant ('Product_t fields)))
+
+  -- | Sum introduction takes one variant, determined by the `Variant` value.
+  Sum_Intro_f :: Variant r variants -> Form repr
+    (r :-> Obj (Constant ('Sum_t variants)))
+
+  -- | Product elimination takes one field selector.
   Product_Elim_f :: Selector fields q r -> Form repr
     (Obj (Constant ('Product_t fields)) :-> q)
 
-  Sum_Intro_f :: Variant r variants -> Form repr
-    (r :-> Obj (Constant ('Sum_t variants)))
+  -- | Sum elimination takes a meta-language products of functions, one for
+  -- each variant, with a common return value.
+  --
+  -- TODO this is the odd one out of the 4 algebraic datatype forms. Perhaps
+  -- change the others to fall in line?
   Sum_Elim_f :: Cases variants q r -> Form rerp
-    (Obj (Constant ('Sum_t variants)) :-> q)
+    (Obj (Constant ('Sum_t variants)) :-> q :-> r)
 
   Stream_Lift_f :: NatRep n -> Lift n s t -> Form repr (s :-> t)
   Stream_Knot_f :: Knot s t q i -> Form repr ((s :-> t) :-> (q :-> r) :-> (i :-> r))
@@ -276,6 +289,13 @@ data Form (repr :: Meta.Type Type -> Hask) (t :: Meta.Type Type) where
   -- object-language.
   Let_f :: Form repr (Obj x :-> (Obj x :-> r) :-> r)
 
+-- | Used for sum introduction.
+-- `Variant r variants` means that an `r` is sufficient to construct a
+-- sum of `variants`.
+data Variant (r :: Meta.Type Type) (variants :: [Point]) where
+  V_This :: Variant (Obj (Constant variant)) (variant ': variants)
+  V_That :: Variant r variants -> Variant r (variant ': variants)
+
 -- | Used for product introduction.
 -- `Fields repr r fields` means that if you have an `r`, then you can
 -- introduce a product with `fields`.
@@ -284,15 +304,8 @@ data Fields (r :: Meta.Type Type) (fields :: [Point]) where
   F_And :: Fields                          r            fields
         -> Fields (Obj (Constant field) :* r) (field ': fields)
 
--- | Used for sum introduction.
--- `Variant r variants` means that an `r` is sufficient to construct a
--- sum of `variants`.
-data Variant (r :: Meta.Type Type) (variants :: [Point]) where
-  V_This :: Variant (Obj (Constant variant)) (variant ': variants)
-  V_That :: Variant r variants -> Variant r (variant ': variants)
-
 data Selector (fields :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
-  S_Here  :: Selector (field ': fields) (Obj (Constant field) :-> r) r
+  S_Here  :: Selector (field ': fields) ((Obj (Constant field) :-> r) :-> r) r
   S_There :: Selector           fields  q r
           -> Selector (field ': fields) q r
 
@@ -303,10 +316,10 @@ data Selector (fields :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) wh
 -- NB: the return type `r` is a `Point`. This is crucial. It would not make
 -- sense to allow for a meta-language thing to be computed from the
 -- object-language case elimination.
-data Cases (variants :: [Point]) (q :: Meta.Type Type) (r :: Point) where
-  C_Any :: Cases '[] (Obj (Constant r)) r
-  C_Or  :: Cases             variants                                      q  r
-        -> Cases (variant ': variants) ((Obj (Constant variant) :-> Obj (Constant r)) :-> q) r
+data Cases (variants :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
+  C_Any :: Cases '[]  Terminal (Obj (Constant r))
+  C_Or  :: Cases             variants                                     q  r
+        -> Cases (variant ': variants) ((Obj (Constant variant) :-> r) :* q) r
 
 -- |
 --
@@ -394,19 +407,11 @@ unit = (object $ Product_Intro_f F_All) <@> terminal
 -- Since the empty sum requires only this base case, we don't even have to
 -- construct anything of this type, so we get the typical `absurd` type.
 absurd :: Expr (Meta.Form Form) repr (Obj (Constant Void) :-> Obj (Constant r))
-absurd = object $ Sum_Elim_f C_Any
+absurd = fun $ \impossible -> (object $ Sum_Elim_f C_Any) <@> impossible <@> terminal
 
 -- NB: an empty product cannot be eliminated, and an empty sum cannot be
 -- introduced. The meta-language enforces this: there are no Selector or
 -- Variant types for an empty field/variant list.
-
--- | Constructs a pair. The formal 'product_intro_f' gives a function from a
--- meta-language product with an explicit terminal in the rightmost position,
--- but we change it to be a curried from without the terminal.
-pair :: Expr (Meta.Form Form) repr
-  (Obj (Constant a) :-> Obj (Constant b) :-> Obj (Constant (Pair a b)))
-pair = fun $ \a -> fun $ \b ->
-  (object $ Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
 
 -- | The formal sum intro construction, like that of the product, gives a
 -- meta-language function. The Variant value (V_That V_This) indicates which
@@ -420,20 +425,12 @@ false = (object $ Sum_Intro_f V_This) <@> unit
 
 if_then_else :: Expr (Meta.Form Form) repr
   (   Obj (Constant Bool)
-  :-> (Obj (Constant Unit) :-> Obj (Constant r))
-  :-> (Obj (Constant Unit) :-> Obj (Constant r))
-  :-> Obj (Constant r)
-  )
-if_then_else = (object $ Sum_Elim_f (C_Or (C_Or C_Any)))
-
-if_then_else_ :: Expr (Meta.Form Form) repr
-  (   Obj (Constant Bool)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   )
-if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse -> 
-  if_then_else <@> b <@> (fun $ \_ -> ifTrue) <@> (fun $ \_ -> ifFalse)
+if_then_else = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
+  (object $ Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
 
 class AutoLift n a b where
   autoLift :: Proxy n -> Proxy a -> Proxy b -> Lift n a b
@@ -482,21 +479,28 @@ nothing :: Expr (Meta.Form Form) repr (Obj (Constant (Maybe s)))
 nothing = (object $ Sum_Intro_f V_This) <@> unit
 
 maybe :: Expr (Meta.Form Form) repr
-  (   Obj (Constant (Maybe s))
-  :-> (Obj (Constant Unit) :-> Obj (Constant r))
-  :-> (Obj (Constant s) :-> Obj (Constant r))
-  :-> Obj (Constant r)
-  )
-maybe = object $ Sum_Elim_f (C_Or (C_Or C_Any))
-
-maybe_ :: Expr (Meta.Form Form) repr
   (   Obj (Constant r)
   :-> (Obj (Constant s) :-> Obj (Constant r))
   :-> Obj (Constant (Maybe s))
   :-> Obj (Constant r)
   )
-maybe_ = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
-  maybe <@> m <@> (fun $ \_ -> ifNothing) <@> ifJust
+maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
+  (object $ Sum_Elim_f (C_Or (C_Or C_Any)))
+    <@> m <@> ((fun $ \_ -> ifNothing) &> ifJust &> terminal)
+
+-- | Constructs a pair. The formal 'product_intro_f' gives a function from a
+-- meta-language product with an explicit terminal in the rightmost position,
+-- but we change it to be a curried from without the terminal.
+pair :: Expr (Meta.Form Form) repr
+  (Obj (Constant a) :-> Obj (Constant b) :-> Obj (Constant (Pair a b)))
+pair = fun $ \a -> fun $ \b ->
+  (object $ Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
+
+fst :: Expr (Meta.Form Form) repr (Obj (Constant (Pair a b)) :-> Obj (Constant a))
+fst = fun $ \p -> (object $ Product_Elim_f S_Here) <@> p <@> id
+
+snd :: Expr (Meta.Form Form) repr (Obj (Constant (Pair a b)) :-> Obj (Constant b))
+snd = fun $ \p -> (object $ Product_Elim_f (S_There S_Here)) <@> p <@> id
 
 drop :: Expr (Meta.Form Form) repr
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))

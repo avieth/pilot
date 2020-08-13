@@ -11,11 +11,17 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Language.Pilot
   ( Point
   , Stream
   , E
+  , formal_e
+  , F
+  , formal_f
+  , from_e
 
   , Meta_k
   , Object_k
@@ -89,9 +95,7 @@ module Language.Pilot
   , Object.true
   , Object.false
   , Object.if_then_else
-  , Object.if_then_else_
   , Object.maybe
-  , Object.maybe_
   , Object.just
   , Object.nothing
 

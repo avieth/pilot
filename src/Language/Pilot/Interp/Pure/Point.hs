@@ -173,7 +173,8 @@ prettyPrintProduct fs = mconcat
   where
   prettyPrintFields :: forall types . All Point_r types -> String
   prettyPrintFields All = ""
-  prettyPrintFields (And p all) = mconcat ["(", prettyPrint p, ")"] ++ prettyPrintFields all
+  prettyPrintFields (And p All) = mconcat ["(", prettyPrint p, ")"]
+  prettyPrintFields (And p all) = mconcat ["(", prettyPrint p, "), "] ++ prettyPrintFields all
 
 integer_f
   :: (forall n . Integral n => n -> n -> n)

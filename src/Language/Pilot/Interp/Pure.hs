@@ -13,23 +13,29 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Language.Pilot.Interp.Pure
   ( Repr
   , Value_r (..)
   , showValue
-  , interp
+  , interp_pure
   , constant
   , varying
   ) where
 
+import qualified Language.Pilot.Final as Final
 import Language.Pilot.Types
-import Language.Pilot.Expr
 import Language.Pilot.Meta as Meta
 import Language.Pilot.Object as Object
 
 import Language.Pilot.Interp.Pure.Point as Point
 import Language.Pilot.Interp.Pure.PrefixList as PrefixList
+
+instance Final.Interprets (Meta_r Value_r) (Meta.Form Object.Form) where
+  interp = metaInterp interp_pure
 
 type Repr = Meta_r Value_r
 
@@ -64,8 +70,8 @@ thru :: (Meta_r Value_r (Obj (Constant s)) -> Meta_r Value_r (Obj (Constant t)))
      -> (Point_r s -> Point_r t)
 thru f = toConstantRep . toObjectRep . f . fromObjectRep . fromConstantRep
 
-interp :: Interp Object.Form Repr
-interp form = case form of
+interp_pure :: Interp Object.Form Repr
+interp_pure form = case form of
 
   Integer_Literal_UInt8_f  w8  -> fromObjectRep (Constant_r (Integer_r (Point.UInt8 w8)))
   Integer_Literal_UInt16_f w16 -> fromObjectRep (Constant_r (Integer_r (Point.UInt16 w16)))
@@ -137,11 +143,79 @@ interp form = case form of
 
   Let_f -> fun_r $ \x -> fun_r $ \f -> let y = x in app_r f y
 
+  Product_Intro_f fields -> interp_product_intro fields
+  Product_Elim_f selector -> interp_product_elim selector
+
+  Sum_Intro_f variant -> interp_sum_intro variant
+  Sum_Elim_f cases -> interp_sum_elim cases
+
   Stream_Drop_f  -> fun_r $ \(Object_r (Varying_r p)) -> fromObjectRep (Varying_r (PrefixList.drop p))
   Stream_Shift_f -> fun_r $ \(Object_r (Varying_r p)) -> fromObjectRep (Varying_r (PrefixList.shift p))
 
   Stream_Lift_f nrep lf -> interp_lift nrep lf
   Stream_Knot_f kn -> interp_knot kn
+
+interp_product_elim
+  :: forall q r fields .
+     Selector fields q r
+  -> Meta_r Value_r (Obj (Constant (Product fields)) :-> q)
+interp_product_elim selector = fun_r $ \p -> case toConstantRep (toObjectRep p) of
+  Point.Product_r fields -> select selector fields
+  where
+  select :: forall fields . Selector fields q r -> All Point_r fields -> Meta_r Value_r q
+  select (S_There s) (And _ all) = select s all
+  select S_Here      (And t _)   = fun_r $ \f -> app_r f (fromObjectRep (fromConstantRep t))
+
+-- Sum and product introductions are almost exactly the same form.
+
+interp_sum_intro
+  :: forall r variants .
+     Variant r variants
+  -> Meta_r Value_r (r :-> Obj (Constant (Sum variants)))
+interp_sum_intro variant = fun_r $ \v ->
+  fromObjectRep (fromConstantRep (Point.Sum_r (inject variant v)))
+  where
+  inject
+    :: forall r variants .
+       Variant r variants
+    -> Meta_r Value_r r
+    -> Point.Any Point.Point_r variants
+  inject V_This        it = Point.Any (toConstantRep (toObjectRep it))
+  inject (V_That that) it = Point.Or (inject that it)
+
+interp_product_intro
+  :: forall r fields .
+     Fields r fields
+  -> Meta_r Value_r (r :-> Obj (Constant (Product fields)))
+interp_product_intro fields = fun_r $ \r ->
+  fromObjectRep (fromConstantRep (Point.Product_r (bundle fields r)))
+  where
+  bundle
+    :: forall r fields .
+       Fields r fields
+    -> Meta_r Value_r r
+    -> Point.All Point.Point_r fields
+  bundle F_All      Terminal_r                = Point.All
+  bundle (F_And fs) (Meta.Product_r (it, ps)) = Point.And (toConstantRep (toObjectRep it)) (bundle fs ps)
+
+interp_sum_elim
+  :: forall q r variants .
+     Cases variants q r
+  -> Meta_r Value_r (Obj (Constant (Sum variants)) :-> q :-> r)
+interp_sum_elim cases = fun_r $ \scrutinee -> fun_r $ \ks ->
+  match cases (toConstantRep (toObjectRep scrutinee)) ks
+  where
+  -- For each case, we add a function argument. We must run through the entire
+  -- Cases type. 
+  match :: forall q r variants .
+           Cases variants q r
+        -> Point_r (Sum variants)
+        -> Meta_r Value_r q
+        -> Meta_r Value_r r
+  match C_Any     (Sum_r x) _                        = case x of {}
+  match (C_Or cs) (Sum_r x) (Meta.Product_r (k, ks)) = case x of
+    Any it -> app_r k (fromObjectRep (fromConstantRep it))
+    Or any -> match cs (Sum_r any) ks
 
 -- | Implementation of a lift is essentially the notion of the zip list
 -- applicative functor, but it looks a lot more complicated because we must

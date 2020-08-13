@@ -14,7 +14,6 @@ Portability : non-portable (GHC only)
 
 module Language.Pilot.Expr
   ( Expr (..)
-  , Interp
   , formal
   , abstract
   , concrete
@@ -36,9 +35,6 @@ import Language.Pilot.Types
 --
 newtype Expr (form :: Form_k domain) (repr :: Repr_k domain) (t :: domain) = Expr
   { getExpr :: Interp form repr -> repr t }
-
-type Interp (form :: Form_k domain) (repr :: Repr_k domain) =
-  forall x . form repr x -> repr x
 
 runExpr :: Interp form repr -> Expr form repr t -> repr t
 runExpr i e = getExpr e i
