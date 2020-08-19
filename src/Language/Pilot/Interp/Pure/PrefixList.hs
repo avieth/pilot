@@ -17,7 +17,9 @@ module Language.Pilot.Interp.Pure.PrefixList
   ( PrefixList (..)
   , repeat
   , map
+  , traverse
   , meld
+  , fmeld
   , unmeld
   , toList
   , fromList
@@ -31,7 +33,7 @@ module Language.Pilot.Interp.Pure.PrefixList
   , prettyPrint
   ) where
 
-import Prelude hiding (repeat, map, zip, unzip, tail, drop)
+import Prelude hiding (repeat, map, zip, unzip, tail, drop, traverse)
 import Data.List (intercalate)
 
 import Language.Pilot.Types
@@ -68,6 +70,14 @@ map
 map f (Prefix x ps) = Prefix (f x) (map f ps)
 map f (Suffix x ps) = Suffix (f x) (map f ps)
 
+traverse
+  :: ( Applicative f )
+  => (k t -> f (k' t'))
+  -> PrefixList n k t
+  -> f (PrefixList n k' t')
+traverse f (Prefix x ps) = Prefix <$> f x <*> traverse f ps
+traverse f (Suffix x ps) = Suffix <$> f x <*> traverse f ps
+
 {-
 zip :: NatRep n -> P (PrefixList n k) ts -> PrefixList n (P k) ts
 zip nrep U          = repeat nrep U
@@ -89,6 +99,15 @@ meld
   -> PrefixList n m u
 meld f (Prefix a as) (Prefix b bs) = Prefix (f a b) (meld f as bs)
 meld f (Suffix a as) (Suffix b bs) = Suffix (f a b) (meld f as bs)
+
+fmeld
+  :: ( Applicative f )
+  => (k s -> l t -> f (m u))
+  -> PrefixList n k s
+  -> PrefixList n l t
+  -> f (PrefixList n m u)
+fmeld f (Prefix a as) (Prefix b bs) = Prefix <$> f a b <*> fmeld f as bs
+fmeld f (Suffix a as) (Suffix b bs) = Suffix <$> f a b <*> fmeld f as bs
 
 unmeld
   :: (k s -> (l t, m u))

@@ -14,36 +14,34 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Language.Pilot.Examples
   ( module Language.Pilot.Examples
   , module Pilot
-  , Pure.interp_pure
-  , Meta.metaInterp
   ) where
 
+import Data.Functor.Identity
 import Data.Proxy
 import Language.Pilot as Pilot
-import Language.Pilot.Expr (runExpr)
-import Language.Pilot.Meta as Meta
+import Language.Pilot.Repr (evalObject)
 import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
-showPureStream :: Prelude.Maybe Int -> E Pure.Repr (Obj (Varying n t)) -> String
-showPureStream n e = Meta.withObject (runExpr (metaInterp interp_pure) e) $ \t -> case t of
+showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value_r (Obj (Varying n t)) -> String
+showPureStream n e = case runIdentity (evalObject e) of
   Pure.Varying_r pl -> PrefixList.prettyPrint n Point.prettyPrint pl
 
-showPurePoint :: E Pure.Repr (Obj (Constant t)) -> String
-showPurePoint e = Meta.withObject (runExpr (metaInterp interp_pure) e) $ \t -> case t of
+showPurePoint :: E Identity Pure.Value_r (Obj (Constant t)) -> String
+showPurePoint e = case runIdentity (evalObject e) of
   Pure.Constant_r p -> Point.prettyPrint p
 
-example_1 :: E repr (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
+example_1 :: E f val (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
 example_1 = pair <@> true <@> false
 
-example_2 :: E repr (Obj (Varying ('S 'Z) UInt8))
+example_2 :: E f val (Obj (Varying ('S 'Z) UInt8))
 example_2 = lift (S_Rep Z_Rep) <@> u8 42
-
 
 -- This is like
 --
@@ -55,12 +53,12 @@ example_2 = lift (S_Rep Z_Rep) <@> u8 42
 --     where
 --     f = flip maybe ((+) 1)
 --
-example_3 :: forall repr n . ( Auto n ) => E repr
+example_3 :: forall f val n . ( Auto n ) => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n (Pilot.Maybe UInt8)) :-> Obj (Varying n UInt8))
 example_3 = fun $ \x -> fun $ \y ->
   lift (repVal (Proxy :: Proxy n)) <@> f <@> x <@> y
   where
-  f = Pilot.flip Pilot.maybe <@> (plus <@> u8 1)
+  f = Pilot.flip <@> Pilot.maybe <@> (plus <@> u8 1)
 
 -- Notice that we can't lift maybe itself, since one of its arguments is
 -- a function, and we cannot have varying functions. But this doesn't mean that
@@ -73,7 +71,7 @@ example_3 = fun $ \x -> fun $ \y ->
 --     where
 --     f x y z = maybe x ((+) y) z
 --
-example_4 :: forall repr n . ( Auto n ) => E repr
+example_4 :: forall f val n . ( Auto n ) => E f val
   (   Obj (Varying n UInt8)
   :-> Obj (Varying n UInt8)
   :-> Obj (Varying n (Pilot.Maybe UInt8))
@@ -92,26 +90,26 @@ example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
 -- as its current value, i.e. it's a constant stream. The argument is the
 -- initial value of this stream. So this is essentially the same thing as
 -- `lift` specialized to `'S 'Z` prefix size and `Constant UInt8` type.
-example_5 :: E repr
+example_5 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_5 = knot (Tied (S_Rep Z_Rep)) <@> loop <@> k
   where
-  loop :: E repr (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
+  loop :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
   loop = Pilot.id
-  k :: E repr (Obj (Varying ('S 'Z) UInt8) :-> Obj (Varying ('S 'Z) UInt8))
+  k :: E f val (Obj (Varying ('S 'Z) UInt8) :-> Obj (Varying ('S 'Z) UInt8))
   k = Pilot.id
 
 -- | Here's an integral.
-example_6 :: E repr
+example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_6 = fun $ \c -> fun $ \f ->
   let loop = lift Z_Rep <@> plus_u8 <@> f
   in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.id <@> c
 
 -- | [42, 42 ..]
-example_7 :: E repr (Obj (Varying 'Z UInt8))
+example_7 :: E f val (Obj (Varying 'Z UInt8))
 example_7 = lift Z_Rep <@> u8 42
 
-example_8 :: NatRep n -> E repr
+example_8 :: NatRep n -> E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
 example_8 nrep = lift nrep <@> plus_u8

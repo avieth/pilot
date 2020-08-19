@@ -66,6 +66,7 @@ module Language.Pilot.Object
 
   , lift
   , lift_
+  , constant
   , knot
   , shift
   , drop
@@ -95,9 +96,9 @@ import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd, con
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
-import Language.Pilot.Expr
+import Language.Pilot.Meta (Obj, Terminal, type (:->), type (:*))
 import qualified Language.Pilot.Meta as Meta
-import Language.Pilot.Meta hiding (Type (..), Form, fst, snd)
+import Language.Pilot.Repr hiding (fst, snd)
 import Language.Pilot.Types
 
 data Width where
@@ -164,87 +165,87 @@ data Type where
 type Constant = 'Constant_t
 type Varying = 'Varying_t
 
-data Form (repr :: Meta.Type Type -> Hask) (t :: Meta.Type Type) where
+data Form (t :: Meta.Type Type) where
 
-  Integer_Literal_UInt8_f  :: Haskell.Word8  -> Form repr (Obj (Constant UInt8))
-  Integer_Literal_UInt16_f :: Haskell.Word16 -> Form repr (Obj (Constant UInt16))
-  Integer_Literal_UInt32_f :: Haskell.Word32 -> Form repr (Obj (Constant UInt32))
-  Integer_Literal_UInt64_f :: Haskell.Word64 -> Form repr (Obj (Constant UInt64))
+  Integer_Literal_UInt8_f  :: Haskell.Word8  -> Form (Obj (Constant UInt8))
+  Integer_Literal_UInt16_f :: Haskell.Word16 -> Form (Obj (Constant UInt16))
+  Integer_Literal_UInt32_f :: Haskell.Word32 -> Form (Obj (Constant UInt32))
+  Integer_Literal_UInt64_f :: Haskell.Word64 -> Form (Obj (Constant UInt64))
 
-  Integer_Literal_Int8_f  :: Haskell.Int8  -> Form repr (Obj (Constant Int8))
-  Integer_Literal_Int16_f :: Haskell.Int16 -> Form repr (Obj (Constant Int16))
-  Integer_Literal_Int32_f :: Haskell.Int32 -> Form repr (Obj (Constant Int32))
-  Integer_Literal_Int64_f :: Haskell.Int64 -> Form repr (Obj (Constant Int64))
+  Integer_Literal_Int8_f  :: Haskell.Int8  -> Form (Obj (Constant Int8))
+  Integer_Literal_Int16_f :: Haskell.Int16 -> Form (Obj (Constant Int16))
+  Integer_Literal_Int32_f :: Haskell.Int32 -> Form (Obj (Constant Int32))
+  Integer_Literal_Int64_f :: Haskell.Int64 -> Form (Obj (Constant Int64))
 
-  Bytes_Literal_8_f  :: Haskell.Word8  -> Form repr (Obj (Constant Word8))
-  Bytes_Literal_16_f :: Haskell.Word16 -> Form repr (Obj (Constant Word16))
-  Bytes_Literal_32_f :: Haskell.Word32 -> Form repr (Obj (Constant Word32))
-  Bytes_Literal_64_f :: Haskell.Word64 -> Form repr (Obj (Constant Word64))
+  Bytes_Literal_8_f  :: Haskell.Word8  -> Form (Obj (Constant Word8))
+  Bytes_Literal_16_f :: Haskell.Word16 -> Form (Obj (Constant Word16))
+  Bytes_Literal_32_f :: Haskell.Word32 -> Form (Obj (Constant Word32))
+  Bytes_Literal_64_f :: Haskell.Word64 -> Form (Obj (Constant Word64))
 
-  Integer_Add_f :: Form repr
+  Integer_Add_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     )
-  Integer_Subtract_f :: Form repr
+  Integer_Subtract_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     )
-  Integer_Multiply_f :: Form repr
+  Integer_Multiply_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     )
-  Integer_Divide_f :: Form repr
+  Integer_Divide_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     )
-  Integer_Modulo_f :: Form repr
+  Integer_Modulo_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     )
-  Integer_Negate_f :: Form repr
+  Integer_Negate_f :: Form
     (   Obj (Constant ('Integer_t 'Signed_t width))
     :-> Obj (Constant ('Integer_t 'Signed_t width))
     )
-  Integer_Abs_f :: Form repr
+  Integer_Abs_f :: Form
     (   Obj (Constant ('Integer_t 'Signed_t width))
     :-> Obj (Constant ('Integer_t 'Unsigned_t width))
     )
-  Integer_Compare_f :: Form repr
+  Integer_Compare_f :: Form
     (   Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant ('Integer_t sign width))
     :-> Obj (Constant Cmp)
     )
 
-  Bytes_And_f :: Form repr
+  Bytes_And_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Or_f :: Form repr
+  Bytes_Or_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Xor_f :: Form repr
+  Bytes_Xor_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Not_f :: Form repr
+  Bytes_Not_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Shiftl_f :: Form repr
+  Bytes_Shiftl_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t 'W_One_t))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Shiftr_f :: Form repr
+  Bytes_Shiftr_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t 'W_One_t))
     :-> Obj (Constant ('Bytes_t width))
@@ -254,31 +255,30 @@ data Form (repr :: Meta.Type Type -> Hask) (t :: Meta.Type Type) where
   -- the fields. The `Fields` value constrains `r` to be such a product, or
   -- the meta-language terminal object in case there are no fields, giving the
   -- object-language unit.
-  Product_Intro_f :: Fields r fields -> Form repr
+  Product_Intro_f :: Fields r fields -> Form
     (r :-> Obj (Constant ('Product_t fields)))
 
   -- | Sum introduction takes one variant, determined by the `Variant` value.
-  Sum_Intro_f :: Variant r variants -> Form repr
+  Sum_Intro_f :: Variant r variants -> Form
     (r :-> Obj (Constant ('Sum_t variants)))
 
   -- | Product elimination takes one field selector.
-  Product_Elim_f :: Selector fields q r -> Form repr
+  Product_Elim_f :: Selector fields q r -> Form
     (Obj (Constant ('Product_t fields)) :-> q)
 
   -- | Sum elimination takes a meta-language products of functions, one for
   -- each variant, with a common return value.
   --
-  -- TODO this is the odd one out of the 4 algebraic datatype forms. Perhaps
-  -- change the others to fall in line?
-  Sum_Elim_f :: Cases variants q r -> Form rerp
-    (Obj (Constant ('Sum_t variants)) :-> q :-> r)
+  -- TODO look into making product elimination similar to this (no q parameter).
+  Sum_Elim_f :: Cases variants r -> Form
+    (Obj (Constant ('Sum_t variants)) :-> r)
 
-  Stream_Lift_f :: NatRep n -> Lift n s t -> Form repr (s :-> t)
-  Stream_Knot_f :: Knot s t q i -> Form repr ((s :-> t) :-> (q :-> r) :-> (i :-> r))
+  Stream_Lift_f :: NatRep n -> Lift n s t -> Form (s :-> t)
+  Stream_Knot_f :: Knot s t q i -> Form ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 
-  Stream_Drop_f :: Form repr
+  Stream_Drop_f :: Form
     (Obj (Varying ('S n) t) :-> Obj (Varying n t))
-  Stream_Shift_f :: Form repr
+  Stream_Shift_f :: Form
     (Obj (Varying ('S n) t) :-> Obj (Varying n t))
 
   -- Let bindings for object-language values. To let-bind a meta-language
@@ -287,7 +287,7 @@ data Form (repr :: Meta.Type Type -> Hask) (t :: Meta.Type Type) where
   -- of meta-language products, for instance, thereby allowing the expression
   -- of sharing between more than one value without building a product in the
   -- object-language.
-  Let_f :: Form repr (Obj x :-> (Obj x :-> r) :-> r)
+  Let_f :: Form (x :-> (x :-> r) :-> r)
 
 -- | Used for sum introduction.
 -- `Variant r variants` means that an `r` is sufficient to construct a
@@ -310,16 +310,15 @@ data Selector (fields :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) wh
           -> Selector (field ': fields) q r
 
 -- | `Cases repr variants q r` means that given a sum of `variants`, you can
--- get something of type `q` which will ultimately return an `r`. This GADT
--- tacks on a function for each variants of the sum.
+-- get something of type `r`. It is defined in such a way that `r` is always a
+-- function from a product of case eliminators for each variant, returning a
+-- common type--except when the variants is '[], in which case you can get any
+-- type.
 --
--- NB: the return type `r` is a `Point`. This is crucial. It would not make
--- sense to allow for a meta-language thing to be computed from the
--- object-language case elimination.
-data Cases (variants :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
-  C_Any :: Cases '[]  Terminal (Obj (Constant r))
-  C_Or  :: Cases             variants                                     q  r
-        -> Cases (variant ': variants) ((Obj (Constant variant) :-> r) :* q) r
+data Cases (variants :: [Point]) (r :: Meta.Type Type) where
+  C_Any :: Cases '[] x
+  C_Or  :: Cases             variants  (                                   q  :-> r)
+        -> Cases (variant ': variants) (((Obj (Constant variant) :-> r) :* q) :-> r)
 
 -- |
 --
@@ -376,21 +375,21 @@ type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
 data UncheckedCast (a :: Point) (b :: Point)
 data CheckedCast (a :: Point) (b :: Point)
 
-u8 :: Haskell.Word8 -> Expr (Meta.Form Form) repr (Obj (Constant UInt8))
-u8 w = Meta.object $ Integer_Literal_UInt8_f w
+u8 :: Haskell.Word8 -> E Form f val (Obj (Constant UInt8))
+u8 w = formal $ Integer_Literal_UInt8_f w
 
-i8 :: Haskell.Int8 -> Expr (Meta.Form Form) repr (Obj (Constant Int8))
-i8 w = Meta.object $ Integer_Literal_Int8_f w
+i8 :: Haskell.Int8 -> E Form f val (Obj (Constant Int8))
+i8 w = formal $ Integer_Literal_Int8_f w
 
-plus :: Expr (Meta.Form Form) repr
+plus :: E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-plus = Meta.object Integer_Add_f
+plus = formal Integer_Add_f
 
 -- | Specialized 'plus' to UInt8.
-plus_u8 :: Expr (Meta.Form Form) repr
+plus_u8 :: E Form f val
   (   Obj (Constant UInt8)
   :-> Obj (Constant UInt8)
   :-> Obj (Constant UInt8)
@@ -400,14 +399,14 @@ plus_u8 = plus
 -- | The formal product intro construction gives a function from a meta-language
 -- product--in this case the terminal object--to the object-language thing, so
 -- here we apply it to `specific terminal`
-unit :: Expr (Meta.Form Form) repr (Obj (Constant Unit))
-unit = (object $ Product_Intro_f F_All) <@> terminal
+unit :: E Form f val (Obj (Constant Unit))
+unit = formal (Product_Intro_f F_All) <@> terminal
 
 -- | The formal sum elim constructor has a base case that works for any type.
 -- Since the empty sum requires only this base case, we don't even have to
 -- construct anything of this type, so we get the typical `absurd` type.
-absurd :: Expr (Meta.Form Form) repr (Obj (Constant Void) :-> Obj (Constant r))
-absurd = fun $ \impossible -> (object $ Sum_Elim_f C_Any) <@> impossible <@> terminal
+absurd :: E Form f val (Obj (Constant Void) :-> Obj (Constant r))
+absurd = fun $ \impossible -> formal (Sum_Elim_f C_Any) <@> impossible <@> terminal
 
 -- NB: an empty product cannot be eliminated, and an empty sum cannot be
 -- introduced. The meta-language enforces this: there are no Selector or
@@ -417,20 +416,20 @@ absurd = fun $ \impossible -> (object $ Sum_Elim_f C_Any) <@> impossible <@> ter
 -- meta-language function. The Variant value (V_That V_This) indicates which
 -- variant to construct, and therefore what type is needed (in this case it's
 -- the object-language unit, so 'unit' is used).
-true :: Expr (Meta.Form Form) repr (Obj (Constant Bool))
-true = (object $ Sum_Intro_f (V_That V_This)) <@> unit
+true :: E Form f val (Obj (Constant Bool))
+true = formal (Sum_Intro_f (V_That V_This)) <@> unit
 
-false :: Expr (Meta.Form Form) repr (Obj (Constant Bool))
-false = (object $ Sum_Intro_f V_This) <@> unit
+false :: E Form f val (Obj (Constant Bool))
+false = formal (Sum_Intro_f V_This) <@> unit
 
-if_then_else :: Expr (Meta.Form Form) repr
+if_then_else :: E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   )
 if_then_else = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
-  (object $ Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
+  formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
 
 class AutoLift n a b where
   autoLift :: Proxy n -> Proxy a -> Proxy b -> Lift n a b
@@ -446,11 +445,11 @@ instance
 
 -- TODO give custom type errors for unliftable things.
 
-lift :: forall repr n s t .
+lift :: forall f val n s t .
         ( AutoLift n s t )
      => NatRep n
-     -> Expr (Meta.Form Form) repr (s :-> t)
-lift nrep = object $ Stream_Lift_f nrep (autoLift proxyN proxyS proxyT)
+     -> E Form f val (s :-> t)
+lift nrep = formal (Stream_Lift_f nrep (autoLift proxyN proxyS proxyT))
   where
   proxyS :: Proxy s
   proxyS = Proxy
@@ -459,8 +458,11 @@ lift nrep = object $ Stream_Lift_f nrep (autoLift proxyN proxyS proxyT)
   proxyN :: Proxy n
   proxyN = Proxy
 
-lift_ :: NatRep n -> Lift n s t -> Expr (Meta.Form Form) repr (s :-> t)
-lift_ n l = object $ Stream_Lift_f n l
+lift_ :: NatRep n -> Lift n s t -> E Form f val (s :-> t)
+lift_ n l = formal (Stream_Lift_f n l)
+
+constant :: NatRep n -> E Form f val (Obj (Constant s) :-> Obj (Varying n s))
+constant nrep = lift nrep
 
 -- Is lifting properly defined? It's good for many examples and use cases, but
 -- what about something like if_then_else? Maybe the error is that
@@ -471,44 +473,44 @@ lift_ n l = object $ Stream_Lift_f n l
 -- Fixed. But still, if_then_else is an easy one. What about lifting a
 -- maybe eliminator?
 
-just :: Expr (Meta.Form Form) repr
+just :: E Form f val
   (Obj (Constant a) :-> Obj (Constant (Maybe a)))
-just = object $ Sum_Intro_f (V_That V_This)
+just = formal (Sum_Intro_f (V_That V_This))
 
-nothing :: Expr (Meta.Form Form) repr (Obj (Constant (Maybe s)))
-nothing = (object $ Sum_Intro_f V_This) <@> unit
+nothing :: E Form f val (Obj (Constant (Maybe s)))
+nothing = formal (Sum_Intro_f V_This) <@> unit
 
-maybe :: Expr (Meta.Form Form) repr
+maybe :: E Form f val
   (   Obj (Constant r)
   :-> (Obj (Constant s) :-> Obj (Constant r))
   :-> Obj (Constant (Maybe s))
   :-> Obj (Constant r)
   )
 maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
-  (object $ Sum_Elim_f (C_Or (C_Or C_Any)))
+  formal (Sum_Elim_f (C_Or (C_Or C_Any)))
     <@> m <@> ((fun $ \_ -> ifNothing) &> ifJust &> terminal)
 
 -- | Constructs a pair. The formal 'product_intro_f' gives a function from a
 -- meta-language product with an explicit terminal in the rightmost position,
 -- but we change it to be a curried from without the terminal.
-pair :: Expr (Meta.Form Form) repr
+pair :: E Form f val
   (Obj (Constant a) :-> Obj (Constant b) :-> Obj (Constant (Pair a b)))
 pair = fun $ \a -> fun $ \b ->
-  (object $ Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
+  formal (Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
 
-fst :: Expr (Meta.Form Form) repr (Obj (Constant (Pair a b)) :-> Obj (Constant a))
-fst = fun $ \p -> (object $ Product_Elim_f S_Here) <@> p <@> id
+fst :: E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant a))
+fst = fun $ \p -> formal (Product_Elim_f S_Here) <@> p <@> id
 
-snd :: Expr (Meta.Form Form) repr (Obj (Constant (Pair a b)) :-> Obj (Constant b))
-snd = fun $ \p -> (object $ Product_Elim_f (S_There S_Here)) <@> p <@> id
+snd :: E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant b))
+snd = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) <@> p <@> id
 
-drop :: Expr (Meta.Form Form) repr
+drop :: E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
-drop = object $ Stream_Drop_f
+drop = formal Stream_Drop_f
 
-shift :: Expr (Meta.Form Form) repr
+shift :: E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
-shift = object $ Stream_Shift_f
+shift = formal Stream_Shift_f
 
 -- |
 -- = Mutually-recursive memory streams.
@@ -516,6 +518,5 @@ shift = object $ Stream_Shift_f
 -- | The most general, but comparatively verbose, way to write a
 -- mutually-recursive memory stream.
 knot :: Knot s t q i
-     -> Expr (Meta.Form Form) repr
-        ((s :-> t) :-> (q :-> r) :-> (i :-> r))
-knot sig = object $ Stream_Knot_f sig
+     -> E Form f val ((s :-> t) :-> (q :-> r) :-> (i :-> r))
+knot sig = formal (Stream_Knot_f sig)

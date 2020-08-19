@@ -14,10 +14,9 @@ extra-source-files:  CHANGELOG.md
 
 library
   exposed-modules:     Language.Pilot
-                       Language.Pilot.Expr
-                       Language.Pilot.Final
                        Language.Pilot.Meta
                        Language.Pilot.Object
+                       Language.Pilot.Repr
 
                        Language.Pilot.Types
                        Language.Pilot.Types.Nat

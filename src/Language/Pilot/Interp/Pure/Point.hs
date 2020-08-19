@@ -48,7 +48,7 @@ import qualified Data.Ord as Ord (compare)
 import qualified Data.Word as Haskell
 
 import Language.Pilot.Types
-import Language.Pilot.Object (Width (..), Signedness (..))
+import Language.Pilot.Object (Width (..), Signedness (..), Point (..))
 import qualified Language.Pilot.Object as Object
 
 data Integer_r signedness width where
@@ -190,39 +190,51 @@ integer_f f (Int16 x) (Int16 y) = Int16 (f x y)
 integer_f f (Int32 x) (Int32 y) = Int32 (f x y)
 integer_f f (Int64 x) (Int64 y) = Int64 (f x y)
 
-add :: Integer_r s w -> Integer_r s w -> Integer_r s w
-add = integer_f (+)
+add :: Point_r ('Integer_t s w)
+    -> Point_r ('Integer_t s w)
+    -> Point_r ('Integer_t s w)
+add (Integer_r x) (Integer_r y) = Integer_r (integer_f (+) x y)
 
-subtract :: Integer_r s w -> Integer_r s w -> Integer_r s w
-subtract = integer_f (\x y -> x - y)
+subtract :: Point_r ('Integer_t s w)
+         -> Point_r ('Integer_t s w)
+         -> Point_r ('Integer_t s w)
+subtract (Integer_r x) (Integer_r y) = Integer_r (integer_f (\x y -> x - y) x y)
 
-multiply :: Integer_r s w -> Integer_r s w -> Integer_r s w
-multiply = integer_f (*)
+multiply :: Point_r ('Integer_t s w)
+         -> Point_r ('Integer_t s w)
+         -> Point_r ('Integer_t s w)
+multiply (Integer_r x) (Integer_r y) = Integer_r (integer_f (*) x y)
 
-divide :: Integer_r s w -> Integer_r s w -> Integer_r s w
-divide = integer_f div
+divide :: Point_r ('Integer_t s w)
+       -> Point_r ('Integer_t s w)
+       -> Point_r ('Integer_t s w)
+divide (Integer_r x) (Integer_r y) = Integer_r (integer_f div x y)
 
-modulo :: Integer_r s w -> Integer_r s w -> Integer_r s w
-modulo = integer_f mod
+modulo :: Point_r ('Integer_t s w)
+       -> Point_r ('Integer_t s w)
+       -> Point_r ('Integer_t s w)
+modulo (Integer_r x) (Integer_r y) = Integer_r (integer_f mod x y)
 
-negate :: Integer_r s w -> Integer_r s w
-negate x = integer_f (\x _ -> (-x)) x x
+negate :: Point_r ('Integer_t s w) -> Point_r ('Integer_t s w)
+negate (Integer_r x) = Integer_r (integer_f (\x _ -> (-x)) x x)
 
-abs :: Integer_r 'Signed_t w -> Integer_r 'Unsigned_t w
-abs (Int8  i8)  = UInt8  (fromIntegral i8)
-abs (Int16 i16) = UInt16 (fromIntegral i16)
-abs (Int32 i32) = UInt32 (fromIntegral i32)
-abs (Int64 i64) = UInt64 (fromIntegral i64)
+abs :: Point_r ('Integer_t 'Signed_t w) -> Point_r ('Integer_t 'Unsigned_t w)
+abs (Integer_r (Int8  i8))  = Integer_r $ UInt8  (fromIntegral i8)
+abs (Integer_r (Int16 i16)) = Integer_r $ UInt16 (fromIntegral i16)
+abs (Integer_r (Int32 i32)) = Integer_r $ UInt32 (fromIntegral i32)
+abs (Integer_r (Int64 i64)) = Integer_r $ UInt64 (fromIntegral i64)
 
-compare :: Integer_r s w -> Integer_r s w -> Point_r Object.Cmp
-compare (UInt8 x)  (UInt8 y)  = compare_ x y
-compare (UInt16 x) (UInt16 y) = compare_ x y
-compare (UInt32 x) (UInt32 y) = compare_ x y
-compare (UInt64 x) (UInt64 y) = compare_ x y
-compare (Int8 x)  (Int8 y)  = compare_ x y
-compare (Int16 x) (Int16 y) = compare_ x y
-compare (Int32 x) (Int32 y) = compare_ x y
-compare (Int64 x) (Int64 y) = compare_ x y
+compare :: Point_r ('Integer_t s w)
+        -> Point_r ('Integer_t s w)
+        -> Point_r Object.Cmp
+compare (Integer_r (UInt8 x))  (Integer_r (UInt8 y))  = compare_ x y
+compare (Integer_r (UInt16 x)) (Integer_r (UInt16 y)) = compare_ x y
+compare (Integer_r (UInt32 x)) (Integer_r (UInt32 y)) = compare_ x y
+compare (Integer_r (UInt64 x)) (Integer_r (UInt64 y)) = compare_ x y
+compare (Integer_r (Int8 x))  (Integer_r (Int8 y))  = compare_ x y
+compare (Integer_r (Int16 x)) (Integer_r (Int16 y)) = compare_ x y
+compare (Integer_r (Int32 x)) (Integer_r (Int32 y)) = compare_ x y
+compare (Integer_r (Int64 x)) (Integer_r (Int64 y)) = compare_ x y
 
 compare_ :: Ord n => n -> n -> Point_r Object.Cmp
 compare_ x y = case Ord.compare x y of
@@ -232,28 +244,28 @@ compare_ x y = case Ord.compare x y of
 
 bits_f
   :: (forall b . Bits.Bits b => b -> b -> b)
-  -> Bytes_r w
-  -> Bytes_r w
-  -> Bytes_r w
-bits_f f (Word8  x) (Word8  y) = Word8 (f x y)
-bits_f f (Word16 x) (Word16 y) = Word16 (f x y)
-bits_f f (Word32 x) (Word32 y) = Word32 (f x y)
-bits_f f (Word64 x) (Word64 y) = Word64 (f x y)
+  -> Point_r ('Bytes_t w)
+  -> Point_r ('Bytes_t w)
+  -> Point_r ('Bytes_t w)
+bits_f f (Bytes_r (Word8  x)) (Bytes_r (Word8  y)) = Bytes_r (Word8 (f x y))
+bits_f f (Bytes_r (Word16 x)) (Bytes_r (Word16 y)) = Bytes_r (Word16 (f x y))
+bits_f f (Bytes_r (Word32 x)) (Bytes_r (Word32 y)) = Bytes_r (Word32 (f x y))
+bits_f f (Bytes_r (Word64 x)) (Bytes_r (Word64 y)) = Bytes_r (Word64 (f x y))
 
-or :: Bytes_r w -> Bytes_r w -> Bytes_r w
+or :: Point_r (Bytes_t w) -> Point_r (Bytes_t w) -> Point_r (Bytes_t w)
 or = bits_f (Bits..|.)
 
-and :: Bytes_r w -> Bytes_r w -> Bytes_r w
+and :: Point_r (Bytes_t w) -> Point_r (Bytes_t w) -> Point_r (Bytes_t w)
 and = bits_f (Bits..&.)
 
-xor :: Bytes_r w -> Bytes_r w -> Bytes_r w
+xor :: Point_r (Bytes_t w) -> Point_r (Bytes_t w) -> Point_r (Bytes_t w)
 xor = bits_f Bits.xor
 
-complement :: Bytes_r w -> Bytes_r w
+complement :: Point_r (Bytes_t w) -> Point_r (Bytes_t w)
 complement b = bits_f (\b _ -> Bits.complement b) b b
 
-shiftl :: Bytes_r w -> Bytes_r 'W_One_t -> Bytes_r w
-shiftl b (Word8 w8) = bits_f (\b _ -> Bits.shiftL b (fromIntegral w8)) b b
+shiftl :: Point_r (Bytes_t w) -> Point_r (Bytes_t 'W_One_t) -> Point_r (Bytes_t w)
+shiftl b (Bytes_r (Word8 w8)) = bits_f (\b _ -> Bits.shiftL b (fromIntegral w8)) b b
 
-shiftr :: Bytes_r w -> Bytes_r 'W_One_t -> Bytes_r w
-shiftr b (Word8 w8) = bits_f (\b _ -> Bits.shiftR b (fromIntegral w8)) b b
+shiftr :: Point_r (Bytes_t w) -> Point_r (Bytes_t 'W_One_t) -> Point_r (Bytes_t w)
+shiftr b (Bytes_r (Word8 w8)) = bits_f (\b _ -> Bits.shiftR b (fromIntegral w8)) b b
