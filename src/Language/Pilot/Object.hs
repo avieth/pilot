@@ -60,9 +60,43 @@ module Language.Pilot.Object
   , Cases (..)
   , Lift (..)
   , Knot (..)
-  , UncheckedCast (..)
-  , CheckedCast (..)
+  , Cast (..)
   , type Vector
+
+  , let_
+  , local
+
+  , u8
+  , u16
+  , u32
+  , u64
+  , i8
+  , i16
+  , i32
+  , i64
+
+  , add
+  , subtract
+  , multiply
+  , divide
+  , modulo
+  , negate
+  , abs
+  , cmp
+
+  , and
+  , or
+  , xor
+  , complement
+  , shiftl
+  , shiftr
+
+  , cast
+
+  , bundle
+  , project
+  , choose
+  , match
 
   , lift
   , lift_
@@ -83,16 +117,12 @@ module Language.Pilot.Object
   , fst
   , snd
 
-  , u8
-  , i8
-  , plus
-  , plus_u8
-
   , AutoLift (..)
 
   ) where
 
-import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd, const)
+import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
+  const, subtract, negate, abs, and, or)
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -236,7 +266,7 @@ data Form (t :: Meta.Type Type) where
     :-> Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
-  Bytes_Not_f :: Form
+  Bytes_Complement_f :: Form
     (   Obj (Constant ('Bytes_t width))
     :-> Obj (Constant ('Bytes_t width))
     )
@@ -250,6 +280,9 @@ data Form (t :: Meta.Type Type) where
     :-> Obj (Constant ('Bytes_t 'W_One_t))
     :-> Obj (Constant ('Bytes_t width))
     )
+
+  Cast_f :: Cast a b -> Form
+    (Obj (Constant a) :-> Obj (Constant b))
 
   -- | Product introduction takes a meta-language product containing all of
   -- the fields. The `Fields` value constrains `r` to be such a product, or
@@ -365,36 +398,157 @@ type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
   Vector ('S 'Z) t = t
   Vector ('S  n) t = t :* Vector n t
 
--- Trying to think of a cleaner way to do the Knot GADT, so that Terminals do
--- not show up at the end.
--- You always have to give at least one vector, so why not start with that?
---
---   Knot :: Vec ('S n) (repr (Obj ('Constant_t a))) -> 
-
 -- TODO enumerate all casts.
-data UncheckedCast (a :: Point) (b :: Point)
-data CheckedCast (a :: Point) (b :: Point)
+data Cast (a :: Point) (b :: Point)
+
+let_ :: E Form f val (a :-> (a :-> b) :-> b)
+let_ = formal Let_f
+
+local :: E Form f val (a :-> (a :-> b) :-> b)
+local = let_
 
 u8 :: Haskell.Word8 -> E Form f val (Obj (Constant UInt8))
 u8 w = formal $ Integer_Literal_UInt8_f w
 
-i8 :: Haskell.Int8 -> E Form f val (Obj (Constant Int8))
-i8 w = formal $ Integer_Literal_Int8_f w
+u16 :: Haskell.Word16 -> E Form f val (Obj (Constant UInt16))
+u16 w = formal $ Integer_Literal_UInt16_f w
 
-plus :: E Form f val
+u32 :: Haskell.Word32 -> E Form f val (Obj (Constant UInt32))
+u32 w = formal $ Integer_Literal_UInt32_f w
+
+u64 :: Haskell.Word64 -> E Form f val (Obj (Constant UInt64))
+u64 w = formal $ Integer_Literal_UInt64_f w
+
+i8 :: Haskell.Int8 -> E Form f val (Obj (Constant Int8))
+i8 i = formal $ Integer_Literal_Int8_f i
+
+i16 :: Haskell.Int16 -> E Form f val (Obj (Constant Int16))
+i16 i = formal $ Integer_Literal_Int16_f i
+
+i32 :: Haskell.Int32 -> E Form f val (Obj (Constant Int32))
+i32 i = formal $ Integer_Literal_Int32_f i
+
+i64 :: Haskell.Int64 -> E Form f val (Obj (Constant Int64))
+i64 i = formal $ Integer_Literal_Int64_f i
+
+add :: E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-plus = formal Integer_Add_f
+add = formal Integer_Add_f
 
--- | Specialized 'plus' to UInt8.
-plus_u8 :: E Form f val
-  (   Obj (Constant UInt8)
-  :-> Obj (Constant UInt8)
-  :-> Obj (Constant UInt8)
+subtract :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
   )
-plus_u8 = plus
+subtract = formal Integer_Subtract_f
+
+multiply :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  )
+multiply = formal Integer_Multiply_f
+
+divide :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  )
+divide = formal Integer_Divide_f
+
+modulo :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  )
+modulo = formal Integer_Modulo_f
+
+negate :: E Form f val
+  (   Obj (Constant ('Integer_t 'Signed_t width))
+  :-> Obj (Constant ('Integer_t 'Signed_t width))
+  )
+negate = formal Integer_Negate_f
+
+abs :: E Form f val
+  (   Obj (Constant ('Integer_t 'Signed_t   width))
+  :-> Obj (Constant ('Integer_t 'Unsigned_t width))
+  )
+abs = formal Integer_Abs_f
+
+cmp :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Cmp)
+  )
+cmp = formal Integer_Compare_f
+
+and :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+and = formal Bytes_And_f
+
+or :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+or = formal Bytes_Or_f
+
+xor :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+xor = formal Bytes_Xor_f
+
+complement :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+complement = formal Bytes_Complement_f
+
+shiftl :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t 'W_One_t))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+shiftl = formal Bytes_Shiftl_f
+
+shiftr :: E Form f val
+  (   Obj (Constant ('Bytes_t width))
+  :-> Obj (Constant ('Bytes_t 'W_One_t))
+  :-> Obj (Constant ('Bytes_t width))
+  )
+shiftr = formal Bytes_Shiftr_f
+
+cast :: Cast a b -> E Form f val
+  (Obj (Constant a) :-> Obj (Constant b))
+cast c = formal (Cast_f c)
+
+-- | Construct a product.
+bundle :: Fields r fields -> E Form f val
+  (r :-> Obj (Constant ('Product_t fields)))
+bundle fields = formal (Product_Intro_f fields)
+
+-- | Construct a sum.
+choose :: Variant r variants -> E Form f val
+  (r :-> Obj (Constant ('Sum_t variants)))
+choose variant = formal (Sum_Intro_f variant)
+
+-- | Eliminate a product
+project :: Selector fields q r -> E Form f val
+  (Obj (Constant ('Product_t fields)) :-> q)
+project selector = formal (Product_Elim_f selector)
+
+match :: Cases variants r -> E Form f val
+  (Obj (Constant ('Sum_t variants)) :-> r)
+match cases = formal (Sum_Elim_f cases)
+
 
 -- | The formal product intro construction gives a function from a meta-language
 -- product--in this case the terminal object--to the object-language thing, so

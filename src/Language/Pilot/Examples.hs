@@ -58,7 +58,7 @@ example_3 :: forall f val n . ( Auto n ) => E f val
 example_3 = fun $ \x -> fun $ \y ->
   lift (repVal (Proxy :: Proxy n)) <@> f <@> x <@> y
   where
-  f = Pilot.flip <@> Pilot.maybe <@> (plus <@> u8 1)
+  f = Pilot.flip <@> Pilot.maybe <@> (add <@> u8 1)
 
 -- Notice that we can't lift maybe itself, since one of its arguments is
 -- a function, and we cannot have varying functions. But this doesn't mean that
@@ -78,12 +78,12 @@ example_4 :: forall f val n . ( Auto n ) => E f val
   :-> Obj (Varying n UInt8)
   )
 example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
-  lift (repVal (Proxy :: Proxy n)) <@> f <@> x <@> y <@> z
+  lift_ (repVal (Proxy :: Proxy n)) (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
   where
   f = fun $ \x -> fun $ \y -> fun $ \z ->
         -- Here will fully apply the just case eliminator, so that the function
         -- f--which we shall lift--is first-order over constants.
-        Pilot.maybe <@> x <@> (plus_u8 <@> y) <@> z
+        Pilot.maybe <@> x <@> (add <@> y) <@> z
 
 -- | This is one of the simplest examples of a memory stream recursive knot.
 -- It creates a memory stream of size 1, and each step uses the previous value
@@ -103,7 +103,7 @@ example_5 = knot (Tied (S_Rep Z_Rep)) <@> loop <@> k
 example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_6 = fun $ \c -> fun $ \f ->
-  let loop = lift Z_Rep <@> plus_u8 <@> f
+  let loop = lift_ Z_Rep (Ap (Ap Pure)) <@> add <@> f
   in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.id <@> c
 
 -- | [42, 42 ..]
@@ -112,4 +112,4 @@ example_7 = lift Z_Rep <@> u8 42
 
 example_8 :: NatRep n -> E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
-example_8 nrep = lift nrep <@> plus_u8
+example_8 nrep = lift_ nrep (Ap (Ap Pure)) <@> add

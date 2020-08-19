@@ -72,10 +72,42 @@ module Language.Pilot
   , Object.Width (..)
   , Object.Signedness (..)
 
+  , Object.u8
+  , Object.u16
+  , Object.u32
+  , Object.u64
+  , Object.i8
+  , Object.i16
+  , Object.i32
+  , Object.i64
+  , Object.add
+  , Object.subtract
+  , Object.multiply
+  , Object.divide
+  , Object.modulo
+  , Object.negate
+  , Object.abs
+  , Object.cmp
+  , Object.and
+  , Object.or
+  , Object.xor
+  , Object.complement
+  , Object.shiftl
+  , Object.shiftr
+
+  , Object.Cast (..)
+  , Object.cast
+
+  , Object.bundle
+  , Object.project
+  , Object.choose
+  , Object.match
+
   , Object.shift
   , Object.drop
   , Object.lift
   , Object.lift_
+  , Object.constant
   , Object.knot
   , Object.Knot (..)
   , Object.Lift (..)
@@ -93,11 +125,6 @@ module Language.Pilot
   , Object.maybe
   , Object.just
   , Object.nothing
-
-  , Object.u8
-  , Object.i8
-  , Object.plus
-  , Object.plus_u8
 
   , Object.AutoLift
   , Nat (..)

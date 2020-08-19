@@ -133,12 +133,14 @@ interp_pure form = case form of
     repr (liftPoint2 Point.or <$> getRepr x <*> getRepr y)
   Bytes_Xor_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.xor <$> getRepr x <*> getRepr y)
-  Bytes_Not_f -> fun $ \x ->
+  Bytes_Complement_f -> fun $ \x ->
     repr (liftPoint Point.complement <$> getRepr x)
   Bytes_Shiftl_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.shiftl <$> getRepr x <*> getRepr y)
   Bytes_Shiftr_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.shiftr <$> getRepr x <*> getRepr y)
+
+  Cast_f c -> case c of {}
 
   -- For let bindings we do whatever a monadic bind is in f, effectively
   -- "sharing the context" of the x representation by re-introducing it as
@@ -344,7 +346,7 @@ interp_lift nrep lf = fun $ \sr ->
   prefixWithReprAp ffs fxs = do
     fs <- ffs
     xs <- toPrefixWithRepr fxs
-    fmeld app_v fs xs
+    fmeld (\f x -> getRepr (fromArrow f (value x))) fs xs
 
   toPrefixWithRepr
     :: forall n s .

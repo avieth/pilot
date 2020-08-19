@@ -53,8 +53,6 @@ module Language.Pilot.Repr
   , fromArrow
   , fromProduct
   , fromTerminal
-
-  , app_v
   ) where
 
 import Prelude hiding (id, const, curry, uncurry, product, fst, snd, flip)
@@ -64,9 +62,15 @@ import Language.Pilot.Meta as Meta (Type (..), Obj, Terminal, type (:->), type (
 
 import Data.Functor.Identity
 
+-- | This is the target of an EDSL over a given domain. The types `f` and `val`
+-- determine the representation, but the meta-language functions and products
+-- are always the same, as given by the 'Val' type.
 newtype Repr (f :: Hask -> Hask) (val :: domain -> Hask) (t :: Meta.Type domain) = Repr
   { getRepr :: f (Val f val t) }
 
+-- | A value in the representation of some EDSL target. Haskell functions and
+-- products are here, along with some object-language representation
+-- determined by `val`.
 data Val (f :: Hask -> Hask) (val :: domain -> Hask) (t :: Meta.Type domain) where
   Object   :: val t -> Val f val (Obj t)
   Arrow    :: (Repr f val s -> Repr f val t) -> Val f val (s :-> t)
@@ -118,9 +122,6 @@ app fr xr = Repr $ do
 (<@>) = app
 
 infixl 4 <@>
-
-app_v :: Monad f => Val f val (s :-> t) -> Val f val s -> f (Val f val t)
-app_v (Arrow f) v = getRepr (f (value v))
 
 id :: Applicative f => Repr f val (s :-> s)
 id = fun $ \a -> a
