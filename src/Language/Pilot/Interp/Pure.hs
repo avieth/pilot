@@ -21,7 +21,7 @@ module Language.Pilot.Interp.Pure
   ( Value_r (..)
   , Identity (..)
   , showValue
-  , interp_pure
+  , interpPure
   , constant
   , varying
   ) where
@@ -37,7 +37,7 @@ import Language.Pilot.Interp.Pure.Point as Point
 import Language.Pilot.Interp.Pure.PrefixList as PrefixList
 
 instance Interprets Object.Form Identity Value_r where
-  interp = interp_pure
+  interp = interpPure
 
 data Value_r (t :: Object.Type) where
   Constant_r :: Point_r t -> Value_r (Constant t)
@@ -89,8 +89,8 @@ liftPoint2 :: (Point_r a -> Point_r b -> Point_r c)
            -> Val f Value_r (Obj (Constant c))
 liftPoint2 f (Object (Constant_r a)) (Object (Constant_r b)) = Object (Constant_r (f a b))
 
-interp_pure :: Interpret Object.Form Identity Value_r
-interp_pure form = case form of
+interpPure :: Interpret Object.Form Identity Value_r
+interpPure form = case form of
 
   Integer_Literal_UInt8_f  w8  -> object (Constant_r (Integer_r (Point.UInt8 w8)))
   Integer_Literal_UInt16_f w16 -> object (Constant_r (Integer_r (Point.UInt16 w16)))
