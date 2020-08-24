@@ -141,7 +141,7 @@ interpPure form = case form of
   Bytes_Shiftr_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.shiftr <$> getRepr x <*> getRepr y)
 
-  Cast_f c -> case c of {}
+  Cast_f c -> interp_cast c
 
   -- For let bindings we do whatever a monadic bind is in f, effectively
   -- "sharing the context" of the x representation by re-introducing it as
@@ -163,6 +163,28 @@ interpPure form = case form of
 
   Stream_Lift_f nrep lf -> interp_lift nrep lf
   Stream_Knot_f kn -> interp_knot kn
+
+interp_cast :: Cast a b -> Repr Identity Value (Obj (Constant a) :-> Obj (Constant b))
+interp_cast c = fun $ \a -> object $ constant $ case (c, fromConstant (fromObject (runIdentity (getRepr a)))) of
+
+  (UpCastInteger TwoWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.UInt16 (fromIntegral w))
+  (UpCastInteger TwoWiderOne, Point.Integer (Point.Int8 w)) -> Point.Integer (Point.Int16 (fromIntegral w))
+  (UpCastInteger FourWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.UInt32 (fromIntegral w))
+  (UpCastInteger FourWiderTwo, Point.Integer (Point.UInt16 w)) -> Point.Integer (Point.UInt32 (fromIntegral w))
+  (UpCastInteger FourWiderOne, Point.Integer (Point.Int8 w)) -> Point.Integer (Point.Int32 (fromIntegral w))
+  (UpCastInteger FourWiderTwo, Point.Integer (Point.Int16 w)) -> Point.Integer (Point.Int32 (fromIntegral w))
+  (UpCastInteger EightWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.UInt64 (fromIntegral w))
+  (UpCastInteger EightWiderTwo, Point.Integer (Point.UInt16 w)) -> Point.Integer (Point.UInt64 (fromIntegral w))
+  (UpCastInteger EightWiderFour, Point.Integer (Point.UInt32 w)) -> Point.Integer (Point.UInt64 (fromIntegral w))
+  (UpCastInteger EightWiderOne, Point.Integer (Point.Int8 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+  (UpCastInteger EightWiderTwo, Point.Integer (Point.Int16 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+  (UpCastInteger EightWiderFour, Point.Integer (Point.Int32 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+  (UpCastBytes TwoWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word16 (fromIntegral w))
+  (UpCastBytes FourWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word32 (fromIntegral w))
+  (UpCastBytes FourWiderTwo, Point.Bytes (Point.Word16 w)) -> Point.Bytes (Point.Word32 (fromIntegral w))
+  (UpCastBytes EightWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
+  (UpCastBytes EightWiderTwo, Point.Bytes (Point.Word16 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
+  (UpCastBytes EightWiderFour, Point.Bytes (Point.Word32 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
 
 -- It seems that for product intro we really do need to use the monad of f,
 -- for we have to evaluate the meta-language product in order to get the

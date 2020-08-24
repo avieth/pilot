@@ -61,6 +61,7 @@ module Language.Pilot.Object
   , Lift (..)
   , Knot (..)
   , Cast (..)
+  , Wider (..)
   , type Vector
 
   , let_
@@ -398,8 +399,27 @@ type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
   Vector ('S 'Z) t = t
   Vector ('S  n) t = t :* Vector n t
 
--- TODO enumerate all casts.
-data Cast (a :: Point) (b :: Point)
+-- | Each constructor determines a cast from the left type to the right type.
+data Cast (a :: Point) (b :: Point) where
+  -- | Casts to wider numbers of the same signedness are allowed.
+  UpCastInteger
+    :: Wider width' width
+    -> Cast ('Integer_t sign width) ('Integer_t sign width')
+  UpCastBytes
+    :: Wider width' width
+    -> Cast ('Bytes_t width) ('Bytes_t width')
+
+-- | Says that w1 is strictly wider than w2.
+data Wider (w1 :: Width) (w2 :: Width) where
+
+  TwoWiderOne :: Wider ('W_Two_t) ('W_One_t)
+
+  FourWiderOne :: Wider ('W_Four_t) ('W_One_t)
+  FourWiderTwo :: Wider ('W_Four_t) ('W_Two_t)
+
+  EightWiderOne  :: Wider ('W_Eight_t) ('W_One_t)
+  EightWiderTwo  :: Wider ('W_Eight_t) ('W_Two_t)
+  EightWiderFour :: Wider ('W_Eight_t) ('W_Four_t)
 
 let_ :: E Form f val (a :-> (a :-> b) :-> b)
 let_ = formal Let_f
