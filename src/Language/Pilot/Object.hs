@@ -21,8 +21,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 
 module Language.Pilot.Object
-  ( Point (..)
-  , Type (..)
+  ( Type (..)
 
   , Constant
   , Varying
@@ -145,68 +144,21 @@ import qualified Language.Pilot.Meta as Meta
 import Language.Pilot.Repr hiding (fst, snd)
 import Language.Pilot.Types
 
-data Width where
-  W_One_t   :: Width
-  W_Two_t   :: Width
-  W_Four_t  :: Width
-  W_Eight_t :: Width
-
-data Signedness where
-  Signed_t   :: Signedness
-  Unsigned_t :: Signedness
-
--- | This data kind gives all of the "point" types: finite sums and products,
--- along with numeric and bitwise base types.
-data Point where
-
-  -- TODO may want to include fractional numbers.
-  Integer_t :: Signedness -> Width -> Point
-  Bytes_t :: Width -> Point
-
-  -- The empty product is unit, the empty sum is void.
-
-  Product_t :: [Point] -> Point
-  Sum_t     :: [Point] -> Point
-
-type Product ts = 'Product_t ts
-type Sum ts = 'Sum_t ts
-
-type UInt8  = 'Integer_t 'Unsigned_t 'W_One_t
-type UInt16 = 'Integer_t 'Unsigned_t 'W_Two_t
-type UInt32 = 'Integer_t 'Unsigned_t 'W_Four_t
-type UInt64 = 'Integer_t 'Unsigned_t 'W_Eight_t
-
-type Int8  = 'Integer_t 'Signed_t 'W_One_t
-type Int16 = 'Integer_t 'Signed_t 'W_Two_t
-type Int32 = 'Integer_t 'Signed_t 'W_Four_t
-type Int64 = 'Integer_t 'Signed_t 'W_Eight_t
-
-type Word8  = 'Bytes_t 'W_One_t
-type Word16 = 'Bytes_t 'W_Two_t
-type Word32 = 'Bytes_t 'W_Four_t
-type Word64 = 'Bytes_t 'W_Eight_t
-
-type Unit = 'Product_t '[]
-type Void = 'Sum_t '[]
-
-type Pair a b = 'Product_t '[ a, b ]
-
-type Bool = 'Sum_t '[ Unit, Unit ]
-
--- | Comparison type, to replace the classic -1, 0, 1 motif with a proper
--- algebraic type.
---
--- Cmp = LT | EQ | GT
-type Cmp = 'Sum_t '[ Unit, Unit, Unit ]
-
-type Maybe a = 'Sum_t '[ Unit, a ]
-type Either a b = 'Sum_t '[ a, b ]
+import Language.Pilot.Object.Point as Point hiding (Type, TypeRep)
+import qualified Language.Pilot.Object.Point as Point
 
 -- | This data kind gives all of the types in the EDSL.
 -- A key feature is that a Varying_t cannot contain another Varying_t.
 data Type where
-  Constant_t :: Point -> Type
-  Varying_t  :: Nat -> Point -> Type
+  Constant_t :: Point.Type -> Type
+  Varying_t  :: Nat -> Point.Type -> Type
+
+data TypeRep (t :: Type) where
+  Constant_r :: Point.TypeRep p -> TypeRep ('Constant_t p)
+  Varying_r  :: NatRep n -> Point.TypeRep p -> TypeRep ('Varying_t n p)
+
+instance Represented Type where
+  type Rep Type = TypeRep
 
 type Constant = 'Constant_t
 type Varying = 'Varying_t
@@ -341,19 +293,19 @@ data Form (t :: Meta.Type Type) where
 -- | Used for sum introduction.
 -- `Variant r variants` means that an `r` is sufficient to construct a
 -- sum of `variants`.
-data Variant (r :: Meta.Type Type) (variants :: [Point]) where
+data Variant (r :: Meta.Type Type) (variants :: [Point.Type]) where
   V_This :: Variant (Obj (Constant variant)) (variant ': variants)
   V_That :: Variant r variants -> Variant r (variant ': variants)
 
 -- | Used for product introduction.
 -- `Fields repr r fields` means that if you have an `r`, then you can
 -- introduce a product with `fields`.
-data Fields (r :: Meta.Type Type) (fields :: [Point]) where
+data Fields (r :: Meta.Type Type) (fields :: [Point.Type]) where
   F_All :: Fields Terminal '[]
   F_And :: Fields                          r            fields
         -> Fields (Obj (Constant field) :* r) (field ': fields)
 
-data Selector (fields :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
+data Selector (fields :: [Point.Type]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
   S_Here  :: Selector (field ': fields) ((Obj (Constant field) :-> r) :-> r) r
   S_There :: Selector           fields  q r
           -> Selector (field ': fields) q r
@@ -364,7 +316,7 @@ data Selector (fields :: [Point]) (q :: Meta.Type Type) (r :: Meta.Type Type) wh
 -- common type--except when the variants is '[], in which case you can get any
 -- type.
 --
-data Cases (variants :: [Point]) (r :: Meta.Type Type) where
+data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
   C_Any :: Cases '[] x
   C_Or  :: Cases             variants  (                                   q  :-> r)
         -> Cases (variant ': variants) (((Obj (Constant variant) :-> r) :* q) :-> r)
@@ -415,7 +367,7 @@ type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
   Vector ('S  n) t = t :* Vector n t
 
 -- | Each constructor determines a cast from the left type to the right type.
-data Cast (a :: Point) (b :: Point) where
+data Cast (a :: Point.Type) (b :: Point.Type) where
 
   -- | Casts to wider numbers of the same signedness are allowed.
   UpCastInteger

@@ -16,9 +16,11 @@ library
   exposed-modules:     Language.Pilot
                        Language.Pilot.Meta
                        Language.Pilot.Object
+                       Language.Pilot.Object.Point
                        Language.Pilot.Repr
 
                        Language.Pilot.Types
+                       Language.Pilot.Types.Logic
                        Language.Pilot.Types.Nat
                        Language.Pilot.Types.Represented
 

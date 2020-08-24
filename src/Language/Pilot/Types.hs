@@ -19,10 +19,12 @@ module Language.Pilot.Types
   , Interp
   , module Nat
   , module Rep
+  , module Logic
   ) where
 
 import Data.Kind as Haskell (Type)
 
+import Language.Pilot.Types.Logic as Logic
 import Language.Pilot.Types.Nat as Nat
 import Language.Pilot.Types.Represented as Rep
 

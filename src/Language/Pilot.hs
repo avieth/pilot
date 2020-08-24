@@ -137,6 +137,7 @@ module Language.Pilot
 import qualified Language.Pilot.Repr as Repr
 import qualified Language.Pilot.Meta as Meta
 import qualified Language.Pilot.Object as Object
+import qualified Language.Pilot.Object.Point as Object.Point (Type)
 import Language.Pilot.Types
 
 type Point t = Meta.Obj (Object.Constant t)
@@ -147,7 +148,7 @@ type E f val t = Repr.E Form f val t
 
 type Meta_k = Meta.Type
 type Object_k = Object.Type
-type Point_k = Object.Point
+type Point_k = Object.Point.Type
 
 -- TODO
 --

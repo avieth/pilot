@@ -50,6 +50,7 @@ import qualified Data.Word as Haskell
 import Language.Pilot.Types
 import Language.Pilot.Object (Width (..), Signedness (..))
 import qualified Language.Pilot.Object as Object
+import qualified Language.Pilot.Object.Point as Object.Point
 
 data Integer signedness width where
   UInt8  :: Haskell.Word8  -> Integer 'Unsigned_t 'W_One_t
@@ -67,17 +68,9 @@ data Bytes width where
   Word32 :: Haskell.Word32 -> Bytes 'W_Four_t
   Word64 :: Haskell.Word64 -> Bytes 'W_Eight_t
 
-data Any (f :: k -> Hask) (ts :: [k]) where
-  Any :: f t -> Any f (t ': ts)
-  Or  :: Any f ts -> Any f (t ': ts)
-
-data All (f :: k -> Hask) (ts :: [k]) where
-  All :: All f '[]
-  And :: f t -> All f ts -> All f (t ': ts)
-
-data Point (t :: Object.Point) where
-  Integer :: Integer signedness width -> Point (Object.Integer_t signedness width)
-  Bytes   :: Bytes width -> Point (Object.Bytes_t width)
+data Point (t :: Object.Point.Type) where
+  Integer :: Integer signedness width -> Point (Object.Point.Integer_t signedness width)
+  Bytes   :: Bytes width -> Point (Object.Point.Bytes_t width)
   Sum_r     :: Any Point types -> Point (Object.Sum types)
   Product_r :: All Point types -> Point (Object.Product types)
 
@@ -190,42 +183,42 @@ integer_f f (Int16 x) (Int16 y) = Int16 (f x y)
 integer_f f (Int32 x) (Int32 y) = Int32 (f x y)
 integer_f f (Int64 x) (Int64 y) = Int64 (f x y)
 
-add :: Point ('Object.Integer_t s w)
-    -> Point ('Object.Integer_t s w)
-    -> Point ('Object.Integer_t s w)
+add :: Point ('Object.Point.Integer_t s w)
+    -> Point ('Object.Point.Integer_t s w)
+    -> Point ('Object.Point.Integer_t s w)
 add (Integer x) (Integer y) = Integer (integer_f (+) x y)
 
-subtract :: Point ('Object.Integer_t s w)
-         -> Point ('Object.Integer_t s w)
-         -> Point ('Object.Integer_t s w)
+subtract :: Point ('Object.Point.Integer_t s w)
+         -> Point ('Object.Point.Integer_t s w)
+         -> Point ('Object.Point.Integer_t s w)
 subtract (Integer x) (Integer y) = Integer (integer_f (\x y -> x - y) x y)
 
-multiply :: Point ('Object.Integer_t s w)
-         -> Point ('Object.Integer_t s w)
-         -> Point ('Object.Integer_t s w)
+multiply :: Point ('Object.Point.Integer_t s w)
+         -> Point ('Object.Point.Integer_t s w)
+         -> Point ('Object.Point.Integer_t s w)
 multiply (Integer x) (Integer y) = Integer (integer_f (*) x y)
 
-divide :: Point ('Object.Integer_t s w)
-       -> Point ('Object.Integer_t s w)
-       -> Point ('Object.Integer_t s w)
+divide :: Point ('Object.Point.Integer_t s w)
+       -> Point ('Object.Point.Integer_t s w)
+       -> Point ('Object.Point.Integer_t s w)
 divide (Integer x) (Integer y) = Integer (integer_f div x y)
 
-modulo :: Point ('Object.Integer_t s w)
-       -> Point ('Object.Integer_t s w)
-       -> Point ('Object.Integer_t s w)
+modulo :: Point ('Object.Point.Integer_t s w)
+       -> Point ('Object.Point.Integer_t s w)
+       -> Point ('Object.Point.Integer_t s w)
 modulo (Integer x) (Integer y) = Integer (integer_f mod x y)
 
-negate :: Point ('Object.Integer_t s w) -> Point ('Object.Integer_t s w)
+negate :: Point ('Object.Point.Integer_t s w) -> Point ('Object.Point.Integer_t s w)
 negate (Integer x) = Integer (integer_f (\x _ -> (-x)) x x)
 
-abs :: Point ('Object.Integer_t 'Signed_t w) -> Point ('Object.Integer_t 'Unsigned_t w)
+abs :: Point ('Object.Point.Integer_t 'Signed_t w) -> Point ('Object.Point.Integer_t 'Unsigned_t w)
 abs (Integer (Int8  i8))  = Integer $ UInt8  (fromIntegral i8)
 abs (Integer (Int16 i16)) = Integer $ UInt16 (fromIntegral i16)
 abs (Integer (Int32 i32)) = Integer $ UInt32 (fromIntegral i32)
 abs (Integer (Int64 i64)) = Integer $ UInt64 (fromIntegral i64)
 
-compare :: Point ('Object.Integer_t s w)
-        -> Point ('Object.Integer_t s w)
+compare :: Point ('Object.Point.Integer_t s w)
+        -> Point ('Object.Point.Integer_t s w)
         -> Point Object.Cmp
 compare (Integer (UInt8 x))  (Integer (UInt8 y))  = compare_ x y
 compare (Integer (UInt16 x)) (Integer (UInt16 y)) = compare_ x y
@@ -244,28 +237,28 @@ compare_ x y = case Ord.compare x y of
 
 bits_f
   :: (forall b . Bits.Bits b => b -> b -> b)
-  -> Point ('Object.Bytes_t w)
-  -> Point ('Object.Bytes_t w)
-  -> Point ('Object.Bytes_t w)
+  -> Point ('Object.Point.Bytes_t w)
+  -> Point ('Object.Point.Bytes_t w)
+  -> Point ('Object.Point.Bytes_t w)
 bits_f f (Bytes (Word8  x)) (Bytes (Word8  y)) = Bytes (Word8 (f x y))
 bits_f f (Bytes (Word16 x)) (Bytes (Word16 y)) = Bytes (Word16 (f x y))
 bits_f f (Bytes (Word32 x)) (Bytes (Word32 y)) = Bytes (Word32 (f x y))
 bits_f f (Bytes (Word64 x)) (Bytes (Word64 y)) = Bytes (Word64 (f x y))
 
-or :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t w) -> Point (Object.Bytes_t w)
+or :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w)
 or = bits_f (Bits..|.)
 
-and :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t w) -> Point (Object.Bytes_t w)
+and :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w)
 and = bits_f (Bits..&.)
 
-xor :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t w) -> Point (Object.Bytes_t w)
+xor :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w)
 xor = bits_f Bits.xor
 
-complement :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t w)
+complement :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t w)
 complement b = bits_f (\b _ -> Bits.complement b) b b
 
-shiftl :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t 'W_One_t) -> Point (Object.Bytes_t w)
+shiftl :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t 'W_One_t) -> Point (Object.Point.Bytes_t w)
 shiftl b (Bytes (Word8 w8)) = bits_f (\b _ -> Bits.shiftL b (fromIntegral w8)) b b
 
-shiftr :: Point (Object.Bytes_t w) -> Point (Object.Bytes_t 'W_One_t) -> Point (Object.Bytes_t w)
+shiftr :: Point (Object.Point.Bytes_t w) -> Point (Object.Point.Bytes_t 'W_One_t) -> Point (Object.Point.Bytes_t w)
 shiftr b (Bytes (Word8 w8)) = bits_f (\b _ -> Bits.shiftR b (fromIntegral w8)) b b
