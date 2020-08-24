@@ -646,9 +646,9 @@ false = formal (Sum_Intro_f V_This) <@> unit
 
 if_then_else_ :: Known r => E Form f val
   (   Obj (Constant Bool)
-  :-> Obj (Constant r)
-  :-> Obj (Constant r)
-  :-> Obj (Constant r)
+  :-> r
+  :-> r
+  :-> r
   )
 if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
   formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
@@ -656,9 +656,9 @@ if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
 if_then_else
   :: Known r
   => E Form f val (Obj (Constant Bool))
-  -> E Form f val (Obj (Constant r))
-  -> E Form f val (Obj (Constant r))
-  -> E Form f val (Obj (Constant r))
+  -> E Form f val r
+  -> E Form f val r
+  -> E Form f val r
 if_then_else b ifTrue ifFalse = formal (Sum_Elim_f (C_Or (C_Or C_Any)))
   <@> b
   <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
@@ -785,10 +785,10 @@ nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
 nothing = formal (Sum_Intro_f V_This) <@> unit
 
 maybe :: (Known s, Known r) => E Form f val
-  (   Obj (Constant r)
-  :-> (Obj (Constant s) :-> Obj (Constant r))
+  (   r
+  :-> (Obj (Constant s) :-> r)
   :-> Obj (Constant (Maybe s))
-  :-> Obj (Constant r)
+  :-> r
   )
 maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
   formal (Sum_Elim_f (C_Or (C_Or C_Any)))
