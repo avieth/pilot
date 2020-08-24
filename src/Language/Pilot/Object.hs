@@ -77,11 +77,17 @@ module Language.Pilot.Object
   , i64
 
   , add
+  , (+)
   , subtract
+  , (-)
   , multiply
+  , (*)
   , divide
+  , div
   , modulo
+  , mod
   , negate
+  , neg
   , abs
   , cmp
 
@@ -117,6 +123,8 @@ module Language.Pilot.Object
   , maybe
   , just
   , nothing
+  , isJust
+  , isNothing
   , pair
   , fst
   , snd
@@ -138,7 +146,8 @@ module Language.Pilot.Object
   ) where
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
-  const, subtract, negate, abs, and, or, (<), (>), (<=), (>=), (==), (/=))
+  const, subtract, negate, abs, and, or, mod, div, (<), (>), (<=), (>=), (==),
+  (/=), (-), (+), (*))
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -463,12 +472,24 @@ add :: (Known sign, Known width) => E Form f val
   )
 add = formal Integer_Add_f
 
+(+) :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+a + b = add <@> a <@> b
+
 subtract :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 subtract = formal Integer_Subtract_f
+
+(-) :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+a - b = subtract <@> a <@> b
 
 multiply :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
@@ -477,12 +498,24 @@ multiply :: (Known sign, Known width) => E Form f val
   )
 multiply = formal Integer_Multiply_f
 
+(*) :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+a * b = multiply <@> a <@> b
+
 divide :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 divide = formal Integer_Divide_f
+
+div :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+a `div` b = divide <@> a <@> b
 
 modulo :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
@@ -491,11 +524,22 @@ modulo :: (Known sign, Known width) => E Form f val
   )
 modulo = formal Integer_Modulo_f
 
+mod :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+a `mod` b = modulo <@> a <@> b
+
 negate :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t width))
   :-> Obj (Constant ('Integer_t 'Signed_t width))
   )
 negate = formal Integer_Negate_f
+
+neg :: (Known width)
+    => E Form f val (Obj (Constant ('Integer_t 'Signed_t width)))
+    -> E Form f val (Obj (Constant ('Integer_t 'Signed_t width)))
+neg a = negate <@> a
 
 abs :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t   width))
@@ -600,31 +644,41 @@ true = formal (Sum_Intro_f (V_That V_This)) <@> unit
 false :: E Form f val (Obj (Constant Bool))
 false = formal (Sum_Intro_f V_This) <@> unit
 
-if_then_else :: Known r => E Form f val
+if_then_else_ :: Known r => E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
   )
-if_then_else = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
+if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
   formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
 
+if_then_else
+  :: Known r
+  => E Form f val (Obj (Constant Bool))
+  -> E Form f val (Obj (Constant r))
+  -> E Form f val (Obj (Constant r))
+  -> E Form f val (Obj (Constant r))
+if_then_else b ifTrue ifFalse = formal (Sum_Elim_f (C_Or (C_Or C_Any)))
+  <@> b
+  <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
+
 lnot :: E Form f val ( Obj (Constant Bool) :-> Obj (Constant Bool))
-lnot = fun $ \b -> if_then_else <@> b <@> false <@> true
+lnot = fun $ \b -> if_then_else_ <@> b <@> false <@> true
 
 lor :: E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant Bool)
   :-> Obj (Constant Bool)
   )
-lor = fun $ \a -> fun $ \b -> if_then_else <@> a <@> true <@> b
+lor = fun $ \a -> fun $ \b -> if_then_else_ <@> a <@> true <@> b
 
 land :: E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant Bool)
   :-> Obj (Constant Bool)
   )
-land = fun $ \a -> fun $ \b -> if_then_else <@> a <@> b <@> false
+land = fun $ \a -> fun $ \b -> if_then_else_ <@> a <@> b <@> false
 
 is_lt :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
 is_lt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
@@ -641,49 +695,43 @@ is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
   where
   cases = (const <@> false) &> (const <@> false) &> (const <@> true) &> terminal
 
-(<) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(<) = fun $ \a -> fun $ \b -> is_lt <@> (cmp <@> a <@> b)
+(<) :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant Bool))
+(<) a b = is_lt <@> (cmp <@> a <@> b)
 
-(>) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(>) = fun $ \a -> fun $ \b -> is_gt <@> (cmp <@> a <@> b)
+(>) :: (Known sign, Known width)
+    => E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant ('Integer_t sign width)))
+    -> E Form f val (Obj (Constant Bool))
+(>) a b = is_gt <@> (cmp <@> a <@> b)
 
-(==) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(==) = fun $ \a -> fun $ \b -> is_eq <@> (cmp <@> a <@> b)
-
-(<=) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(<=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
+(<=) :: (Known sign, Known width)
+     => E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant Bool))
+(<=) a b = local (cmp <@> a <@> b) $ \x ->
   lor <@> (is_lt <@> x) <@> (is_eq <@> x)
 
-(>=) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(>=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
+(>=) :: (Known sign, Known width)
+     => E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant Bool))
+(>=) a b = local (cmp <@> a <@> b) $ \x ->
   lor <@> (is_gt <@> x) <@> (is_eq <@> x)
 
-(/=) :: (Known sign, Known width) => E Form f val
-  (   Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant ('Integer_t sign width))
-  :-> Obj (Constant Bool)
-  )
-(/=) = fun $ \a -> fun $ \b -> (lnot <.> is_eq) <@> (cmp <@> a <@> b)
+(==) :: (Known sign, Known width)
+     => E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant Bool))
+(==) a b = is_eq <@> (cmp <@> a <@> b)
+
+(/=) :: (Known sign, Known width)
+     => E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant ('Integer_t sign width)))
+     -> E Form f val (Obj (Constant Bool))
+(/=) a b = (lnot <.> is_eq) <@> (cmp <@> a <@> b)
 
 class AutoLift n a b where
   autoLift :: Proxy n -> Proxy a -> Proxy b -> Lift n a b
@@ -728,9 +776,10 @@ constant = lift (known (Proxy :: Proxy n))
 -- Fixed. But still, if_then_else is an easy one. What about lifting a
 -- maybe eliminator?
 
-just :: Known a => E Form f val
-  (Obj (Constant a) :-> Obj (Constant (Maybe a)))
-just = formal (Sum_Intro_f (V_That V_This))
+just :: Known a
+     => E Form f val (Obj (Constant a))
+     -> E Form f val (Obj (Constant (Maybe a)))
+just a = formal (Sum_Intro_f (V_That V_This)) <@> a
 
 nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
 nothing = formal (Sum_Intro_f V_This) <@> unit
@@ -744,6 +793,12 @@ maybe :: (Known s, Known r) => E Form f val
 maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
   formal (Sum_Elim_f (C_Or (C_Or C_Any)))
     <@> m <@> ((fun $ \_ -> ifNothing) &> ifJust &> terminal)
+
+isJust :: Known a => E Form f val (Obj (Constant (Maybe a)) :-> Obj (Constant Bool))
+isJust = fun $ \m -> maybe <@> false <@> (const <@> true) <@> m
+
+isNothing :: Known a => E Form f val (Obj (Constant (Maybe a)) :-> Obj (Constant Bool))
+isNothing = fun $ \m -> maybe <@> true <@> (const <@> false) <@> m
 
 -- | Constructs a pair. The formal 'product_intro_f' gives a function from a
 -- meta-language product with an explicit terminal in the rightmost position,

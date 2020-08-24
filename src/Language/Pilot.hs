@@ -17,6 +17,7 @@ Portability : non-portable (GHC only)
 module Language.Pilot
   ( Point
   , Stream
+  , Form
   , E
 
   , Meta_k
@@ -81,11 +82,17 @@ module Language.Pilot
   , Object.i32
   , Object.i64
   , Object.add
+  , (Object.+)
   , Object.subtract
+  , (Object.-)
   , Object.multiply
+  , (Object.*)
   , Object.divide
+  , Object.div
   , Object.modulo
+  , Object.mod
   , Object.negate
+  , Object.neg
   , Object.abs
   , Object.cmp
   , Object.and
@@ -94,6 +101,13 @@ module Language.Pilot
   , Object.complement
   , Object.shiftl
   , Object.shiftr
+
+  , (Object.>)
+  , (Object.>=)
+  , (Object.<)
+  , (Object.<=)
+  , (Object.==)
+  , (Object./=)
 
   , Object.Cast (..)
   , Object.cast
@@ -122,9 +136,12 @@ module Language.Pilot
   , Object.true
   , Object.false
   , Object.if_then_else
+  , ifThenElse
   , Object.maybe
   , Object.just
   , Object.nothing
+  , Object.isJust
+  , Object.isNothing
 
   , Object.AutoLift
   , Nat (..)
@@ -149,6 +166,14 @@ type E f val t = Repr.E Form f val t
 type Meta_k = Meta.Type
 type Object_k = Object.Type
 type Point_k = Object.Point.Type
+
+-- | For rebindable syntax
+ifThenElse :: Known r
+           => E f val (Point Object.Bool)
+           -> E f val (Point r)
+           -> E f val (Point r)
+           -> E f val (Point r)
+ifThenElse = Object.if_then_else
 
 -- TODO
 --

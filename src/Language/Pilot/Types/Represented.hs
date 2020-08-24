@@ -18,7 +18,6 @@ module Language.Pilot.Types.Represented
   ( Represented (..)
 
   , Known (..)
-  , known
   , auto
 
   , Proxy (..)
