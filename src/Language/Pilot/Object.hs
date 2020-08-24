@@ -111,6 +111,9 @@ module Language.Pilot.Object
   , true
   , false
   , if_then_else
+  , lnot
+  , lor
+  , land
   , maybe
   , just
   , nothing
@@ -118,12 +121,22 @@ module Language.Pilot.Object
   , fst
   , snd
 
+  , is_lt
+  , is_gt
+  , is_eq
+  , (<)
+  , (>)
+  , (<=)
+  , (>=)
+  , (==)
+  , (/=)
+
   , AutoLift (..)
 
   ) where
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
-  const, subtract, negate, abs, and, or)
+  const, subtract, negate, abs, and, or, (<), (>), (<=), (>=), (==), (/=))
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -182,6 +195,8 @@ type Bool = 'Sum_t '[ Unit, Unit ]
 
 -- | Comparison type, to replace the classic -1, 0, 1 motif with a proper
 -- algebraic type.
+--
+-- Cmp = LT | EQ | GT
 type Cmp = 'Sum_t '[ Unit, Unit, Unit ]
 
 type Maybe a = 'Sum_t '[ Unit, a ]
@@ -424,8 +439,8 @@ data Wider (w1 :: Width) (w2 :: Width) where
 let_ :: E Form f val (a :-> (a :-> b) :-> b)
 let_ = formal Let_f
 
-local :: E Form f val (a :-> (a :-> b) :-> b)
-local = let_
+local :: E Form f val a -> (E Form f val a -> E Form f val b) -> E Form f val b
+local x k = let_ <@> x <@> (fun $ \x' -> k x')
 
 u8 :: Haskell.Word8 -> E Form f val (Obj (Constant UInt8))
 u8 w = formal $ Integer_Literal_UInt8_f w
@@ -569,7 +584,6 @@ match :: Cases variants r -> E Form f val
   (Obj (Constant ('Sum_t variants)) :-> r)
 match cases = formal (Sum_Elim_f cases)
 
-
 -- | The formal product intro construction gives a function from a meta-language
 -- product--in this case the terminal object--to the object-language thing, so
 -- here we apply it to `specific terminal`
@@ -604,6 +618,82 @@ if_then_else :: E Form f val
   )
 if_then_else = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
   formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
+
+lnot :: E Form f val ( Obj (Constant Bool) :-> Obj (Constant Bool))
+lnot = fun $ \b -> if_then_else <@> b <@> false <@> true
+
+lor :: E Form f val
+  (   Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  )
+lor = fun $ \a -> fun $ \b -> if_then_else <@> a <@> true <@> b
+
+land :: E Form f val
+  (   Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  )
+land = fun $ \a -> fun $ \b -> if_then_else <@> a <@> b <@> false
+
+is_lt :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
+is_lt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
+  where
+  cases = (const <@> true) &> (const <@> false) &> (const <@> false) &> terminal
+
+is_eq :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
+is_eq = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
+  where
+  cases = (const <@> false) &> (const <@> true) &> (const <@> false) &> terminal
+
+is_gt :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
+is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
+  where
+  cases = (const <@> false) &> (const <@> false) &> (const <@> true) &> terminal
+
+(<) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(<) = fun $ \a -> fun $ \b -> is_lt <@> (cmp <@> a <@> b)
+
+(>) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(>) = fun $ \a -> fun $ \b -> is_gt <@> (cmp <@> a <@> b)
+
+(==) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(==) = fun $ \a -> fun $ \b -> is_eq <@> (cmp <@> a <@> b)
+
+(<=) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(<=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
+  lor <@> (is_lt <@> x) <@> (is_eq <@> x)
+
+(>=) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(>=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
+  lor <@> (is_gt <@> x) <@> (is_eq <@> x)
+
+(/=) :: E Form f val
+  (   Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant Bool)
+  )
+(/=) = fun $ \a -> fun $ \b -> (lnot <.> is_eq) <@> (cmp <@> a <@> b)
 
 class AutoLift n a b where
   autoLift :: Proxy n -> Proxy a -> Proxy b -> Lift n a b

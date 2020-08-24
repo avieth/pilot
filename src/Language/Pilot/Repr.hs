@@ -131,11 +131,13 @@ compose = fun $ \f -> fun $ \g -> fun $ \s -> g <@> (f <@> s)
 
 -- | 'compose' is more useful if we can infix it, but in order to do that we
 -- have to bring it out of Repr.
+--
+-- This one also puts the arguments in the expected order for dot.
 (<.>) :: Monad f
-      => Repr f val (s :-> t)
-      -> Repr f val (t :-> u)
+      => Repr f val (t :-> u)
+      -> Repr f val (s :-> t)
       -> Repr f val (s :-> u)
-(<.>) f g = fun $ \s -> g <@> (f <@> s)
+(<.>) g f = fun $ \s -> g <@> (f <@> s)
 
 infixr 9 <.>
 
