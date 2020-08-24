@@ -26,6 +26,8 @@ library
                        Language.Pilot.Interp.Pure.PrefixList
                        Language.Pilot.Interp.Pure.Point
 
+                       Language.Pilot.Nominal
+
                        Language.Pilot.Examples
 
   build-depends:       base
