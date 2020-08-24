@@ -416,13 +416,26 @@ type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
 
 -- | Each constructor determines a cast from the left type to the right type.
 data Cast (a :: Point) (b :: Point) where
+
   -- | Casts to wider numbers of the same signedness are allowed.
   UpCastInteger
     :: Wider width' width
     -> Cast ('Integer_t sign width) ('Integer_t sign width')
+
+  -- | Casts to wider bytes are allowed.
   UpCastBytes
     :: Wider width' width
     -> Cast ('Bytes_t width) ('Bytes_t width')
+
+  -- | An unsigned number may be cast to a signed number of the same width,
+  -- with possibility of failure if the unsigned number is too big.
+  --
+  -- The opposite direction is not here because it is done by absolute value.
+  CastToSigned :: Cast ('Integer_t 'Unsigned_t width) (Maybe ('Integer_t 'Signed_t width))
+  -- | An unsigned number may always be cast to a bigger signed number.
+  UpCastToSigned
+    :: Wider width' width
+    -> Cast ('Integer_t 'Unsigned_t width) ('Integer_t 'Signed_t width')
 
 -- | Says that w1 is strictly wider than w2.
 data Wider (w1 :: Width) (w2 :: Width) where

@@ -179,12 +179,37 @@ interp_cast c = fun $ \a -> object $ constant $ case (c, fromConstant (fromObjec
   (UpCastInteger EightWiderOne, Point.Integer (Point.Int8 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
   (UpCastInteger EightWiderTwo, Point.Integer (Point.Int16 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
   (UpCastInteger EightWiderFour, Point.Integer (Point.Int32 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+
   (UpCastBytes TwoWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word16 (fromIntegral w))
   (UpCastBytes FourWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word32 (fromIntegral w))
   (UpCastBytes FourWiderTwo, Point.Bytes (Point.Word16 w)) -> Point.Bytes (Point.Word32 (fromIntegral w))
   (UpCastBytes EightWiderOne, Point.Bytes (Point.Word8 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
   (UpCastBytes EightWiderTwo, Point.Bytes (Point.Word16 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
   (UpCastBytes EightWiderFour, Point.Bytes (Point.Word32 w)) -> Point.Bytes (Point.Word64 (fromIntegral w))
+
+  (CastToSigned, Point.Integer (Point.UInt8 w)) -> fromConstant . fromObject . runIdentity . getRepr $
+    if w Prelude.<= (2^7 - 1)
+    then just <@> (object (constant (Point.Integer (Point.Int8 (fromIntegral w)))))
+    else nothing
+  (CastToSigned, Point.Integer (Point.UInt16 w)) -> fromConstant . fromObject . runIdentity . getRepr $
+    if w Prelude.<= (2^15 - 1)
+    then just <@> (object (constant (Point.Integer (Point.Int16 (fromIntegral w)))))
+    else nothing
+  (CastToSigned, Point.Integer (Point.UInt32 w)) -> fromConstant . fromObject . runIdentity . getRepr $
+    if w Prelude.<= (2^31 - 1)
+    then just <@> (object (constant (Point.Integer (Point.Int32 (fromIntegral w)))))
+    else nothing
+  (CastToSigned, Point.Integer (Point.UInt64 w)) -> fromConstant . fromObject . runIdentity . getRepr $
+    if w Prelude.<= (2^63 - 1)
+    then just <@> (object (constant (Point.Integer (Point.Int64 (fromIntegral w)))))
+    else nothing
+
+  (UpCastToSigned TwoWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.Int16 (fromIntegral w))
+  (UpCastToSigned FourWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.Int32 (fromIntegral w))
+  (UpCastToSigned FourWiderTwo, Point.Integer (Point.UInt16 w)) -> Point.Integer (Point.Int32 (fromIntegral w))
+  (UpCastToSigned EightWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+  (UpCastToSigned EightWiderTwo, Point.Integer (Point.UInt16 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
+  (UpCastToSigned EightWiderFour, Point.Integer (Point.UInt32 w)) -> Point.Integer (Point.Int64 (fromIntegral w))
 
 -- It seems that for product intro we really do need to use the monad of f,
 -- for we have to evaluate the meta-language product in order to get the
