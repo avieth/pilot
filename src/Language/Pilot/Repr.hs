@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Language.Pilot.Repr
   ( Repr (..)
@@ -59,6 +60,7 @@ import Prelude hiding (id, const, curry, uncurry, product, fst, snd, flip)
 import qualified Prelude
 import Language.Pilot.Types
 import Language.Pilot.Meta as Meta (Type (..), Obj, Terminal, type (:->), type (:*))
+import qualified Language.Pilot.Meta as Meta
 
 import Data.Functor.Identity
 
@@ -181,13 +183,21 @@ snd r = Repr $ do
   it <- getRepr r
   getRepr (Prelude.snd (fromProduct it))
 
-type Interpret form f val = forall x . form x -> Repr f val x
+type Interpret form f val = forall (x :: Meta.Type domain) . Rep (Meta.Type domain) x -> form x -> Repr f val x
 
 class Monad f => Interprets (form :: Meta.Type domain -> Hask) (f :: Hask -> Hask) (val :: domain -> Hask) where
   interp :: Interpret form f val
 
-formal :: Interprets form f val => form t -> E form f val t
-formal = interp
+formal :: (Known t, Interprets form f val) => form t -> E form f val t
+formal = interp (known (Proxy :: Proxy t))
+
+formal_
+  :: forall form f val (t :: Meta.Type domain) .
+     ( Interprets form f val )
+  => Rep (Meta.Type domain) t
+  -> form t
+  -> E form f val t
+formal_ trep = interp trep
 
 -- | This is the expression type over a given form, in the "tagless final" style
 -- using a typeclass, because it allows us to seamlessly include
@@ -228,18 +238,31 @@ example_2 = example_1
 data LetDomain where
   LetType :: LetDomain
 
+data LetDomainRep (t :: LetDomain) where
+  LetType_r :: LetDomainRep 'LetType
+
+instance Represented LetDomain where
+  type Rep LetDomain = LetDomainRep
+
+lettype_t :: LetDomainRep 'LetType
+lettype_t = LetType_r
+
+instance Known 'LetType where
+  known _ = LetType_r
+
 data LetForm (x :: Meta.Type LetDomain) where
   Datum :: LetForm (Obj 'LetType)
   Let :: LetForm (a :-> (a :-> b) :-> b)
 
 example_3 :: E LetForm f val (Obj 'LetType :* Obj 'LetType)
-example_3 = example_1 <@> formal Datum <@> formal Datum
+example_3 = example_1 <@> formal_ (Meta.object_t lettype_t) Datum
+                      <@> formal                            Datum
 
 data DummyVal (t :: LetDomain) where
   DummyVal :: DummyVal 'LetType
 
 instance Interprets LetForm Identity DummyVal where
-  interp Datum = object DummyVal
+  interp _ Datum = object DummyVal
   -- In this case, f and x are `Repr Identity DummyVal _`, so we can actually
   -- check what's going on, and special case for values.
   --
@@ -248,7 +271,7 @@ instance Interprets LetForm Identity DummyVal where
   -- let bindings, but the second potentially does save some work.
   --
   --interp Let = fun $ \x -> fun $ \f -> app f x
-  interp Let = fun $ \x -> fun $ \f -> Repr $ do
+  interp _ Let = fun $ \x -> fun $ \f -> Repr $ do
     -- Eval the context here ...
     x' <- getRepr x
     -- ... then run the continuation with the context-free Val

@@ -91,7 +91,7 @@ liftPoint2 :: (Point a -> Point b -> Point c)
 liftPoint2 f (Object (Constant a)) (Object (Constant b)) = Object (Constant (f a b))
 
 interpPure :: Interpret Object.Form Identity Value
-interpPure form = case form of
+interpPure trep form = case form of
 
   Integer_Literal_UInt8_f  w8  -> object (Constant (Integer (Point.UInt8 w8)))
   Integer_Literal_UInt16_f w16 -> object (Constant (Integer (Point.UInt16 w16)))
@@ -161,7 +161,7 @@ interpPure form = case form of
   Stream_Shift_f -> fun $ \v -> objectf $
     fmap (applyVarying PrefixList.shift . fromObject) (getRepr v)
 
-  Stream_Lift_f nrep lf -> interp_lift nrep lf
+  Stream_Lift_f lf -> interp_lift (lift_prefix_size trep lf) lf
   Stream_Knot_f kn -> interp_knot kn
 
 interp_cast :: Cast a b -> Repr Identity Value (Obj (Constant a) :-> Obj (Constant b))

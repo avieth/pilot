@@ -133,6 +133,8 @@ module Language.Pilot.Object
 
   , AutoLift (..)
 
+  , lift_prefix_size
+
   ) where
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
@@ -281,7 +283,7 @@ data Form (t :: Meta.Type Type) where
   Sum_Elim_f :: Cases variants r -> Form
     (Obj (Constant ('Sum_t variants)) :-> r)
 
-  Stream_Lift_f :: NatRep n -> Lift n s t -> Form (s :-> t)
+  Stream_Lift_f :: Lift n s t -> Form (s :-> t)
   Stream_Knot_f :: Knot s t q i -> Form ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 
   Stream_Drop_f :: Form
@@ -296,6 +298,16 @@ data Form (t :: Meta.Type Type) where
   -- of sharing between more than one value without building a product in the
   -- object-language.
   Let_f :: Form (x :-> (x :-> r) :-> r)
+
+-- | The type rep of the result of a stream lift always determines the prefix
+-- size of the entire lift--assuming it's a valid lifted thing (first-order
+-- function or a constant).
+lift_prefix_size :: Meta.TypeRep TypeRep (s :-> t) -> Lift n s t -> NatRep n
+lift_prefix_size (Meta.Arrow_r _ trep) lf = case lf of
+  Pure -> case trep of
+    Meta.Object_r (Varying_r nrep _) -> nrep
+  Ap _ -> case trep of
+    Meta.Arrow_r (Meta.Object_r (Varying_r nrep _)) _ -> nrep
 
 -- | Used for sum introduction.
 -- `Variant r variants` means that an `r` is sufficient to construct a
@@ -408,10 +420,16 @@ data Wider (w1 :: Width) (w2 :: Width) where
   EightWiderTwo  :: Wider ('W_Eight_t) ('W_Two_t)
   EightWiderFour :: Wider ('W_Eight_t) ('W_Four_t)
 
-let_ :: E Form f val (a :-> (a :-> b) :-> b)
+let_ :: (Known a, Known b) => E Form f val (a :-> (a :-> b) :-> b)
 let_ = formal Let_f
 
-local :: E Form f val a -> (E Form f val a -> E Form f val b) -> E Form f val b
+-- | Same as 'let_', but using typical Haskell functions rather than the
+-- fun/<@> construction.
+local
+  :: (Known a, Known b)
+  => E Form f val a
+  -> (E Form f val a -> E Form f val b)
+  -> E Form f val b
 local x k = let_ <@> x <@> (fun $ \x' -> k x')
 
 u8 :: Haskell.Word8 -> E Form f val (Obj (Constant UInt8))
@@ -438,121 +456,121 @@ i32 i = formal $ Integer_Literal_Int32_f i
 i64 :: Haskell.Int64 -> E Form f val (Obj (Constant Int64))
 i64 i = formal $ Integer_Literal_Int64_f i
 
-add :: E Form f val
+add :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 add = formal Integer_Add_f
 
-subtract :: E Form f val
+subtract :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 subtract = formal Integer_Subtract_f
 
-multiply :: E Form f val
+multiply :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 multiply = formal Integer_Multiply_f
 
-divide :: E Form f val
+divide :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 divide = formal Integer_Divide_f
 
-modulo :: E Form f val
+modulo :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
 modulo = formal Integer_Modulo_f
 
-negate :: E Form f val
+negate :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t width))
   :-> Obj (Constant ('Integer_t 'Signed_t width))
   )
 negate = formal Integer_Negate_f
 
-abs :: E Form f val
+abs :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t   width))
   :-> Obj (Constant ('Integer_t 'Unsigned_t width))
   )
 abs = formal Integer_Abs_f
 
-cmp :: E Form f val
+cmp :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Cmp)
   )
 cmp = formal Integer_Compare_f
 
-and :: E Form f val
+and :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
 and = formal Bytes_And_f
 
-or :: E Form f val
+or :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
 or = formal Bytes_Or_f
 
-xor :: E Form f val
+xor :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
 xor = formal Bytes_Xor_f
 
-complement :: E Form f val
+complement :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
 complement = formal Bytes_Complement_f
 
-shiftl :: E Form f val
+shiftl :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t 'W_One_t))
   :-> Obj (Constant ('Bytes_t width))
   )
 shiftl = formal Bytes_Shiftl_f
 
-shiftr :: E Form f val
+shiftr :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t 'W_One_t))
   :-> Obj (Constant ('Bytes_t width))
   )
 shiftr = formal Bytes_Shiftr_f
 
-cast :: Cast a b -> E Form f val
+cast :: (Known a, Known b) => Cast a b -> E Form f val
   (Obj (Constant a) :-> Obj (Constant b))
 cast c = formal (Cast_f c)
 
 -- | Construct a product.
-bundle :: Fields r fields -> E Form f val
+bundle :: (Known ('Product_t fields), Known r) => Fields r fields -> E Form f val
   (r :-> Obj (Constant ('Product_t fields)))
 bundle fields = formal (Product_Intro_f fields)
 
 -- | Construct a sum.
-choose :: Variant r variants -> E Form f val
+choose :: (Known ('Sum_t variants), Known r) => Variant r variants -> E Form f val
   (r :-> Obj (Constant ('Sum_t variants)))
 choose variant = formal (Sum_Intro_f variant)
 
 -- | Eliminate a product
-project :: Selector fields q r -> E Form f val
+project :: (Known ('Product_t fields), Known q) => Selector fields q r -> E Form f val
   (Obj (Constant ('Product_t fields)) :-> q)
 project selector = formal (Product_Elim_f selector)
 
-match :: Cases variants r -> E Form f val
+match :: (Known ('Sum_t variants), Known r) => Cases variants r -> E Form f val
   (Obj (Constant ('Sum_t variants)) :-> r)
 match cases = formal (Sum_Elim_f cases)
 
@@ -565,7 +583,7 @@ unit = formal (Product_Intro_f F_All) <@> terminal
 -- | The formal sum elim constructor has a base case that works for any type.
 -- Since the empty sum requires only this base case, we don't even have to
 -- construct anything of this type, so we get the typical `absurd` type.
-absurd :: E Form f val (Obj (Constant Void) :-> Obj (Constant r))
+absurd :: Known r => E Form f val (Obj (Constant Void) :-> Obj (Constant r))
 absurd = fun $ \impossible -> formal (Sum_Elim_f C_Any) <@> impossible <@> terminal
 
 -- NB: an empty product cannot be eliminated, and an empty sum cannot be
@@ -582,7 +600,7 @@ true = formal (Sum_Intro_f (V_That V_This)) <@> unit
 false :: E Form f val (Obj (Constant Bool))
 false = formal (Sum_Intro_f V_This) <@> unit
 
-if_then_else :: E Form f val
+if_then_else :: Known r => E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant r)
   :-> Obj (Constant r)
@@ -623,28 +641,28 @@ is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
   where
   cases = (const <@> false) &> (const <@> false) &> (const <@> true) &> terminal
 
-(<) :: E Form f val
+(<) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
   )
 (<) = fun $ \a -> fun $ \b -> is_lt <@> (cmp <@> a <@> b)
 
-(>) :: E Form f val
+(>) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
   )
 (>) = fun $ \a -> fun $ \b -> is_gt <@> (cmp <@> a <@> b)
 
-(==) :: E Form f val
+(==) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
   )
 (==) = fun $ \a -> fun $ \b -> is_eq <@> (cmp <@> a <@> b)
 
-(<=) :: E Form f val
+(<=) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
@@ -652,7 +670,7 @@ is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
 (<=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
   lor <@> (is_lt <@> x) <@> (is_eq <@> x)
 
-(>=) :: E Form f val
+(>=) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
@@ -660,7 +678,7 @@ is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
 (>=) = fun $ \a -> fun $ \b -> local (cmp <@> a <@> b) $ \x ->
   lor <@> (is_gt <@> x) <@> (is_eq <@> x)
 
-(/=) :: E Form f val
+(/=) :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Bool)
@@ -682,10 +700,10 @@ instance
 -- TODO give custom type errors for unliftable things.
 
 lift :: forall f val n s t .
-        ( AutoLift n s t )
+        (Known s, Known t, AutoLift n s t)
      => NatRep n
      -> E Form f val (s :-> t)
-lift nrep = formal (Stream_Lift_f nrep (autoLift proxyN proxyS proxyT))
+lift _ = formal (Stream_Lift_f (autoLift proxyN proxyS proxyT))
   where
   proxyS :: Proxy s
   proxyS = Proxy
@@ -694,11 +712,12 @@ lift nrep = formal (Stream_Lift_f nrep (autoLift proxyN proxyS proxyT))
   proxyN :: Proxy n
   proxyN = Proxy
 
-lift_ :: NatRep n -> Lift n s t -> E Form f val (s :-> t)
-lift_ n l = formal (Stream_Lift_f n l)
+lift_ :: (Known s, Known t) => Lift n s t -> E Form f val (s :-> t)
+lift_ l = formal (Stream_Lift_f l)
 
-constant :: NatRep n -> E Form f val (Obj (Constant s) :-> Obj (Varying n s))
-constant nrep = lift nrep
+constant :: forall f val n s t . (Known n, Known s) => E Form f val
+  (Obj (Constant s) :-> Obj (Varying n s))
+constant = lift (known (Proxy :: Proxy n))
 
 -- Is lifting properly defined? It's good for many examples and use cases, but
 -- what about something like if_then_else? Maybe the error is that
@@ -709,14 +728,14 @@ constant nrep = lift nrep
 -- Fixed. But still, if_then_else is an easy one. What about lifting a
 -- maybe eliminator?
 
-just :: E Form f val
+just :: Known a => E Form f val
   (Obj (Constant a) :-> Obj (Constant (Maybe a)))
 just = formal (Sum_Intro_f (V_That V_This))
 
-nothing :: E Form f val (Obj (Constant (Maybe s)))
+nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
 nothing = formal (Sum_Intro_f V_This) <@> unit
 
-maybe :: E Form f val
+maybe :: (Known s, Known r) => E Form f val
   (   Obj (Constant r)
   :-> (Obj (Constant s) :-> Obj (Constant r))
   :-> Obj (Constant (Maybe s))
@@ -729,22 +748,22 @@ maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
 -- | Constructs a pair. The formal 'product_intro_f' gives a function from a
 -- meta-language product with an explicit terminal in the rightmost position,
 -- but we change it to be a curried from without the terminal.
-pair :: E Form f val
+pair :: (Known a, Known b) => E Form f val
   (Obj (Constant a) :-> Obj (Constant b) :-> Obj (Constant (Pair a b)))
 pair = fun $ \a -> fun $ \b ->
   formal (Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
 
-fst :: E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant a))
+fst :: (Known a, Known b) => E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant a))
 fst = fun $ \p -> formal (Product_Elim_f S_Here) <@> p <@> id
 
-snd :: E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant b))
+snd :: (Known a, Known b) => E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant b))
 snd = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) <@> p <@> id
 
-drop :: E Form f val
+drop :: (Known n, Known t) => E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
 drop = formal Stream_Drop_f
 
-shift :: E Form f val
+shift :: (Known n, Known t) => E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
 shift = formal Stream_Shift_f
 
@@ -753,6 +772,7 @@ shift = formal Stream_Shift_f
 
 -- | The most general, but comparatively verbose, way to write a
 -- mutually-recursive memory stream.
-knot :: Knot s t q i
+knot :: (Known s, Known t, Known q, Known r, Known i)
+     => Knot s t q i
      -> E Form f val ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 knot sig = formal (Stream_Knot_f sig)

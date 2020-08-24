@@ -78,7 +78,7 @@ example_4 :: forall f val n . ( Known n ) => E f val
   :-> Obj (Varying n UInt8)
   )
 example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
-  lift_ (known (Proxy :: Proxy n)) (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
+  lift_ (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
   where
   f = fun $ \x -> fun $ \y -> fun $ \z ->
         -- Here will fully apply the just case eliminator, so that the function
@@ -103,13 +103,13 @@ example_5 = knot (Tied (S_Rep Z_Rep)) <@> loop <@> k
 example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_6 = fun $ \c -> fun $ \f ->
-  let loop = lift_ Z_Rep (Ap (Ap Pure)) <@> add <@> f
+  let loop = lift_ (Ap (Ap Pure)) <@> add <@> f
   in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.id <@> c
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
 example_7 = lift Z_Rep <@> u8 42
 
-example_8 :: NatRep n -> E f val
+example_8 :: Known n => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
-example_8 nrep = lift_ nrep (Ap (Ap Pure)) <@> add
+example_8 = lift_ (Ap (Ap Pure)) <@> add
