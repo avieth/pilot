@@ -18,7 +18,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 
 module Language.Pilot.Interp.Pure
-  ( Value_r (..)
+  ( Value (..)
   , Identity (..)
   , showValue
   , interpPure
@@ -26,90 +26,91 @@ module Language.Pilot.Interp.Pure
   , varying
   ) where
 
+import Prelude hiding (Integer)
 import Data.Functor.Identity (Identity (..))
 
 import Language.Pilot.Types
 import Language.Pilot.Meta (Obj, type (:->), type (:*))
-import Language.Pilot.Object as Object hiding (constant)
+import Language.Pilot.Object as Object hiding (Point (..), constant)
 import Language.Pilot.Repr
 
 import Language.Pilot.Interp.Pure.Point as Point
 import Language.Pilot.Interp.Pure.PrefixList as PrefixList
 
-instance Interprets Object.Form Identity Value_r where
+instance Interprets Object.Form Identity Value where
   interp = interpPure
 
-data Value_r (t :: Object.Type) where
-  Constant_r :: Point_r t -> Value_r (Constant t)
-  Varying_r  :: PrefixList n Point_r t -> Value_r (Varying n t)
+data Value (t :: Object.Type) where
+  Constant :: Point t -> Value (Constant t)
+  Varying  :: PrefixList n Point t -> Value (Varying n t)
 
-showValue :: Prelude.Maybe Int -> Value_r t -> String
+showValue :: Prelude.Maybe Int -> Value t -> String
 showValue n it = case it of
-  Constant_r pt  -> Point.prettyPrint pt
-  Varying_r  lst -> PrefixList.prettyPrint n Point.prettyPrint lst
+  Constant pt  -> Point.prettyPrint pt
+  Varying  lst -> PrefixList.prettyPrint n Point.prettyPrint lst
 
-applyConstant :: (Point_r s -> Point_r t)
-              -> (Value_r (Constant s) -> Value_r (Constant t))
-applyConstant f = \(Constant_r p) -> Constant_r (f p)
+applyConstant :: (Point s -> Point t)
+              -> (Value (Constant s) -> Value (Constant t))
+applyConstant f = \(Constant p) -> Constant (f p)
 
-applyVarying :: (PrefixList n Point_r s -> PrefixList m Point_r t)
-             -> (Value_r (Varying n s) -> Value_r (Varying m t))
-applyVarying f = \(Varying_r lst) -> Varying_r (f lst)
+applyVarying :: (PrefixList n Point s -> PrefixList m Point t)
+             -> (Value (Varying n s) -> Value (Varying m t))
+applyVarying f = \(Varying lst) -> Varying (f lst)
 
-constant :: Point_r t -> Value_r (Constant t)
-constant = Constant_r
+constant :: Point t -> Value (Constant t)
+constant = Constant
 
-varying :: PrefixList n Point_r t -> Value_r (Varying n t)
-varying = Varying_r
+varying :: PrefixList n Point t -> Value (Varying n t)
+varying = Varying
 
-fromVarying :: Value_r (Varying n t) -> PrefixList n Point_r t
-fromVarying (Varying_r lst) = lst
+fromVarying :: Value (Varying n t) -> PrefixList n Point t
+fromVarying (Varying lst) = lst
 
-fromVaryingRep :: PrefixList n Point_r t -> Value_r (Varying n t)
-fromVaryingRep = Varying_r
+fromVaryingRep :: PrefixList n Point t -> Value (Varying n t)
+fromVaryingRep = Varying
 
-toVaryingRep :: Value_r (Varying n t) -> PrefixList n Point_r t
-toVaryingRep (Varying_r lst) = lst
+toVaryingRep :: Value (Varying n t) -> PrefixList n Point t
+toVaryingRep (Varying lst) = lst
 
-fromConstant :: Value_r (Constant t) -> Point_r t
-fromConstant (Constant_r p) = p
+fromConstant :: Value (Constant t) -> Point t
+fromConstant (Constant p) = p
 
-fromConstantRep :: Point_r t -> Value_r (Constant t)
-fromConstantRep = Constant_r
+fromConstantRep :: Point t -> Value (Constant t)
+fromConstantRep = Constant
 
 
-liftPoint :: (Point_r a -> Point_r b)
-          -> Val f Value_r (Obj (Constant a))
-          -> Val f Value_r (Obj (Constant b))
-liftPoint f (Object (Constant_r a)) = Object (Constant_r (f a))
+liftPoint :: (Point a -> Point b)
+          -> Val f Value (Obj (Constant a))
+          -> Val f Value (Obj (Constant b))
+liftPoint f (Object (Constant a)) = Object (Constant (f a))
 
-liftPoint2 :: (Point_r a -> Point_r b -> Point_r c)
-           -> Val f Value_r (Obj (Constant a))
-           -> Val f Value_r (Obj (Constant b))
-           -> Val f Value_r (Obj (Constant c))
-liftPoint2 f (Object (Constant_r a)) (Object (Constant_r b)) = Object (Constant_r (f a b))
+liftPoint2 :: (Point a -> Point b -> Point c)
+           -> Val f Value (Obj (Constant a))
+           -> Val f Value (Obj (Constant b))
+           -> Val f Value (Obj (Constant c))
+liftPoint2 f (Object (Constant a)) (Object (Constant b)) = Object (Constant (f a b))
 
-interpPure :: Interpret Object.Form Identity Value_r
+interpPure :: Interpret Object.Form Identity Value
 interpPure form = case form of
 
-  Integer_Literal_UInt8_f  w8  -> object (Constant_r (Integer_r (Point.UInt8 w8)))
-  Integer_Literal_UInt16_f w16 -> object (Constant_r (Integer_r (Point.UInt16 w16)))
-  Integer_Literal_UInt32_f w32 -> object (Constant_r (Integer_r (Point.UInt32 w32)))
-  Integer_Literal_UInt64_f w64 -> object (Constant_r (Integer_r (Point.UInt64 w64)))
-  Integer_Literal_Int8_f  i8  -> object (Constant_r (Integer_r (Point.Int8 i8)))
-  Integer_Literal_Int16_f i16 -> object (Constant_r (Integer_r (Point.Int16 i16)))
-  Integer_Literal_Int32_f i32 -> object (Constant_r (Integer_r (Point.Int32 i32)))
-  Integer_Literal_Int64_f i64 -> object (Constant_r (Integer_r (Point.Int64 i64)))
-  Bytes_Literal_8_f  w8  -> object (Constant_r (Bytes_r (Point.Word8 w8)))
-  Bytes_Literal_16_f w16 -> object (Constant_r (Bytes_r (Point.Word16 w16)))
-  Bytes_Literal_32_f w32 -> object (Constant_r (Bytes_r (Point.Word32 w32)))
-  Bytes_Literal_64_f w64 -> object (Constant_r (Bytes_r (Point.Word64 w64)))
+  Integer_Literal_UInt8_f  w8  -> object (Constant (Integer (Point.UInt8 w8)))
+  Integer_Literal_UInt16_f w16 -> object (Constant (Integer (Point.UInt16 w16)))
+  Integer_Literal_UInt32_f w32 -> object (Constant (Integer (Point.UInt32 w32)))
+  Integer_Literal_UInt64_f w64 -> object (Constant (Integer (Point.UInt64 w64)))
+  Integer_Literal_Int8_f  i8  -> object (Constant (Integer (Point.Int8 i8)))
+  Integer_Literal_Int16_f i16 -> object (Constant (Integer (Point.Int16 i16)))
+  Integer_Literal_Int32_f i32 -> object (Constant (Integer (Point.Int32 i32)))
+  Integer_Literal_Int64_f i64 -> object (Constant (Integer (Point.Int64 i64)))
+  Bytes_Literal_8_f  w8  -> object (Constant (Bytes (Point.Word8 w8)))
+  Bytes_Literal_16_f w16 -> object (Constant (Bytes (Point.Word16 w16)))
+  Bytes_Literal_32_f w32 -> object (Constant (Bytes (Point.Word32 w32)))
+  Bytes_Literal_64_f w64 -> object (Constant (Bytes (Point.Word64 w64)))
 
   -- Here we have x and y, which are each of type
-  --   Repr f Value_r (Obj (Constant (Integer_t s w)))
+  --   Repr f Value (Obj (Constant (Integer_t s w)))
   -- We do not wish to impose any particular order of evaluation on the
   -- arguments, so we'll want to use the applicative instance on f to apply
-  -- `Point.add`, which itself must be "lifted" through the Value_r type.
+  -- `Point.add`, which itself must be "lifted" through the Value type.
   Integer_Add_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.add <$> getRepr x <*> getRepr y)
   Integer_Subtract_f -> fun $ \x -> fun $ \y ->
@@ -175,7 +176,7 @@ interp_product_intro
   :: forall f r fields .
      ( Monad f )
   => Fields r fields
-  -> Repr f Value_r (r :-> Obj (Constant (Product fields)))
+  -> Repr f Value (r :-> Obj (Constant (Product fields)))
 interp_product_intro fields = fun $ \r -> objectf $ 
   fmap bundle (evaluate fields r)
 
@@ -184,8 +185,8 @@ interp_product_intro fields = fun $ \r -> objectf $
   evaluate
     :: forall r fields .
        Fields r fields
-    -> Repr f Value_r r
-    -> f (Point.All Point.Point_r fields)
+    -> Repr f Value r
+    -> f (Point.All Point.Point fields)
   evaluate F_All           _ = pure Point.All
   -- It's here where we need Monad f.
   evaluate (F_And fields') r = do
@@ -198,15 +199,15 @@ interp_product_intro fields = fun $ \r -> objectf $
 
   bundle
     :: forall r fields .
-       Point.All Point.Point_r fields
-    -> Value_r (Constant (Product fields))
+       Point.All Point.Point fields
+    -> Value (Constant (Product fields))
   bundle = fromConstantRep . Point.Product_r
 
 interp_sum_intro
   :: forall f r variants .
      ( Applicative f )
   => Variant r variants
-  -> Repr f Value_r (r :-> Obj (Constant (Sum variants)))
+  -> Repr f Value (r :-> Obj (Constant (Sum variants)))
 interp_sum_intro variant = fun $ \v -> objectf $
   fmap (fromConstantRep . Point.Sum_r) (inject variant v)
 
@@ -215,8 +216,8 @@ interp_sum_intro variant = fun $ \v -> objectf $
   inject
     :: forall r variants .
        Variant r variants
-    -> Repr f Value_r r
-    -> f (Point.Any Point.Point_r variants)
+    -> Repr f Value r
+    -> f (Point.Any Point.Point variants)
   inject V_This        v = fmap (Point.Any . fromConstant . fromObject) (getRepr v)
   inject (V_That that) v = fmap Point.Or (inject that v)
 
@@ -229,7 +230,7 @@ interp_product_elim
   :: forall f q r fields .
      ( Monad f )
   => Selector fields q r
-  -> Repr f Value_r (Obj (Constant (Product fields)) :-> q)
+  -> Repr f Value (Obj (Constant (Product fields)) :-> q)
 interp_product_elim selector = fun $ \p -> valuef $ do
   -- Get the representation of the product...
   fields <- fmap (fromConstant . fromObject) (getRepr p)
@@ -242,8 +243,8 @@ interp_product_elim selector = fun $ \p -> valuef $ do
   select
     :: forall fields r .
        Selector fields q r
-    -> Point_r (Product fields)
-    -> Repr f Value_r q
+    -> Point (Product fields)
+    -> Repr f Value q
   select (S_There s) (Product_r (And _ ps)) = select s (Product_r ps)
   select S_Here      (Product_r (And it _)) = fun $ \proj ->
     app proj (object (fromConstantRep it))
@@ -252,7 +253,7 @@ interp_sum_elim
   :: forall f r variants .
      ( Monad f )
   => Cases variants r
-  -> Repr f Value_r (Obj (Constant (Sum variants)) :-> r)
+  -> Repr f Value (Obj (Constant (Sum variants)) :-> r)
 interp_sum_elim cases = fun $ \scrutinee -> valuef $ do
   -- Evaluate the scrutinee...
   v <- fmap (fromConstant . fromObject) (getRepr scrutinee)
@@ -264,8 +265,8 @@ interp_sum_elim cases = fun $ \scrutinee -> valuef $ do
   match
     :: forall r variants .
        Cases variants r
-    -> Point_r (Sum variants)
-    -> Repr f Value_r r
+    -> Point (Sum variants)
+    -> Repr f Value r
   -- Empty case match is ruled out because empty sums cannot be constructed.
   match C_Any     (Point.Sum_r wut) = case wut of {}
   -- For non-empty cases, we always take one argument: a product of eliminators,
@@ -278,9 +279,9 @@ interp_sum_elim cases = fun $ \scrutinee -> valuef $ do
   eliminate
     :: forall q r variant variants .
        Cases variants (q :-> r)
-    -> Point_r (Sum (variant ': variants))
-    -> Repr f Value_r ((Obj (Constant variant) :-> r) :* q)
-    -> Repr f Value_r r
+    -> Point (Sum (variant ': variants))
+    -> Repr f Value ((Obj (Constant variant) :-> r) :* q)
+    -> Repr f Value r
   eliminate _ (Point.Sum_r (Point.Any it)) elims =
     app (Language.Pilot.Repr.fst elims) (object (fromConstantRep it))
   eliminate (C_Or cs) (Point.Sum_r (Point.Or sum)) elims =
@@ -296,14 +297,14 @@ interp_lift
      ( Monad f )
   => NatRep n
   -> Lift n s t
-  -> Repr f Value_r (s :-> t)
+  -> Repr f Value (s :-> t)
 interp_lift nrep lf = fun $ \sr ->
   -- The argument `sr` is either a constant, or a first-order function over
   -- constants. This is proven by the `Lift` value `lf`. For each `Ap`
   -- constructor, we add a function argument which takes a varying instead, and
   -- zip this with whatever we have so far. Then, at the `Pure` case, we convert
   -- to the expected PrefixList type.
-  let lst :: f (PrefixList n (Val f Value_r) s)
+  let lst :: f (PrefixList n (Val f Value) s)
       lst = fmap (PrefixList.repeat nrep) (getRepr sr)
   in  recursive_lift nrep lf lst
 
@@ -313,8 +314,8 @@ interp_lift nrep lf = fun $ \sr ->
     :: forall n s t .
        NatRep n
     -> Lift n s t
-    -> f (PrefixList n (Val f Value_r) s)
-    -> Repr f Value_r t
+    -> f (PrefixList n (Val f Value) s)
+    -> Repr f Value t
   recursive_lift nrep lf lst = case lf of
 
     -- Here we find that
@@ -334,15 +335,15 @@ interp_lift nrep lf = fun $ \sr ->
     -- and so we want to take in an argument, and zip-apply the functions in
     -- `lst` to it. That argument x has type
     --
-    --   x :: Repr f Value_r (Obj (Varying n a))
+    --   x :: Repr f Value (Obj (Varying n a))
     --
     Ap lf' -> fun $ \x -> recursive_lift nrep lf' (prefixWithReprAp lst x)
 
   prefixWithReprAp
     :: forall n s t .
-       f (PrefixList n (Val f Value_r) (Obj (Constant s) :-> t))
-    -> Repr f Value_r (Obj (Varying n s))
-    -> f (PrefixList n (Val f Value_r) t)
+       f (PrefixList n (Val f Value) (Obj (Constant s) :-> t))
+    -> Repr f Value (Obj (Varying n s))
+    -> f (PrefixList n (Val f Value) t)
   prefixWithReprAp ffs fxs = do
     fs <- ffs
     xs <- toPrefixWithRepr fxs
@@ -350,17 +351,17 @@ interp_lift nrep lf = fun $ \sr ->
 
   toPrefixWithRepr
     :: forall n s .
-       Repr f Value_r (Obj (Varying n s))
-    -> f (PrefixList n (Val f Value_r) (Obj (Constant s)))
+       Repr f Value (Obj (Varying n s))
+    -> f (PrefixList n (Val f Value) (Obj (Constant s)))
   toPrefixWithRepr rx = do
     x <- fmap fromObject (getRepr rx)
     case x of
-      Varying_r lst -> pure (PrefixList.map (Object . constant) lst)
+      Varying lst -> pure (PrefixList.map (Object . constant) lst)
 
   fromPrefixWithRepr
     :: forall n s .
-       f (PrefixList n (Val f Value_r) (Obj (Constant s)))
-    -> Repr f Value_r (Obj (Varying n s))
+       f (PrefixList n (Val f Value) (Obj (Constant s)))
+    -> Repr f Value (Obj (Varying n s))
   fromPrefixWithRepr fx = objectf $ do
     lst <- fx
     pure (varying (PrefixList.map (fromConstant . fromObject) lst))
@@ -369,7 +370,7 @@ interp_lift nrep lf = fun $ \sr ->
 interp_knot
   :: forall s t q i r .
      Knot s t q i
-  -> Repr Identity Value_r ((s :-> t) :-> (q :-> r) :-> (i :-> r))
+  -> Repr Identity Value ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   -- We have
   --
@@ -415,8 +416,8 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
     :: forall n t .
        Proxy t
     -> NatRep n
-    -> Val Identity Value_r (Vector n (Obj (Constant t)))
-    -> Vec n (Value_r (Constant t))
+    -> Val Identity Value (Vector n (Obj (Constant t)))
+    -> Vec n (Value (Constant t))
   -- The pattern match is done in 3 cases so that GHC can figure out what the
   -- type family Vector reduces to.
   vecFromVector _  Z_Rep                  _                 = VNil
@@ -432,9 +433,9 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   -- Compute the prefixes of the knot: the inputs to the knot-tying function.
   knot_prefixes :: forall s t q i .
        Knot s t q i
-    -> Val Identity Value_r i
-    -> Val Identity Value_r t
-    -> Val Identity Value_r s
+    -> Val Identity Value i
+    -> Val Identity Value t
+    -> Val Identity Value s
   knot_prefixes kn i t = case kn of
     Tied nrep     -> prefix_tied nrep i t
     Tie  nrep kn' -> prefix_tie  nrep kn' i t
@@ -443,9 +444,9 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   -- are passed to the output continuation.
   knot_streams :: forall s t q i .
        Knot s t q i
-    -> Val Identity Value_r i
-    -> Val Identity Value_r t
-    -> Val Identity Value_r q
+    -> Val Identity Value i
+    -> Val Identity Value t
+    -> Val Identity Value q
   knot_streams kn i t = case kn of
     Tied nrep     -> streams_tied nrep i t
     Tie  nrep kn' -> streams_tie  nrep kn' i t
@@ -453,22 +454,22 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   prefix_tied
     :: forall n a .
        NatRep ('S n)
-    -> Val Identity Value_r (Vector ('S n) (Obj (Constant a)))
-    -> Val Identity Value_r (Obj (Varying 'Z a))
-    -> Val Identity Value_r (Obj (Varying n a))
+    -> Val Identity Value (Vector ('S n) (Obj (Constant a)))
+    -> Val Identity Value (Obj (Varying 'Z a))
+    -> Val Identity Value (Obj (Varying n a))
   prefix_tied nrep i r =
     let vec  = vecFromVector (Proxy :: Proxy a) nrep i
         suf  = PrefixList.map fromConstantRep (fromVarying (fromObject r))
         full = PrefixList.fromInitVec_ vec suf
-    in  Object (Varying_r (PrefixList.map fromConstant full))
+    in  Object (Varying (PrefixList.map fromConstant full))
 
   prefix_tie
     :: forall n a s t q i .
        NatRep ('S n)
     -> Knot s t q i
-    -> Val Identity Value_r (Vector ('S n) (Obj (Constant a)) :* i)
-    -> Val Identity Value_r (Obj (Varying 'Z a) :* t)
-    -> Val Identity Value_r (Obj (Varying  n a) :* s)
+    -> Val Identity Value (Vector ('S n) (Obj (Constant a)) :* i)
+    -> Val Identity Value (Obj (Varying 'Z a) :* t)
+    -> Val Identity Value (Obj (Varying  n a) :* s)
   prefix_tie nrep kn ip rp =
     let (i, is) = fromProduct ip
         (r, rs) = fromProduct rp
@@ -477,29 +478,29 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
         suf  = PrefixList.map fromConstantRep (fromVarying(fromObject (runIdentity (getRepr r))))
         full = PrefixList.fromInitVec_ vec suf
 
-        here  = Varying_r (PrefixList.map fromConstant full)
+        here  = Varying (PrefixList.map fromConstant full)
         there = knot_prefixes kn (runIdentity (getRepr is)) (runIdentity (getRepr rs))
     in  Language.Pilot.Repr.Product (object here, valuef (Identity there))
 
   streams_tied
     :: forall n a .
        NatRep ('S n)
-    -> Val Identity Value_r (Vector ('S n) (Obj (Constant a)))
-    -> Val Identity Value_r (Obj (Varying 'Z a))
-    -> Val Identity Value_r (Obj (Varying ('S n) a))
+    -> Val Identity Value (Vector ('S n) (Obj (Constant a)))
+    -> Val Identity Value (Obj (Varying 'Z a))
+    -> Val Identity Value (Obj (Varying ('S n) a))
   streams_tied nrep i r =
     let vec  = vecFromVector (Proxy :: Proxy a) nrep i
         suf  = PrefixList.map fromConstantRep (fromVarying (fromObject r))
         full = PrefixList.fromInitVec vec suf
-    in  Object (Varying_r (PrefixList.map fromConstant full))
+    in  Object (Varying (PrefixList.map fromConstant full))
 
   streams_tie
     :: forall n a s t q i .
        NatRep ('S n)
     -> Knot s t q i
-    -> Val Identity Value_r (Vector ('S n) (Obj (Constant a)) :* i)
-    -> Val Identity Value_r (Obj (Varying 'Z a) :* t)
-    -> Val Identity Value_r (Obj (Varying ('S n) a) :* q)
+    -> Val Identity Value (Vector ('S n) (Obj (Constant a)) :* i)
+    -> Val Identity Value (Obj (Varying 'Z a) :* t)
+    -> Val Identity Value (Obj (Varying ('S n) a) :* q)
   streams_tie nrep kn ip rp =
     let (i, is) = fromProduct ip
         (r, rs) = fromProduct rp
@@ -508,6 +509,6 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
         suf  = PrefixList.map fromConstantRep (fromVarying(fromObject (runIdentity (getRepr r))))
         full = PrefixList.fromInitVec vec suf
 
-        here  = Varying_r (PrefixList.map fromConstant full)
+        here  = Varying (PrefixList.map fromConstant full)
         there = knot_streams kn (runIdentity (getRepr is)) (runIdentity (getRepr rs))
     in  Language.Pilot.Repr.Product (object here, valuef (Identity there))

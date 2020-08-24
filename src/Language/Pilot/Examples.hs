@@ -29,13 +29,13 @@ import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
-showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value_r (Obj (Varying n t)) -> String
+showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value (Obj (Varying n t)) -> String
 showPureStream n e = case runIdentity (evalObject e) of
-  Pure.Varying_r pl -> PrefixList.prettyPrint n Point.prettyPrint pl
+  Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
 
-showPurePoint :: E Identity Pure.Value_r (Obj (Constant t)) -> String
+showPurePoint :: E Identity Pure.Value (Obj (Constant t)) -> String
 showPurePoint e = case runIdentity (evalObject e) of
-  Pure.Constant_r p -> Point.prettyPrint p
+  Pure.Constant p -> Point.prettyPrint p
 
 example_1 :: E f val (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
 example_1 = pair <@> true <@> false
