@@ -12,6 +12,9 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Language.Pilot.Object.Point
   ( Type (..)
@@ -85,6 +88,18 @@ data WidthRep (w :: Width) where
 instance Represented Width where
   type Rep Width = WidthRep
 
+instance Known 'W_One_t where
+  known _ = W_One_r
+
+instance Known 'W_Two_t where
+  known _ = W_Two_r
+
+instance Known 'W_Four_t where
+  known _ = W_Four_r
+
+instance Known 'W_Eight_t where
+  known _ = W_Eight_r
+
 data Signedness where
   Signed_t   :: Signedness
   Unsigned_t :: Signedness
@@ -95,6 +110,12 @@ data SignednessRep (s :: Signedness) where
 
 instance Represented Signedness where
   type Rep Signedness = SignednessRep
+
+instance Known 'Signed_t where
+  known _ = Signed_r
+
+instance Known 'Unsigned_t where
+  known _ = Unsigned_r
 
 -- | This data kind gives all of the "point" types: finite sums and products,
 -- along with numeric and bitwise base types.
@@ -117,6 +138,26 @@ data TypeRep (t :: Type) where
 
 instance Represented Type where
   type Rep Type = TypeRep
+
+instance (Known s, Known w) => Known ('Integer_t s w) where
+  known _ = Integer_r (known (Proxy :: Proxy s)) (known (Proxy :: Proxy w))
+
+instance Known w => Known ('Bytes_t w) where
+  known _ = Bytes_r (known (Proxy :: Proxy w))
+
+instance Known ('Product_t '[]) where
+  known _ = Product_r All
+
+instance Known ('Sum_t '[]) where
+  known _ = Sum_r All
+
+instance (Known t, Known ('Product_t ts)) => Known ('Product_t (t ': ts)) where
+  known _ = case known (Proxy :: Proxy ('Product_t ts)) of
+    Product_r fields -> Product_r (And (known (Proxy :: Proxy t)) fields)
+
+instance (Known t, Known ('Sum_t ts)) => Known ('Sum_t (t ': ts)) where
+  known _ = case known (Proxy :: Proxy ('Sum_t ts)) of
+    Sum_r variants -> Sum_r (And (known (Proxy :: Proxy t)) variants)
 
 type Product ts = 'Product_t ts
 type Sum ts = 'Sum_t ts

@@ -17,7 +17,8 @@ Portability : non-portable (GHC only)
 module Language.Pilot.Types.Represented
   ( Represented (..)
 
-  , Auto (..)
+  , Known (..)
+  , known
   , auto
 
   , Proxy (..)
@@ -43,8 +44,8 @@ class Represented (k :: Haskell.Type) where
 instance Represented Haskell.Type where
   type Rep Haskell.Type = Identity
 
-class Represented k => Auto (t :: k) where
-  repVal :: proxy t -> Rep k t
+class Represented k => Known (t :: k) where
+  known :: proxy t -> Rep k t
 
-auto :: forall k (t :: k) . Auto t => Rep k t
-auto = repVal (Proxy :: Proxy t)
+auto :: forall k (t :: k) . Known t => Rep k t
+auto = known (Proxy :: Proxy t)

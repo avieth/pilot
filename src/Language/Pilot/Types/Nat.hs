@@ -34,11 +34,11 @@ data NatRep (n :: Nat) where
 instance Represented Nat where
   type Rep Nat = NatRep
 
-instance Auto 'Z where
-  repVal _ = Z_Rep
+instance Known 'Z where
+  known _ = Z_Rep
 
-instance Auto n => Auto ('S n) where
-  repVal _ = S_Rep (repVal (Proxy :: Proxy n))
+instance Known n => Known ('S n) where
+  known _ = S_Rep (known (Proxy :: Proxy n))
 
 data SomeNatRep where
   SomeNatRep :: NatRep n -> SomeNatRep

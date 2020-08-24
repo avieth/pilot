@@ -128,8 +128,8 @@ module Language.Pilot
 
   , Object.AutoLift
   , Nat (..)
-  , Auto
-  , repVal
+  , Known (..)
+  , auto
   , NatRep (..)
 
   ) where

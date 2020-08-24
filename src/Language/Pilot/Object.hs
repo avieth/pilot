@@ -22,6 +22,7 @@ Portability : non-portable (GHC only)
 
 module Language.Pilot.Object
   ( Type (..)
+  , TypeRep (..)
 
   , Constant
   , Varying
@@ -159,6 +160,12 @@ data TypeRep (t :: Type) where
 
 instance Represented Type where
   type Rep Type = TypeRep
+
+instance Known t => Known ('Constant_t t) where
+  known _ = Constant_r (known (Proxy :: Proxy t))
+
+instance (Known n, Known t) => Known ('Varying_t n t) where
+  known _ = Varying_r (known (Proxy :: Proxy n)) (known (Proxy :: Proxy t))
 
 type Constant = 'Constant_t
 type Varying = 'Varying_t

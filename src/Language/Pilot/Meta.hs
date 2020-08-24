@@ -14,6 +14,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Language.Pilot.Meta
   ( Type (..)
@@ -57,6 +58,18 @@ data TypeRep (rep :: obj -> Hask) (t :: Type obj) where
 
 instance Represented t => Represented (Type t) where
   type Rep (Type t) = TypeRep (Rep t)
+
+instance Known t => Known ('Object_t t) where
+  known _ = Object_r (known (Proxy :: Proxy t))
+
+instance (Known a, Known b) => Known ('Arrow_t a b) where
+  known _ = Arrow_r (known (Proxy :: Proxy a)) (known (Proxy :: Proxy b))
+
+instance (Known a, Known b) => Known ('Product_t a b) where
+  known _ = Product_r (known (Proxy :: Proxy a)) (known (Proxy :: Proxy b))
+
+instance (Represented k) => Known ('Terminal_t :: Type k) where
+  known _ = Terminal_r
 
 object_t :: rep t -> TypeRep rep ('Object_t t)
 object_t orep = Object_r orep

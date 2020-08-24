@@ -53,10 +53,10 @@ example_2 = lift (S_Rep Z_Rep) <@> u8 42
 --     where
 --     f = flip maybe ((+) 1)
 --
-example_3 :: forall f val n . ( Auto n ) => E f val
+example_3 :: forall f val n . ( Known n ) => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n (Pilot.Maybe UInt8)) :-> Obj (Varying n UInt8))
 example_3 = fun $ \x -> fun $ \y ->
-  lift (repVal (Proxy :: Proxy n)) <@> f <@> x <@> y
+  lift (known (Proxy :: Proxy n)) <@> f <@> x <@> y
   where
   f = Pilot.flip <@> Pilot.maybe <@> (add <@> u8 1)
 
@@ -71,14 +71,14 @@ example_3 = fun $ \x -> fun $ \y ->
 --     where
 --     f x y z = maybe x ((+) y) z
 --
-example_4 :: forall f val n . ( Auto n ) => E f val
+example_4 :: forall f val n . ( Known n ) => E f val
   (   Obj (Varying n UInt8)
   :-> Obj (Varying n UInt8)
   :-> Obj (Varying n (Pilot.Maybe UInt8))
   :-> Obj (Varying n UInt8)
   )
 example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
-  lift_ (repVal (Proxy :: Proxy n)) (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
+  lift_ (known (Proxy :: Proxy n)) (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
   where
   f = fun $ \x -> fun $ \y -> fun $ \z ->
         -- Here will fully apply the just case eliminator, so that the function
