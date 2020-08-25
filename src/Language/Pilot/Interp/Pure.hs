@@ -114,7 +114,7 @@ interpPure trep form = case form of
   Integer_Add_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.add <$> getRepr x <*> getRepr y)
   Integer_Subtract_f -> fun $ \x -> fun $ \y ->
-    repr (liftPoint2 Point.add <$> getRepr x <*> getRepr y)
+    repr (liftPoint2 Point.subtract <$> getRepr x <*> getRepr y)
   Integer_Multiply_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.multiply <$> getRepr x <*> getRepr y)
   Integer_Divide_f -> fun $ \x -> fun $ \y ->
