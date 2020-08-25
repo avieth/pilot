@@ -651,17 +651,19 @@ if_then_else_ :: Known r => E Form f val
   :-> r
   )
 if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
-  formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
+  formal (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifFalse) &> (const <@> ifTrue) &> terminal)
 
 if_then_else
   :: Known r
   => E Form f val (Obj (Constant Bool))
-  -> E Form f val r
-  -> E Form f val r
+  -> E Form f val r -- True case
+  -> E Form f val r -- False case
   -> E Form f val r
 if_then_else b ifTrue ifFalse = formal (Sum_Elim_f (C_Or (C_Or C_Any)))
   <@> b
-  <@> ((const <@> ifTrue) &> (const <@> ifFalse) &> terminal)
+  -- Note the order, w.r.t. the 'false' and 'true' functions: the first variant
+  -- represents false.
+  <@> ((const <@> ifFalse) &> (const <@> ifTrue) &> terminal)
 
 lnot :: E Form f val ( Obj (Constant Bool) :-> Obj (Constant Bool))
 lnot = fun $ \b -> if_then_else_ <@> b <@> false <@> true
