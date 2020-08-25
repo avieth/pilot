@@ -113,10 +113,23 @@ unmeld
   :: (k s -> (l t, m u))
   -> PrefixList n k s
   -> (PrefixList n l t, PrefixList n m u)
+unmeld f (Prefix a as) = (Prefix l ls, Prefix m ms)
+  where
+  (l,  m)  = f a
+  (ls, ms) = unmeld f as
+unmeld f (Suffix a as) = (Suffix l ls, Suffix m ms)
+  where
+  (l,  m)  = f a
+  (ls, ms) = unmeld f as
+-- NB: the following definition is not the same (is less lazy), but making
+-- the case matches lazy (~) would fix it. I prefer the above since it does
+-- not require the lazy matches.
+{-
 unmeld f (Prefix a as) = case (f a, unmeld f as) of
-  ((l, m), (ls, ms)) -> (Prefix l ls, Prefix m ms)
+  ((l, m), (ls, ms)) -> (Prefix l ls,  Prefix m ms)
 unmeld f (Suffix a as) = case (f a, unmeld f as) of
   ((l, m), (ls, ms)) -> (Suffix l ls, Suffix m ms)
+-}
 
 toList :: PrefixList n k t -> [k t]
 toList (Prefix ft next) = ft : toList next
