@@ -119,7 +119,11 @@ module Language.Pilot.Object
   , if_then_else
   , lnot
   , lor
+  , (||)
   , land
+  , (&&)
+  , implies
+  , (==>)
   , maybe
   , just
   , nothing
@@ -147,7 +151,7 @@ module Language.Pilot.Object
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
   const, subtract, negate, abs, and, or, mod, div, (<), (>), (<=), (>=), (==),
-  (/=), (-), (+), (*))
+  (/=), (-), (+), (*), (||), (&&))
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -472,6 +476,7 @@ add :: (Known sign, Known width) => E Form f val
   )
 add = formal Integer_Add_f
 
+infixl 6 +
 (+) :: (Known sign, Known width)
     => E Form f val (Obj (Constant ('Integer_t sign width)))
     -> E Form f val (Obj (Constant ('Integer_t sign width)))
@@ -485,6 +490,7 @@ subtract :: (Known sign, Known width) => E Form f val
   )
 subtract = formal Integer_Subtract_f
 
+infixl 6 -
 (-) :: (Known sign, Known width)
     => E Form f val (Obj (Constant ('Integer_t sign width)))
     -> E Form f val (Obj (Constant ('Integer_t sign width)))
@@ -498,6 +504,7 @@ multiply :: (Known sign, Known width) => E Form f val
   )
 multiply = formal Integer_Multiply_f
 
+infixl 7 *
 (*) :: (Known sign, Known width)
     => E Form f val (Obj (Constant ('Integer_t sign width)))
     -> E Form f val (Obj (Constant ('Integer_t sign width)))
@@ -675,12 +682,38 @@ lor :: E Form f val
   )
 lor = fun $ \a -> fun $ \b -> if_then_else_ <@> a <@> true <@> b
 
+infixr 2 ||
+(||) :: E Form f val (Obj (Constant Bool))
+     -> E Form f val (Obj (Constant Bool))
+     -> E Form f val (Obj (Constant Bool))
+x || y = lor <@> x <@> y
+
 land :: E Form f val
   (   Obj (Constant Bool)
   :-> Obj (Constant Bool)
   :-> Obj (Constant Bool)
   )
 land = fun $ \a -> fun $ \b -> if_then_else_ <@> a <@> b <@> false
+
+infixr 3 &&
+(&&) :: E Form f val (Obj (Constant Bool))
+     -> E Form f val (Obj (Constant Bool))
+     -> E Form f val (Obj (Constant Bool))
+x && y = land <@> x <@> y
+
+implies :: E Form f val
+  (   Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  :-> Obj (Constant Bool)
+  )
+implies = fun $ \a -> fun $ \b -> (lnot <@> a) || b
+
+infixr 1 ==>
+(==>) :: E Form f val (Obj (Constant Bool))
+      -> E Form f val (Obj (Constant Bool))
+      -> E Form f val (Obj (Constant Bool))
+x ==> y = implies <@> x <@> y
+
 
 is_lt :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
 is_lt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases

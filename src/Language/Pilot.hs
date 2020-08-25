@@ -137,6 +137,13 @@ module Language.Pilot
   , Object.false
   , Object.if_then_else
   , ifThenElse
+  , Object.land
+  , (Object.&&)
+  , Object.lor
+  , (Object.||)
+  , Object.lnot
+  , Object.implies
+  , (Object.==>)
   , Object.maybe
   , Object.just
   , Object.nothing
