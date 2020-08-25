@@ -57,7 +57,7 @@ counter = fun $ \inc -> fun $ \reset ->
       -- For some reason a type signature is needed here
       -- TODO fix?
       result :: E f val (Obj (Varying ('S 'Z) Int32) :-> Obj (Varying ('S 'Z) Int32))
-      result = id
+      result = identity
       inputs = i32 0
   in  knot (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
 

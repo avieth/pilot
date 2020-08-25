@@ -97,16 +97,16 @@ example_5 :: E f val
 example_5 = knot (Tied (S_Rep Z_Rep)) <@> loop <@> k
   where
   loop :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
-  loop = Pilot.id
+  loop = Pilot.identity
   k :: E f val (Obj (Varying ('S 'Z) UInt8) :-> Obj (Varying ('S 'Z) UInt8))
-  k = Pilot.id
+  k = Pilot.identity
 
 -- | Here's an integral.
 example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_6 = fun $ \c -> fun $ \f ->
   let loop = lift_ (Ap (Ap Pure)) <@> add <@> f
-  in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.id <@> c
+  in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.identity <@> c
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))

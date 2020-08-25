@@ -31,7 +31,7 @@ module Language.Pilot
   , Repr.fun
   , Repr.app
   , (Repr.<@>)
-  , Repr.id
+  , Repr.identity
   , Repr.compose
   , (Repr.<.>)
   , Repr.const
@@ -74,6 +74,9 @@ module Language.Pilot
 
   , Object.Width (..)
   , Object.Signedness (..)
+
+  , Object.let_
+  , Object.local
 
   , Object.u8
   , Object.u16
@@ -158,6 +161,9 @@ module Language.Pilot
   , Known (..)
   , NatRep (..)
 
+  , (Category..)
+  , Category.id
+  , Category.Category
   , Prelude.Functor
   , Prelude.Applicative
   , Prelude.Monad
@@ -169,6 +175,7 @@ module Language.Pilot
 
   ) where
 
+import Control.Category as Category (Category, (.), id)
 import qualified Language.Pilot.Repr as Repr
 import qualified Language.Pilot.Meta as Meta
 import qualified Language.Pilot.Object as Object

@@ -844,10 +844,10 @@ pair = fun $ \a -> fun $ \b ->
   formal (Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
 
 fst :: (Known a, Known b) => E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant a))
-fst = fun $ \p -> formal (Product_Elim_f S_Here) <@> p <@> id
+fst = fun $ \p -> formal (Product_Elim_f S_Here) <@> p <@> identity
 
 snd :: (Known a, Known b) => E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant b))
-snd = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) <@> p <@> id
+snd = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) <@> p <@> identity
 
 drop :: (Known n, Known t) => E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))

@@ -37,7 +37,7 @@ module Language.Pilot.Repr
   , fun
   , app
   , (<@>)
-  , id
+  , identity
   , compose
   , const
   , (<.>)
@@ -126,8 +126,8 @@ app fr xr = Repr $ do
 
 infixl 4 <@>
 
-id :: Applicative f => Repr f val (s :-> s)
-id = fun $ \a -> a
+identity :: Applicative f => Repr f val (s :-> s)
+identity = fun $ \a -> a
 
 compose :: Monad f => Repr f val ((s :-> t) :-> (t :-> u) :-> (s :-> u))
 compose = fun $ \f -> fun $ \g -> fun $ \s -> g <@> (f <@> s)
