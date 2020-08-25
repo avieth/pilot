@@ -149,6 +149,12 @@ module Language.Pilot
   , auto
   , NatRep (..)
 
+  -- So that when using RebindableSyntax, importing Language.Pilot will make
+  -- integer literals work.
+  , Prelude.fromInteger
+  , (Prelude.$)
+  , Prelude.undefined
+
   ) where
 
 import qualified Language.Pilot.Repr as Repr

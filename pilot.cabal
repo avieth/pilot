@@ -31,6 +31,7 @@ library
                        Language.Pilot.Nominal
 
                        Language.Pilot.Examples
+                       Language.Pilot.Examples.Counter
                        Language.Pilot.Examples.Heater
 
   build-depends:       base

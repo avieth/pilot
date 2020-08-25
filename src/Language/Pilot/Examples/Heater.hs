@@ -57,12 +57,18 @@ above = fun $ \i -> if_then_else (i > high_threshold)
   (just (i - high_threshold))
   nothing
 
--- | This one uses rebindable syntax, which results in the same form as 'above'.
 below :: E f val (Obj (Constant UInt8) :-> Obj (Constant (Maybe UInt8)))
+below = fun $ \i -> if_then_else (i < low_threshold)
+  (just (low_threshold - i))
+  nothing
+-- Could use rebindable syntax, but there's a bug in released versions causing
+-- a core lint error.
+{-
 below = fun $ \i ->
   if (i < low_threshold)
   then just (low_threshold - i)
   else nothing
+-}
 
 -- Heat on and heat off expressions are functions over the input signal. They
 -- are expressed by lifting the corresponding functions over constants, and
@@ -73,3 +79,7 @@ heaton = lift_ (Ap Pure) <@> (isJust <.> above)
 
 heatoff :: Known n => E f val (Obj (Varying n UInt8) :-> Obj (Varying n Bool))
 heatoff = lift_ (Ap Pure) <@> (isJust <.> below)
+
+-- Next: show how to use heaton and heatoff in pure and in C contexts. Only in
+-- the latter do we have a notion of an extern and of a trigger. Should reframe
+-- this to show that both triggers can share computation.

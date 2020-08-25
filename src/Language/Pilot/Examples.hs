@@ -29,6 +29,8 @@ import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
+import Language.Pilot.Examples.Counter
+
 showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value (Obj (Varying n t)) -> String
 showPureStream n e = case runIdentity (evalObject e) of
   Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
@@ -113,3 +115,6 @@ example_7 = lift Z_Rep <@> u8 42
 example_8 :: Known n => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
 example_8 = lift_ (Ap (Ap Pure)) <@> add
+
+example_9 = showPureStream (Just 100) $
+  counter <@> (lift Z_Rep <@> true) <@> (lift Z_Rep <@> false)
