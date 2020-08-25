@@ -163,7 +163,6 @@ interpPure trep form = case form of
 
   Stream_Map_f nrep limage rimage -> interp_map nrep limage rimage
 
-  Stream_Lift_f lf -> interp_lift (lift_prefix_size trep lf) lf
   Stream_Knot_f kn -> interp_knot kn
 
 interp_cast :: Cast a b -> Repr Identity Value (Obj (Constant a) :-> Obj (Constant b))
@@ -394,84 +393,6 @@ interp_map nrep limage rimage = fun $ \preimage -> fun $ \q ->
         lunroll = unroll l llst
         runroll = unroll r rlst
     in  lunroll &> runroll
-
-
--- | Implementation of a lift is essentially the notion of the zip list
--- applicative functor, but it looks a lot more complicated because we must
--- convert between the types held in the PrefixList.
-interp_lift
-  :: forall f n s t .
-     ( Monad f )
-  => NatRep n
-  -> Lift n s t
-  -> Repr f Value (s :-> t)
-interp_lift nrep lf = fun $ \sr ->
-  -- The argument `sr` is either a constant, or a first-order function over
-  -- constants. This is proven by the `Lift` value `lf`. For each `Ap`
-  -- constructor, we add a function argument which takes a varying instead, and
-  -- zip this with whatever we have so far. Then, at the `Pure` case, we convert
-  -- to the expected PrefixList type.
-  let lst :: f (PrefixList n (Val f Value) s)
-      lst = fmap (PrefixList.repeat nrep) (getRepr sr)
-  in  recursive_lift nrep lf lst
-
-  where
-
-  recursive_lift
-    :: forall n s t .
-       NatRep n
-    -> Lift n s t
-    -> f (PrefixList n (Val f Value) s)
-    -> Repr f Value t
-  recursive_lift nrep lf lst = case lf of
-
-    -- Here we find that
-    --
-    --   s ~ Obj (Constant a)
-    --   t ~ Obj (Varying n a)
-    --
-    -- so the list already has what we need, we just have to convert the
-    -- representation type.
-    Pure -> fromPrefixWithRepr lst
-
-    -- Whereas here we have
-    --
-    --   s ~ Obj (Constant a) :-> s1
-    --   t ~ Obj (Varying n a) :-> t1
-    --
-    -- and so we want to take in an argument, and zip-apply the functions in
-    -- `lst` to it. That argument x has type
-    --
-    --   x :: Repr f Value (Obj (Varying n a))
-    --
-    Ap lf' -> fun $ \x -> recursive_lift nrep lf' (prefixWithReprAp lst x)
-
-  prefixWithReprAp
-    :: forall n s t .
-       f (PrefixList n (Val f Value) (Obj (Constant s) :-> t))
-    -> Repr f Value (Obj (Varying n s))
-    -> f (PrefixList n (Val f Value) t)
-  prefixWithReprAp ffs fxs = do
-    fs <- ffs
-    xs <- toPrefixWithRepr fxs
-    fmeld (\f x -> getRepr (fromArrow f (value x))) fs xs
-
-  toPrefixWithRepr
-    :: forall n s .
-       Repr f Value (Obj (Varying n s))
-    -> f (PrefixList n (Val f Value) (Obj (Constant s)))
-  toPrefixWithRepr rx = do
-    x <- fmap fromObject (getRepr rx)
-    case x of
-      Varying lst -> pure (PrefixList.map (Object . constant) lst)
-
-  fromPrefixWithRepr
-    :: forall n s .
-       f (PrefixList n (Val f Value) (Obj (Constant s)))
-    -> Repr f Value (Obj (Varying n s))
-  fromPrefixWithRepr fx = objectf $ do
-    lst <- fx
-    pure (varying (PrefixList.map (fromConstant . fromObject) lst))
 
 -- |
 interp_knot

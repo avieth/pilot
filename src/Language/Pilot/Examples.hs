@@ -43,7 +43,7 @@ example_1 :: E f val (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
 example_1 = pair <@> true <@> false
 
 example_2 :: E f val (Obj (Varying ('S 'Z) UInt8))
-example_2 = lift (S_Rep Z_Rep) <@> u8 42
+example_2 = Pilot.constant (S_Rep Z_Rep) <@> u8 42
 
 -- This is like
 --
@@ -58,7 +58,7 @@ example_2 = lift (S_Rep Z_Rep) <@> u8 42
 example_3 :: forall f val n . ( Known n ) => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n (Pilot.Maybe UInt8)) :-> Obj (Varying n UInt8))
 example_3 = fun $ \x -> fun $ \y ->
-  lift (known (Proxy :: Proxy n)) <@> f <@> x <@> y
+  map_ (known (Proxy :: Proxy n)) <@> (Pilot.uncurry <@> f) <@> (x <& y)
   where
   f = Pilot.flip <@> Pilot.maybe <@> (add <@> u8 1)
 
@@ -80,8 +80,9 @@ example_4 :: forall f val n . ( Known n ) => E f val
   :-> Obj (Varying n UInt8)
   )
 example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
-  lift_ (Ap (Ap (Ap Pure))) <@> f <@> x <@> y <@> z
+  map_ nrep <@> (Pilot.uncurry <@> (Pilot.uncurry <@> f)) <@> (x <& y <& z)
   where
+  nrep = known (Proxy :: Proxy n)
   f = fun $ \x -> fun $ \y -> fun $ \z ->
         -- Here will fully apply the just case eliminator, so that the function
         -- f--which we shall lift--is first-order over constants.
@@ -105,16 +106,16 @@ example_5 = knot (Tied (S_Rep Z_Rep)) <@> loop <@> k
 example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
 example_6 = fun $ \c -> fun $ \f ->
-  let loop = lift_ (Ap (Ap Pure)) <@> add <@> f
+  let loop = fun $ \pre -> map_ Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
   in  knot (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.identity <@> c
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
-example_7 = lift Z_Rep <@> u8 42
+example_7 = Pilot.constant Z_Rep <@> u8 42
 
-example_8 :: Known n => E f val
+example_8 :: Known n => NatRep n -> E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
-example_8 = lift_ (Ap (Ap Pure)) <@> add
+example_8 nrep = Pilot.curry <@> (map_ nrep <@> (Pilot.uncurry <@> add))
 
 example_9 = showPureStream (Just 100) $
-  counter <@> (lift Z_Rep <@> true) <@> (lift Z_Rep <@> false)
+  counter <@> (Pilot.constant Z_Rep <@> true) <@> (Pilot.constant Z_Rep <@> false)

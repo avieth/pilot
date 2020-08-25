@@ -53,7 +53,8 @@ counter :: E f val
   :-> Obj (Varying ('S 'Z) Int32)
   )
 counter = fun $ \inc -> fun $ \reset ->
-  let recdef = lift_ (Ap (Ap (Ap Pure))) <@> counter_step <@> inc <@> reset
+  let recdef = fun $ \pre ->
+        map_ Z_Rep <@> (uncurry <@> (uncurry <@> counter_step)) <@> (inc <& reset <& pre)
       -- For some reason a type signature is needed here
       -- TODO fix?
       result :: E f val (Obj (Varying ('S 'Z) Int32) :-> Obj (Varying ('S 'Z) Int32))

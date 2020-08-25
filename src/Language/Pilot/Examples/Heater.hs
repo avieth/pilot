@@ -37,6 +37,8 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE PolyKinds #-}
 
 module Language.Pilot.Examples.Heater where
 
@@ -74,11 +76,11 @@ below = fun $ \i ->
 -- are expressed by lifting the corresponding functions over constants, and
 -- discarding the extra information inside the Maybe.
 
-heaton :: Known n => E f val (Obj (Varying n UInt8) :-> Obj (Varying n Bool))
-heaton = lift_ (Ap Pure) <@> (isJust <.> above)
+heaton :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z Bool))
+heaton = map_ Z_Rep <@> (isJust <.> above)
 
-heatoff :: Known n => E f val (Obj (Varying n UInt8) :-> Obj (Varying n Bool))
-heatoff = lift_ (Ap Pure) <@> (isJust <.> below)
+heatoff :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z Bool))
+heatoff = map_ Z_Rep <@> (isJust <.> below)
 
 -- Next: show how to use heaton and heatoff in pure and in C contexts. Only in
 -- the latter do we have a notion of an extern and of a trigger. Should reframe

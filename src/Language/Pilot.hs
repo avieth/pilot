@@ -128,12 +128,9 @@ module Language.Pilot
   , Object.map_
   , Object.MapImage (..)
   , Object.KnownMapPreImage (..)
-  , Object.lift
-  , Object.lift_
   , Object.constant
   , Object.knot
   , Object.Knot (..)
-  , Object.Lift (..)
   , Object.Fields (..)
   , Object.Variant (..)
   , Object.Selector (..)
@@ -159,7 +156,6 @@ module Language.Pilot
   , Object.isJust
   , Object.isNothing
 
-  , Object.AutoLift
   , module Types
   , Nat (..)
   , Known (..)

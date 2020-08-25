@@ -58,11 +58,13 @@ module Language.Pilot.Object
   , Variant (..)
   , Selector (..)
   , Cases (..)
-  , Lift (..)
   , Knot (..)
   , Cast (..)
   , Wider (..)
   , type Vector
+
+  , MapImage (..)
+  , KnownMapPreImage (..)
 
   , let_
   , local
@@ -109,8 +111,6 @@ module Language.Pilot.Object
   , KnownMapPreImage (..)
   , map
   , map_
-  , lift
-  , lift_
   , constant
   , knot
   , shift
@@ -146,10 +146,6 @@ module Language.Pilot.Object
   , (>=)
   , (==)
   , (/=)
-
-  , AutoLift (..)
-
-  , lift_prefix_size
 
   ) where
 
@@ -319,8 +315,6 @@ data Form (t :: Meta.Type Type) where
   Stream_Map_f  :: NatRep n -> MapImage n s t -> MapImage n q r -> Form
     ((s :-> q) :-> (t :-> r))
 
-  -- TODO Stream_Map_f should be able to replace this...
-  Stream_Lift_f :: Lift n s t -> Form (s :-> t)
   Stream_Knot_f :: Knot s t q i -> Form ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 
   Stream_Drop_f :: Form
@@ -368,16 +362,6 @@ instance (KnownMapPreImage n a, KnownMapPreImage n b) => KnownMapPreImage n (a :
     pb :: Proxy b
     pb = Proxy
 
--- | The type rep of the result of a stream lift always determines the prefix
--- size of the entire lift--assuming it's a valid lifted thing (first-order
--- function or a constant).
-lift_prefix_size :: Meta.TypeRep TypeRep (s :-> t) -> Lift n s t -> NatRep n
-lift_prefix_size (Meta.Arrow_r _ trep) lf = case lf of
-  Pure -> case trep of
-    Meta.Object_r (Varying_r nrep _) -> nrep
-  Ap _ -> case trep of
-    Meta.Arrow_r (Meta.Object_r (Varying_r nrep _)) _ -> nrep
-
 -- | Used for sum introduction.
 -- `Variant r variants` means that an `r` is sufficient to construct a
 -- sum of `variants`.
@@ -408,18 +392,6 @@ data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
   C_Any :: Cases '[] x
   C_Or  :: Cases             variants  (                                   q  :-> r)
         -> Cases (variant ': variants) (((Obj (Constant variant) :-> r) :* q) :-> r)
-
--- |
---
--- 1. Constant objects may be lifted to varying objects of any prefix size.
--- 2. Function arguments of type constant object may be lifted to function
---    arguments of type varying object of any prefix size, assuming the
---    right-hand-side of the function is also lifted on the same prefix size.
---
-data Lift (n :: Nat) (s :: Meta.Type Type) (t :: Meta.Type Type) where
-  Pure :: Lift n (Obj ('Constant_t a)) (Obj ('Varying_t n a))
-  Ap   :: Lift n s t
-       -> Lift n (Obj ('Constant_t a) :-> s) (Obj ('Varying_t n a) :-> t)
 
 -- |
 --
@@ -824,18 +796,6 @@ is_gt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases
      -> E Form f val (Obj (Constant Bool))
 (/=) a b = (lnot <.> is_eq) <@> (cmp <@> a <@> b)
 
-class AutoLift n a b where
-  autoLift :: Proxy n -> Proxy a -> Proxy b -> Lift n a b
-
-instance AutoLift n (Obj ('Constant_t a)) (Obj ('Varying_t n a)) where
-  autoLift _ _ _ = Pure
-
-instance
-  ( AutoLift n s t
-  ) => AutoLift n (Obj ('Constant_t a) :-> s) (Obj ('Varying_t n a) :-> t)
-  where
-  autoLift pn _ _ = Ap (autoLift pn (Proxy :: Proxy s) (Proxy :: Proxy t))
-
 map :: forall f val n s t q r .
        (Known s, Known r, Known t, Known q)
     => NatRep n
@@ -857,29 +817,9 @@ map_ nrep = map nrep limage rimage
   pn :: Proxy n
   pn = Proxy
 
-lift :: forall f val n s t .
-        (Known s, Known t, AutoLift n s t)
-     => NatRep n
-     -> E Form f val (s :-> t)
-lift _ = formal (Stream_Lift_f (autoLift proxyN proxyS proxyT))
-  where
-  proxyS :: Proxy s
-  proxyS = Proxy
-  proxyT :: Proxy t
-  proxyT = Proxy
-  proxyN :: Proxy n
-  proxyN = Proxy
-
-lift_ :: (Known s, Known t) => Lift n s t -> E Form f val (s :-> t)
-lift_ l = formal (Stream_Lift_f l)
-
-constant :: forall f val n s t . (Known n, Known s) => E Form f val
+constant :: forall f val n s t . (Known n, Known s) => NatRep n -> E Form f val
   (Obj (Constant s) :-> Obj (Varying n s))
-constant = lift (known (Proxy :: Proxy n))
-
-constant' :: forall f val n s t . (Known n, Known s) => NatRep n -> E Form f val
-  (Obj (Constant s) :-> Obj (Varying n s))
-constant' nrep = fun $ \t ->
+constant nrep = fun $ \t ->
   map nrep MapTerminal MapObject <@> (const <@> t) <@> terminal
 
 -- Is lifting properly defined? It's good for many examples and use cases, but
