@@ -47,6 +47,20 @@ module Language.Pilot.Examples.Counter where
 
 import Language.Pilot
 
+counter :: E f val
+  (   Obj (Varying 'Z Bool)
+  :-> Obj (Varying 'Z Bool)
+  :-> Obj (Varying ('S 'Z) Int32)
+  )
+counter = fun $ \inc -> fun $ \reset ->
+  let recdef = lift_ (Ap (Ap (Ap Pure))) <@> counter_step <@> inc <@> reset
+      -- For some reason a type signature is needed here
+      -- TODO fix?
+      result :: E f val (Obj (Varying ('S 'Z) Int32) :-> Obj (Varying ('S 'Z) Int32))
+      result = id
+      inputs = i32 0
+  in  knot (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
+
 -- | This is just like the where clause of "counter" in the copilot variant,
 -- except here it's explicitly a function over constants. It will be "lifted"
 -- over streams in the definition of the counter itself, once the memory
@@ -84,16 +98,3 @@ counter_step = fun $ \inc -> fun $ \reset -> fun $ \z ->
   ifThenElse reset (i32 0) (ifThenElse inc (z + i32 1) z)
 -}
 
-counter :: E f val
-  (   Obj (Varying 'Z Bool)
-  :-> Obj (Varying 'Z Bool)
-  :-> Obj (Varying ('S 'Z) Int32)
-  )
-counter = fun $ \inc -> fun $ \reset ->
-  let recdef = lift_ (Ap (Ap (Ap Pure))) <@> counter_step <@> inc <@> reset
-      -- For some reason a type signature is needed here
-      -- TODO fix?
-      result :: E f val (Obj (Varying ('S 'Z) Int32) :-> Obj (Varying ('S 'Z) Int32))
-      result = id
-      inputs = i32 0
-  in  knot (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
