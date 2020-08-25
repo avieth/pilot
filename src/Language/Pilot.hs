@@ -19,6 +19,8 @@ module Language.Pilot
   , Stream
   , Form
   , E
+  , Repr.Repr
+  , Repr.Interprets
 
   , Meta_k
   , Object_k
@@ -151,11 +153,14 @@ module Language.Pilot
   , Object.isNothing
 
   , Object.AutoLift
+  , module Types
   , Nat (..)
   , Known (..)
-  , auto
   , NatRep (..)
 
+  , Prelude.Functor
+  , Prelude.Applicative
+  , Prelude.Monad
   -- So that when using RebindableSyntax, importing Language.Pilot will make
   -- integer literals work.
   , Prelude.fromInteger
@@ -168,7 +173,7 @@ import qualified Language.Pilot.Repr as Repr
 import qualified Language.Pilot.Meta as Meta
 import qualified Language.Pilot.Object as Object
 import qualified Language.Pilot.Object.Point as Object.Point (Type)
-import Language.Pilot.Types
+import Language.Pilot.Types as Types
 
 type Point t = Meta.Obj (Object.Constant t)
 type Stream n t = Meta.Obj (Object.Varying n t)
@@ -183,9 +188,9 @@ type Point_k = Object.Point.Type
 -- | For rebindable syntax
 ifThenElse :: Known r
            => E f val (Point Object.Bool)
-           -> E f val (Point r)
-           -> E f val (Point r)
-           -> E f val (Point r)
+           -> E f val r
+           -> E f val r
+           -> E f val r
 ifThenElse = Object.if_then_else
 
 -- TODO
