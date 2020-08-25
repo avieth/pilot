@@ -16,6 +16,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Language.Pilot.Repr
   ( Repr (..)
@@ -183,21 +184,22 @@ snd r = Repr $ do
   it <- getRepr r
   getRepr (Prelude.snd (fromProduct it))
 
-type Interpret form f val = forall (x :: Meta.Type domain) . Rep (Meta.Type domain) x -> form x -> Repr f val x
+type Interpret (form :: Meta.Type domain -> Hask) f val = forall (x :: Meta.Type domain) . Rep (Meta.Type domain) x -> form x -> Repr f val x
 
 class Monad f => Interprets (form :: Meta.Type domain -> Hask) (f :: Hask -> Hask) (val :: domain -> Hask) where
   interp :: Interpret form f val
 
-formal :: (Known t, Interprets form f val) => form t -> E form f val t
-formal = interp (known (Proxy :: Proxy t))
+formal :: forall form f val t . (Known t, Interprets form f val)
+  => form t -> E form f val t
+formal frm = interp (known (Proxy :: Proxy t)) frm
 
 formal_
-  :: forall form f val (t :: Meta.Type domain) .
+  :: forall domain form f val (t :: Meta.Type domain) .
      ( Interprets form f val )
   => Rep (Meta.Type domain) t
   -> form t
   -> E form f val t
-formal_ trep = interp trep
+formal_ trep frm = interp trep frm
 
 -- | This is the expression type over a given form, in the "tagless final" style
 -- using a typeclass, because it allows us to seamlessly include
