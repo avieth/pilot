@@ -161,6 +161,8 @@ interpPure trep form = case form of
   Stream_Shift_f -> fun $ \v -> objectf $
     fmap (applyVarying PrefixList.shift . fromObject) (getRepr v)
 
+  Stream_Map_f nrep limage rimage -> interp_map nrep limage rimage
+
   Stream_Lift_f lf -> interp_lift (lift_prefix_size trep lf) lf
   Stream_Knot_f kn -> interp_knot kn
 
@@ -334,6 +336,64 @@ interp_sum_elim cases = fun $ \scrutinee -> valuef $ do
   eliminate (C_Or cs) (Point.Sum_r (Point.Or sum)) elims =
     eliminate cs (Point.Sum_r sum) (Language.Pilot.Repr.snd elims)
   eliminate C_Any (Point.Sum_r (Point.Or sum)) _ = case sum of {}
+
+-- | Interpret the functor from constants to varyings, for a given prefix size,
+-- by using the zip-list-like properties of the PrefixList: zip the product of
+-- lists together, map the function on constants over it, and then unzip it.
+interp_map
+  :: forall n s t q r .
+     NatRep n
+  -> MapImage n s q
+  -> MapImage n t r
+  -> Repr Identity Value ((s :-> t) :-> (q :-> r))
+interp_map nrep limage rimage = fun $ \preimage -> fun $ \q ->
+    unroll rimage
+  . apply (runIdentity (getRepr preimage))
+  . roll nrep limage
+  $ runIdentity (getRepr q)
+
+  where
+
+  -- | use the correspondence between the inputs of the arrows to zip up all
+  -- of the prefix lists into one which contains the type of the preimage
+  -- arrow's input
+  roll :: forall n s q .
+          NatRep n
+       -> MapImage n s q
+       -> Val Identity Value q
+       -> PrefixList n (Repr Identity Value) s
+  -- Here the input value is the terminal object; we don't have a prefix list,
+  -- so we must make a new one up, but that's an obvious and natural choice.
+  roll nrep MapTerminal      _ = PrefixList.repeat nrep (value Terminal)
+  -- The input prefix list has an object; all we need to do is pull it out
+  -- front.
+  roll _    MapObject        v = PrefixList.map (object . fromConstantRep) (fromVarying (fromObject v))
+  -- For products, we zip together the two rolled prefix lists.
+  roll nrep (MapProduct l r) v =
+    let (lv, rv) = fromProduct v
+        lroll = roll nrep l (runIdentity (getRepr lv))
+        rroll = roll nrep r (runIdentity (getRepr rv))
+    in  PrefixList.meld (\x y -> x &> y) lroll rroll
+
+  apply :: Val Identity Value (s :-> t)
+        -> PrefixList n (Repr Identity Value) s
+        -> PrefixList n (Repr Identity Value) t
+  apply f lst = PrefixList.map (fromArrow f) lst
+
+  unroll :: forall n t r .
+            MapImage n t r
+         -> PrefixList n (Repr Identity Value) t
+         -> Repr Identity Value r
+  -- There is by definition only one function to the terminal object
+  unroll MapTerminal      _   = terminal
+  unroll MapObject        lst = object $
+    fromVaryingRep (PrefixList.map (fromConstant . fromObject . runIdentity . getRepr) lst)
+  -- Whereas we zip the lists together in roll, in unroll we unzip them.
+  unroll (MapProduct l r) lst =
+    let (llst, rlst) = PrefixList.unmeld (fromProduct . runIdentity . getRepr) lst
+        lunroll = unroll l llst
+        runroll = unroll r rlst
+    in  lunroll &> runroll
 
 
 -- | Implementation of a lift is essentially the notion of the zip list

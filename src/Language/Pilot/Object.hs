@@ -105,6 +105,10 @@ module Language.Pilot.Object
   , choose
   , match
 
+  , MapImage (..)
+  , KnownMapPreImage (..)
+  , map
+  , map_
   , lift
   , lift_
   , constant
@@ -151,7 +155,7 @@ module Language.Pilot.Object
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
   const, subtract, negate, abs, and, or, mod, div, (<), (>), (<=), (>=), (==),
-  (/=), (-), (+), (*), (||), (&&))
+  (/=), (-), (+), (*), (||), (&&), map)
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -296,6 +300,26 @@ data Form (t :: Meta.Type Type) where
   Sum_Elim_f :: Cases variants r -> Form
     (Obj (Constant ('Sum_t variants)) :-> r)
 
+  -- | The constant and varying types are related by a functor: for any prefix
+  -- size, there is an applicative functor from constants to varyings of that
+  -- prefix size. It's analogous to a Haskell zip list, except things are
+  -- weirder here because it's not an endo functor and its domain does not
+  -- even include function types.
+  --
+  -- The `MapImage` values are used to prove that the ends of the arrows in
+  -- the constant category `s` and `q` are of the proper form, and that the
+  -- ends of the corresponding arrow in the varying category, `t` and `r`,
+  -- correspond to them.
+  --
+  -- This expresses the notion of "pure" by setting s ~ t ~ Terminal, since
+  --   () -> a ~ a
+  --
+  -- TODO this has a categorical explanation that needs to be written out
+  -- properly.
+  Stream_Map_f  :: NatRep n -> MapImage n s t -> MapImage n q r -> Form
+    ((s :-> q) :-> (t :-> r))
+
+  -- TODO Stream_Map_f should be able to replace this...
   Stream_Lift_f :: Lift n s t -> Form (s :-> t)
   Stream_Knot_f :: Knot s t q i -> Form ((s :-> t) :-> (q :-> r) :-> (i :-> r))
 
@@ -311,6 +335,38 @@ data Form (t :: Meta.Type Type) where
   -- of sharing between more than one value without building a product in the
   -- object-language.
   Let_f :: Form (x :-> (x :-> r) :-> r)
+
+-- | Proof that t is the image of s in the functor map from constants to
+-- varyings of a given prefix size n.
+data MapImage (n :: Nat) (s :: Meta.Type Type) (t :: Meta.Type Type) where
+  MapTerminal  :: MapImage n Terminal           Terminal
+  MapObject    :: MapImage n (Obj (Constant t)) (Obj (Varying n t))
+  MapProduct   :: MapImage n  a                  s
+               -> MapImage n       b                  t
+               -> MapImage n (a :* b)           (s :* t)
+
+-- | If the type of a preimage of the functor map from constants to varyings
+-- is known statically, then the MapImage can be derived from it.
+class Known (C n s) => KnownMapPreImage n (s :: Meta.Type Type) where
+  type C n s :: Meta.Type Type
+  knownMapPreImage :: Proxy n -> Proxy s -> MapImage n s (C n s)
+
+instance KnownMapPreImage n Terminal where
+  type C n Terminal = Terminal
+  knownMapPreImage _ _ = MapTerminal
+
+instance (Known n, Known t) => KnownMapPreImage n (Obj (Constant t)) where
+  type C n (Obj (Constant t)) = Obj (Varying n t)
+  knownMapPreImage _ _ = MapObject
+
+instance (KnownMapPreImage n a, KnownMapPreImage n b) => KnownMapPreImage n (a :* b) where
+  type C n (a :* b) = (C n a :* C n b)
+  knownMapPreImage pn _ = MapProduct (knownMapPreImage pn pa) (knownMapPreImage pn pb)
+    where
+    pa :: Proxy a
+    pa = Proxy
+    pb :: Proxy b
+    pb = Proxy
 
 -- | The type rep of the result of a stream lift always determines the prefix
 -- size of the entire lift--assuming it's a valid lifted thing (first-order
@@ -780,7 +836,26 @@ instance
   where
   autoLift pn _ _ = Ap (autoLift pn (Proxy :: Proxy s) (Proxy :: Proxy t))
 
--- TODO give custom type errors for unliftable things.
+map :: forall f val n s t q r .
+       (Known s, Known r, Known t, Known q)
+    => NatRep n
+    -> MapImage n s q
+    -> MapImage n t r
+    -> E Form f val ((s :-> t) :-> (q :-> r))
+map nrep limage rimage = formal (Stream_Map_f nrep limage rimage)
+
+-- | 'map' but the 'MapImage's are derived. Requires more type annotation by
+-- the user.
+map_ :: forall f val n s t .
+       (Known s, Known t, KnownMapPreImage n s, KnownMapPreImage n t)
+    => NatRep n
+    -> E Form f val ((s :-> t) :-> (C n s :-> C n t))
+map_ nrep = map nrep limage rimage
+  where
+  limage = knownMapPreImage pn (Proxy :: Proxy s)
+  rimage = knownMapPreImage pn (Proxy :: Proxy t)
+  pn :: Proxy n
+  pn = Proxy
 
 lift :: forall f val n s t .
         (Known s, Known t, AutoLift n s t)
@@ -801,6 +876,11 @@ lift_ l = formal (Stream_Lift_f l)
 constant :: forall f val n s t . (Known n, Known s) => E Form f val
   (Obj (Constant s) :-> Obj (Varying n s))
 constant = lift (known (Proxy :: Proxy n))
+
+constant' :: forall f val n s t . (Known n, Known s) => NatRep n -> E Form f val
+  (Obj (Constant s) :-> Obj (Varying n s))
+constant' nrep = fun $ \t ->
+  map nrep MapTerminal MapObject <@> (const <@> t) <@> terminal
 
 -- Is lifting properly defined? It's good for many examples and use cases, but
 -- what about something like if_then_else? Maybe the error is that

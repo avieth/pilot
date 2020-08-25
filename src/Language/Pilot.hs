@@ -124,6 +124,10 @@ module Language.Pilot
 
   , Object.shift
   , Object.drop
+  , Object.map
+  , Object.map_
+  , Object.MapImage (..)
+  , Object.KnownMapPreImage (..)
   , Object.lift
   , Object.lift_
   , Object.constant
