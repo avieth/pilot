@@ -28,6 +28,10 @@ module Language.Pilot.Interp.Pure
   , varyingToStream
   , pointToConstant
   , constantToPoint
+
+  , PrefixList.cycle
+  , PrefixList.repeat
+  , PrefixList.fromInit
   ) where
 
 import Prelude hiding (Integer)

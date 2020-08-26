@@ -16,6 +16,7 @@ Portability : non-portable (GHC only)
 module Language.Pilot.Interp.Pure.PrefixList
   ( PrefixList (..)
   , repeat
+  , cycle
   , map
   , traverse
   , meld
@@ -34,7 +35,7 @@ module Language.Pilot.Interp.Pure.PrefixList
   , prettyPrint
   ) where
 
-import Prelude hiding (repeat, map, zip, unzip, tail, drop, traverse)
+import Prelude hiding (repeat, map, zip, unzip, tail, drop, traverse, cycle)
 import Data.List (intercalate)
 
 import Language.Pilot.Types
@@ -63,6 +64,12 @@ prettyPrint n k pl = mconcat [shownPrefix, " | ", shownSuffix]
 repeat :: NatRep n -> k t -> PrefixList n k t
 repeat  Z_Rep    pt = Suffix pt (repeat Z_Rep pt)
 repeat (S_Rep n) pt = Prefix pt (repeat n     pt)
+
+cycle :: [k t] -> PrefixList 'Z k t
+cycle ts = go ts
+  where
+  go []      = cycle ts
+  go (t:ts') = Suffix t (go ts')
 
 map
   :: (k t -> k' t')
