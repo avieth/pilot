@@ -14,6 +14,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Language.Pilot.Types.Nat where
 
@@ -21,15 +22,43 @@ import Numeric.Natural
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 
+import qualified GHC.TypeLits as GHC
+
 import Language.Pilot.Types.Represented
 
 data Nat where
   S :: Nat -> Nat
   Z :: Nat
 
+-- | Useful for writing Nat types: Decimal 42 expands to something you would not
+-- want to write out directly.
+type family Decimal (n :: GHC.Nat) :: Nat where
+  Decimal 0 = 'Z
+  Decimal n = 'S (Decimal (n GHC.- 1))
+
+-- | Inverts 'Decimal'
+type family Unary (n :: Nat) :: GHC.Nat where
+  Unary 'Z = 0
+  Unary ('S n) = 1 GHC.+ Unary n
+
 data NatRep (n :: Nat) where
   S_Rep :: NatRep t -> NatRep ('S t)
   Z_Rep :: NatRep 'Z
+
+-- Is it possible to give a user-friendly way of writing NatRep? Or writing
+-- Nats? Without explicitly writing out each synonym?
+-- We might hope to get a base-10 or base-16 representation.
+
+pattern Zero = Z_Rep
+pattern One = S_Rep Zero
+pattern Two = S_Rep One
+pattern Three = S_Rep Two
+pattern Four = S_Rep Three
+pattern Five = S_Rep Four
+pattern Six = S_Rep Five
+pattern Seven = S_Rep Six
+pattern Eight = S_Rep Seven
+pattern Nine = S_Rep Eight
 
 instance Represented Nat where
   type Rep Nat = NatRep
