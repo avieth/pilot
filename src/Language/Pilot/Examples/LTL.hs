@@ -61,7 +61,7 @@ import Language.Pilot
 --
 -- > since  :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
 -- > since = fun $ \x -> fun $ \y ->
--- >   always <@> (map_ Zero <@> (uncurry <@> implies) <@> (eventually <@> (previous <@> y)) <& x)
+-- >   always <@> (map_auto Zero <@> (uncurry <@> implies) <@> (eventually <@> (previous <@> y)) <& x)
 
 -- | Here's a direct implementation of "alwaysBeen".
 --
@@ -77,27 +77,27 @@ always = fun $ \bs ->
       -- stream bs) and the previous value. This becomes the previous value on
       -- the next frame.
       recdef :: E f val (Obj (Varying (Decimal 0) Bool) :-> Obj (Varying (Decimal 0) Bool))
-      recdef = fun $ \prev -> map_ Zero <@> (uncurry <@> land) <@> (prev <& bs)
+      recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> land) <@> (prev <& bs)
       -- The result value of this knot: take the resulting stream, which has
       -- prefix size 1, and shift it. That means it appears to have prefix size
       -- 0, but no values are lost.
       result :: E f val (Obj (Varying (Decimal 1) Bool) :-> Obj (Varying (Decimal 0) Bool))
-      result = shift
+      result = shift_auto
       -- The initial values. Since there's only one stream in this knot, there's
       -- only one initial value, and we set it to true. If it were false, then
       -- the entire stream would always be false.
       inits :: E f val (Vector (Decimal 1) (Obj (Constant Bool)))
       inits = true
-  in  knot (Tied One) <@> recdef <@> result <@> inits
+  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
 
 -- | Just like 'always' except we use || to combine and false to initialize.
 -- This is "eventuallyPrev" from PTLTL.
 eventually :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
 eventually = fun $ \bs ->
-  let recdef = fun $ \prev -> map_ Zero <@> (uncurry <@> lor) <@> (prev <& bs)
-      result = shift
+  let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> lor) <@> (prev <& bs)
+      result = shift_auto
       inits = false
-  in  knot (Tied One) <@> recdef <@> result <@> inits
+  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
 
 -- | Shows how we can express 'always' and 'eventually' using a higher-order
 -- function: a fold on memory streams with a single cell of memory.
@@ -108,10 +108,10 @@ ltlFold :: forall f val t . (Known t) => E f val
   :-> Obj (Varying 'Z t)
   )
 ltlFold = fun $ \f -> fun $ \t -> fun $ \bs ->
-  let recdef = fun $ \prev -> map_ Zero <@> (uncurry <@> f) <@> (prev <& bs)
-      result = shift
+  let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> f) <@> (prev <& bs)
+      result = shift_auto
       inits = t
-  in  knot (Tied One) <@> recdef <@> result <@> inits
+  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
 
 -- | Same as 'always' but more succinct.
 alwaysBeen :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
@@ -131,7 +131,7 @@ previous = ltlFold <@> (flip <@> const) <@> false
 -- be the proper definition?
 since  :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
 since = fun $ \x -> fun $ \y ->
-  always <@> (map_ Zero <@> (uncurry <@> implies) <@> ((eventually <@> y) <& x))
+  always <@> (map_auto Zero <@> (uncurry <@> implies) <@> ((eventually <@> y) <& x))
 
 -- TODO bounded LTL can be expressed in a type-safe way by using the `Fin`
 -- datatype, giving types such as

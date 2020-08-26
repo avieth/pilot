@@ -27,6 +27,7 @@ module Language.Pilot.Repr
   , objectf
   , object
   , formal
+  , formal_auto
 
   , evalObject
 
@@ -189,17 +190,26 @@ type Interpret (form :: Meta.Type domain -> Hask) f val = forall (x :: Meta.Type
 class Monad f => Interprets (form :: Meta.Type domain -> Hask) (f :: Hask -> Hask) (val :: domain -> Hask) where
   interp :: Interpret form f val
 
-formal :: forall form f val t . (Known t, Interprets form f val)
-  => form t -> E form f val t
-formal frm = interp (known (Proxy :: Proxy t)) frm
-
-formal_
+formal
   :: forall domain form f val (t :: Meta.Type domain) .
      ( Interprets form f val )
-  => Rep (Meta.Type domain) t
-  -> form t
+  => form t
+  -> Rep (Meta.Type domain) t
   -> E form f val t
-formal_ trep frm = interp trep frm
+formal frm trep = interp trep frm
+
+-- | Like 'formal' except you give the representation of the type
+-- explicitly.
+--
+-- This is often nice to have, but sometimes 'formal' is needed, for instance
+-- when type families are involved, and it becomes difficult/impossible to
+-- convince GHC that a given type is Known.
+formal_auto
+  :: forall form f val t .
+     (Known t, Interprets form f val)
+  => form t
+  -> E form f val t
+formal_auto frm = formal frm (known (Proxy :: Proxy t))
 
 -- | This is the expression type over a given form, in the "tagless final" style
 -- using a typeclass, because it allows us to seamlessly include
@@ -257,8 +267,8 @@ data LetForm (x :: Meta.Type LetDomain) where
   Let :: LetForm (a :-> (a :-> b) :-> b)
 
 example_3 :: E LetForm f val (Obj 'LetType :* Obj 'LetType)
-example_3 = example_1 <@> formal_ (Meta.object_t lettype_t) Datum
-                      <@> formal                            Datum
+example_3 = example_1 <@> formal      Datum (Meta.object_t lettype_t)
+                      <@> formal_auto Datum
 
 data DummyVal (t :: LetDomain) where
   DummyVal :: DummyVal 'LetType

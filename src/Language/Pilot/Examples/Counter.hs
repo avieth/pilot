@@ -55,10 +55,10 @@ counter :: E f val
   )
 counter = fun $ \inc -> fun $ \reset ->
   let recdef = fun $ \pre ->
-        map_ Z_Rep <@> (uncurry <@> (uncurry <@> counter_step)) <@> (inc <& reset <& pre)
+        map_auto Z_Rep <@> (uncurry <@> (uncurry <@> counter_step)) <@> (inc <& reset <& pre)
       result = identity
       inputs = i32 0
-  in  knot (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
+  in  knot_auto (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
 
 -- | This is just like the where clause of "counter" in the copilot variant,
 -- except here it's explicitly a function over constants. It will be "lifted"

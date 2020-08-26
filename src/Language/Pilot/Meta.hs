@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Language.Pilot.Meta
   ( Type (..)
@@ -28,6 +29,13 @@ module Language.Pilot.Meta
   , arrow_t
   , product_t
   , terminal_t
+  , (.->)
+  , (.*)
+
+  , type Curry
+  , type CurryFull
+  , type Uncurry
+  , type UncurryFull
   ) where
 
 import Language.Pilot.Types
@@ -80,5 +88,49 @@ terminal_t = Terminal_r
 arrow_t :: TypeRep rep s -> TypeRep rep t -> TypeRep rep (s :-> t)
 arrow_t = Arrow_r
 
+infixr 0 .->
+
+(.->) :: TypeRep rep s -> TypeRep rep t -> TypeRep rep (s :-> t)
+(.->) = arrow_t
+
 product_t :: TypeRep rep s -> TypeRep rep t -> TypeRep rep (s :* t)
 product_t = Product_r
+
+infixr 2 .*
+
+(.*) :: TypeRep rep s -> TypeRep rep t -> TypeRep rep (s :* t)
+(.*) = product_t
+
+-- | Exactly like the function's type
+--
+--     curry :: ((a, b) -> c) -> (a -> b -> c)
+--
+type family Curry (t :: Type object) :: Type object where
+  Curry ((a :* b) :-> c) = a :-> b :-> c
+
+-- | Exactly like the function's type
+--
+--     uncurry :: (a -> b -> c) -> ((a, b) -> c)
+--
+type family Uncurry (t :: Type object) :: Type object where
+  Uncurry (a :-> b :-> c) = (a :* b) :-> c
+
+-- | "Fully" uncurry a function: make it into a single arrow type by replacing
+-- all top-level arrows a product.
+--
+--    a :-> (b :-> c :-> d) :-> (e :* f) :-> g  :-> r
+--   _________________________________________________
+--   (a :*  (b :-> c :-> d) :*  (e :* f) :*  g) :-> r
+--
+type family UncurryFull (t :: Type object) :: Type object where
+  UncurryFull (a :-> (b :-> c)) = Uncurry (a :-> (UncurryFull (b :-> c)))
+  UncurryFull (x :-> Obj b)     = x :-> Obj b
+  UncurryFull (x :-> Terminal)  = x :-> Terminal
+  UncurryFull (x :-> (a :* b))  = x :-> (a :* b)
+
+-- | Inverts 'UncurryFull'
+type family CurryFull (t :: Type object) :: Type object where
+  CurryFull ((a :* b) :-> c) = a :-> (CurryFull (b :-> c))
+  CurryFull (x :-> Obj b)    = x :-> Obj b
+  CurryFull (x :-> Terminal) = x :-> Terminal
+  CurryFull (x :-> (a :* b)) = x :-> (a :* b)

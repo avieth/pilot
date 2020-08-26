@@ -77,10 +77,10 @@ below = fun $ \i ->
 -- discarding the extra information inside the Maybe.
 
 heaton :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z Bool))
-heaton = map_ Z_Rep <@> (isJust <.> above)
+heaton = map_auto Z_Rep <@> (isJust <.> above)
 
 heatoff :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z Bool))
-heatoff = map_ Z_Rep <@> (isJust <.> below)
+heatoff = map_auto Z_Rep <@> (isJust <.> below)
 
 -- Next: show how to use heaton and heatoff in pure and in C contexts. Only in
 -- the latter do we have a notion of an extern and of a trigger. Should reframe

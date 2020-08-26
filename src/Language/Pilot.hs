@@ -72,11 +72,37 @@ module Language.Pilot
   , Object.Pair
   , Object.Either
 
+  , Meta.object_t
+  , (Meta..->)
+  , (Meta..*)
+  , Meta.arrow_t
+  , Meta.product_t
+  , Meta.terminal_t
+  , Object.varying_t
+  , Object.constant_t
+  , Object.uint8_t
+  , Object.uint16_t
+  , Object.uint32_t
+  , Object.uint64_t
+  , Object.int8_t
+  , Object.int16_t
+  , Object.int32_t
+  , Object.int64_t
+  , Object.cmp_t
+  , Object.maybe_t
+  , Object.either_t
+  , Object.pair_t
+  , Object.bool_t
+  , Object.void_t
+  , Object.unit_t
+
   , Object.Width (..)
   , Object.Signedness (..)
 
   , Object.let_
   , Object.local
+  , Object.let_auto
+  , Object.local_auto
 
   , Object.u8
   , Object.u16
@@ -124,12 +150,14 @@ module Language.Pilot
 
   , Object.shift
   , Object.drop
+  , Object.shift_auto
+  , Object.drop_auto
   , Object.map
-  , Object.map_
-  , Object.MapImage (..)
-  , Object.KnownMapPreImage (..)
+  , Object.map_auto
   , Object.constant
+  , Object.constant_auto
   , Object.knot
+  , Object.knot_auto
   , Object.Knot (..)
   , Object.Fields (..)
   , Object.Variant (..)
@@ -139,6 +167,7 @@ module Language.Pilot
   , Object.unit
   , Object.absurd
   , Object.pair
+  , Object.pair_auto
   , Object.true
   , Object.false
   , Object.if_then_else
@@ -162,6 +191,10 @@ module Language.Pilot
   , NatRep (..)
 
   , type Object.Vector
+  , Object.MapImage (..)
+  , Object.KnownMapPreImage (..)
+  , Object.vectorMapImage
+  , Object.vector_t
 
   , (Category..)
   , Category.id
@@ -181,7 +214,7 @@ import Control.Category as Category (Category, (.), id)
 import qualified Language.Pilot.Repr as Repr
 import qualified Language.Pilot.Meta as Meta
 import qualified Language.Pilot.Object as Object
-import qualified Language.Pilot.Object.Point as Object.Point (Type)
+import qualified Language.Pilot.Object.Point as Object.Point
 import Language.Pilot.Types as Types
 
 type Point t = Meta.Obj (Object.Constant t)
