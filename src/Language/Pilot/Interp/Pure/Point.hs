@@ -21,6 +21,15 @@ module Language.Pilot.Interp.Pure.Point
   , Any (..)
   , All (..)
 
+  , u8
+  , u16
+  , u32
+  , u64
+  , i8
+  , i16
+  , i32
+  , i64
+
   , add
   , subtract
   , multiply
@@ -168,6 +177,30 @@ prettyPrintProduct fs = mconcat
   prettyPrintFields All = ""
   prettyPrintFields (And p All) = mconcat ["(", prettyPrint p, ")"]
   prettyPrintFields (And p all) = mconcat ["(", prettyPrint p, "), "] ++ prettyPrintFields all
+
+u8 :: Haskell.Word8 -> Point ('Object.Point.Integer_t 'Unsigned_t 'W_One_t)
+u8 w = Integer (UInt8 w)
+
+u16 :: Haskell.Word16 -> Point ('Object.Point.Integer_t 'Unsigned_t 'W_Two_t)
+u16 w = Integer (UInt16 w)
+
+u32 :: Haskell.Word32 -> Point ('Object.Point.Integer_t 'Unsigned_t 'W_Four_t)
+u32 w = Integer (UInt32 w)
+
+u64 :: Haskell.Word64 -> Point ('Object.Point.Integer_t 'Unsigned_t 'W_Eight_t)
+u64 w = Integer (UInt64 w)
+
+i8 :: Haskell.Int8 -> Point ('Object.Point.Integer_t 'Signed_t 'W_One_t)
+i8 w = Integer (Int8 w)
+
+i16 :: Haskell.Int16 -> Point ('Object.Point.Integer_t 'Signed_t 'W_Two_t)
+i16 w = Integer (Int16 w)
+
+i32 :: Haskell.Int32 -> Point ('Object.Point.Integer_t 'Signed_t 'W_Four_t)
+i32 w = Integer (Int32 w)
+
+i64 :: Haskell.Int64 -> Point ('Object.Point.Integer_t 'Signed_t 'W_Eight_t)
+i64 w = Integer (Int64 w)
 
 integer_f
   :: (forall n . Integral n => n -> n -> n)
