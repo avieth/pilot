@@ -33,6 +33,7 @@ library
                        Language.Pilot.Examples
                        Language.Pilot.Examples.Counter
                        Language.Pilot.Examples.Heater
+                       Language.Pilot.Examples.LTL
 
   build-depends:       base
   hs-source-dirs:      src
