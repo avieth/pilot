@@ -32,6 +32,7 @@ library
 
                        Language.Pilot.Examples
                        Language.Pilot.Examples.Counter
+                       Language.Pilot.Examples.Engine
                        Language.Pilot.Examples.Heater
                        Language.Pilot.Examples.LTL
                        Language.Pilot.Examples.Voting
