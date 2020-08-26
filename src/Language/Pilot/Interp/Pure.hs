@@ -24,6 +24,10 @@ module Language.Pilot.Interp.Pure
   , interpPure
   , constant
   , varying
+  , streamToVarying
+  , varyingToStream
+  , pointToConstant
+  , constantToPoint
   ) where
 
 import Prelude hiding (Integer)
@@ -49,9 +53,17 @@ showValue n it = case it of
   Constant pt  -> Point.prettyPrint pt
   Varying  lst -> PrefixList.prettyPrint n Point.prettyPrint lst
 
-applyConstant :: (Point s -> Point t)
-              -> (Value (Constant s) -> Value (Constant t))
-applyConstant f = \(Constant p) -> Constant (f p)
+constantToPoint :: Repr Identity Value (Obj (Constant t)) -> Point t
+constantToPoint = fromConstant . fromObject . runIdentity . getRepr
+
+pointToConstant :: Point t -> Repr Identity Value (Obj (Constant t))
+pointToConstant = Repr . Identity . Object . Constant
+
+varyingToStream :: Repr Identity Value (Obj (Varying n t)) -> PrefixList n Point t
+varyingToStream = fromVarying . fromObject . runIdentity . getRepr
+
+streamToVarying :: PrefixList n Point t -> Repr Identity Value (Obj (Varying n t))
+streamToVarying = Repr . Identity . Object . Varying
 
 applyVarying :: (PrefixList n Point s -> PrefixList m Point t)
              -> (Value (Varying n s) -> Value (Varying m t))
