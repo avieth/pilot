@@ -421,6 +421,9 @@ data Knot (s :: Meta.Type Type) (t :: Meta.Type Type) (q :: Meta.Type Type) (i :
 -- | Constructs a vector type in Meta.Type of a given length. It's slightly
 -- non-regular in that 0-length vectors are Terminal, but non-zero-length
 -- vectors do not end in a Terminal.
+--
+-- This is useful for expressing known- but variable-length products _inside_
+-- the EDSL as meta-language products.
 type family Vector (n :: Nat) (t :: Meta.Type Type) :: Meta.Type Type where
   Vector     'Z  t = Terminal
   Vector ('S 'Z) t = t

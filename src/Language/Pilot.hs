@@ -161,6 +161,8 @@ module Language.Pilot
   , Known (..)
   , NatRep (..)
 
+  , type Object.Vector
+
   , (Category..)
   , Category.id
   , Category.Category
