@@ -23,6 +23,7 @@ module Language.Pilot.Interp.Pure.PrefixList
   , unmeld
   , toList
   , fromList
+  , fromInit
   , tail
   , drop
   , shift
@@ -140,6 +141,13 @@ fromList :: NatRep n -> [k t] -> PrefixList n k t
 fromList            _     [] = error "fromList: list is not infinite in length"
 fromList       Z_Rep  (t:ts) = Suffix t (fromList Z_Rep ts)
 fromList (S_Rep nrep) (t:ts) = Prefix t (fromList nrep ts)
+
+-- | Like a mix of fromList and fromInitVec. It uses the entire list to fill
+-- in the start of the list (not a prefix) and then repeats the second argument
+-- forever.
+fromInit :: [k t] -> k t -> PrefixList 'Z k t
+fromInit []     x = repeat Z_Rep x
+fromInit (t:ts) x = Suffix t (fromInit ts x)
 
 tail :: PrefixList 'Z k t -> PrefixList 'Z k t
 tail (Suffix _ next) = next
