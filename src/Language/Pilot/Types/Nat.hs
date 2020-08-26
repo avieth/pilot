@@ -86,6 +86,9 @@ natVal :: SomeNatRep -> Natural
 natVal (SomeNatRep Z_Rep) = 0
 natVal (SomeNatRep (S_Rep n)) = 1 + natVal (SomeNatRep n)
 
+natToIntegral :: Integral a => NatRep n -> a
+natToIntegral nrep = fromIntegral (natVal (SomeNatRep nrep))
+
 class KnownNat (n :: Nat) where
   natRep :: proxy n -> NatRep n
 
