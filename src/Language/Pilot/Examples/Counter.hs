@@ -42,6 +42,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE PolyKinds #-}
 
 module Language.Pilot.Examples.Counter where
 
@@ -55,9 +56,6 @@ counter :: E f val
 counter = fun $ \inc -> fun $ \reset ->
   let recdef = fun $ \pre ->
         map_ Z_Rep <@> (uncurry <@> (uncurry <@> counter_step)) <@> (inc <& reset <& pre)
-      -- For some reason a type signature is needed here
-      -- TODO fix?
-      result :: E f val (Obj (Varying ('S 'Z) Int32) :-> Obj (Varying ('S 'Z) Int32))
       result = identity
       inputs = i32 0
   in  knot (Tied (S_Rep Z_Rep)) <@> recdef <@> result <@> inputs
