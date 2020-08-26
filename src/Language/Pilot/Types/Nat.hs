@@ -160,6 +160,10 @@ data Vec (n :: Nat) (t :: Type) where
   VNil  :: Vec Z t
   VCons :: t -> Vec n t -> Vec (S n) t
 
+vecLength :: Vec n t -> NatRep n
+vecLength VNil         = Z_Rep
+vecLength (VCons _ vs) = S_Rep (vecLength vs)
+
 vecToList :: Vec n t -> [t]
 vecToList VNil = []
 vecToList (VCons t vs) = t : vecToList vs
@@ -174,10 +178,6 @@ vecMap f (VCons t vs) = VCons (f t) (vecMap f vs)
 vecTraverse :: Applicative f => (s -> f t) -> Vec n s -> f (Vec n t)
 vecTraverse f VNil = pure VNil
 vecTraverse f (VCons t ts) = VCons <$> f t <*> vecTraverse f ts
-
-vecLength :: Vec n t -> Natural
-vecLength VNil = 0
-vecLength (VCons _ vs) = 1 + vecLength vs
 
 vecReverse :: Vec n t -> Vec n t
 vecReverse VNil = VNil
