@@ -23,10 +23,11 @@ arithmetic and bitwise operations are implicitly "lifted" pointwise over
 streams, and any "point" or "scalar" value can be made into a stream by way
 of the `constant` function. This is all annoyingly reminiscent of an
 applicative functor; it's the [ZipList](https://hackage.haskell.org/package/base-4.14.0.0/docs/Control-Applicative.html#t:ZipList), in particular. But within the copilot language itself, there are
-no functors or applicatives. There aren't even any _functions_ in the language,
-so how could we _possibly_ have functors? The question then is whether it is
-possible to have, within an EDSL that does not even have functions, a
-programming style similar to that of Haskell's `Functor` and `Applicative`?
+no functors or applicatives. There aren't even any _functions_ in the
+language--and we don't _want_ functions in the language--so how could we
+possibly have functors? The question, then, is whether it is possible to have,
+within an EDSL that does not even have functions, a programming style similar
+to that of Haskell's `Functor` and `Applicative`?
 
 This project says "Yes!". Read on to find out how.
 
@@ -61,6 +62,10 @@ The tagless-final style typeclass therefore looks like this:
 -- Language.Pilot.Repr
 
 type Interpret (form :: Meta.Type domain -> Hask) f val = forall (x :: Meta.Type domain) .
+  -- The `Rep` is a value-level representation of the type x.
+  -- The `form` is a GADT constructor which represents the abstract form; it
+  -- can use meta-language functions and products, as well as object-language
+  -- types.
   Rep (Meta.Type domain) x -> form x -> Repr f val x
 
 class Monad f => Interprets (form :: Meta.Type domain -> Hask) (f :: Hask -> Hask) (val :: domain -> Hask) where
