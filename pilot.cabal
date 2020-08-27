@@ -32,6 +32,7 @@ library
 
                        Language.Pilot.Examples
                        Language.Pilot.Examples.Copilot
+                       Language.Pilot.Examples.Copilot.Clock
                        Language.Pilot.Examples.Copilot.Counter
                        Language.Pilot.Examples.Copilot.Engine
                        Language.Pilot.Examples.Copilot.Heater
