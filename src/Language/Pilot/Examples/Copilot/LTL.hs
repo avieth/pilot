@@ -1,5 +1,5 @@
 {-|
-Module      : Pilot.Examples.LTL
+Module      : Language.Pilot.Examples.Copilot.LTL
 Description : Linear temporal logic examples inspired by copilot.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
@@ -17,7 +17,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Language.Pilot.Examples.LTL where
+module Language.Pilot.Examples.Copilot.LTL where
 
 import qualified Prelude
 import Language.Pilot

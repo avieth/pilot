@@ -1,6 +1,6 @@
 {-|
-Module      : 
-Description : 
+Module      : Language.Pilot.Examples.Copilot.Heater
+Description : copilot's heater example
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
@@ -40,7 +40,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE PolyKinds #-}
 
-module Language.Pilot.Examples.Heater where
+module Language.Pilot.Examples.Copilot.Heater where
 
 import Prelude hiding (Bool, Maybe, (>), (<), (-))
 

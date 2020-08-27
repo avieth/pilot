@@ -1,6 +1,6 @@
 {-|
-Module      : 
-Description : 
+Module      : Language.Pilot.Examples.Copilot.Engine
+Description : copilot's engine example
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
@@ -54,12 +54,12 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Language.Pilot.Examples.Engine where
+module Language.Pilot.Examples.Copilot.Engine where
 
 import qualified Prelude
 import Language.Pilot
-import Language.Pilot.Examples.LTL
-import Language.Pilot.Examples.Voting
+import Language.Pilot.Examples.Copilot.LTL
+import Language.Pilot.Examples.Copilot.Voting
 
 -- | Engine probe signal.
 type Probe f val = Obj (Varying 'Z UInt8)

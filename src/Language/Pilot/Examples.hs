@@ -30,10 +30,7 @@ import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
-import Language.Pilot.Examples.LTL as Examples
-import Language.Pilot.Examples.Counter as Examples
-import Language.Pilot.Examples.Heater as Examples
-import Language.Pilot.Examples.Voting as Examples
+import Language.Pilot.Examples.Copilot as Examples
 
 showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value (Obj (Varying n t)) -> String
 showPureStream n e = case runIdentity (evalObject e) of

@@ -1,6 +1,6 @@
 {-|
-Module      : 
-Description : 
+Module      : Language.Pilot.Examples.Copilot.Counter
+Description : copilot's counter example
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
@@ -44,7 +44,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE PolyKinds #-}
 
-module Language.Pilot.Examples.Counter where
+module Language.Pilot.Examples.Copilot.Counter where
 
 import Language.Pilot
 

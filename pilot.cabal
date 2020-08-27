@@ -31,11 +31,12 @@ library
                        Language.Pilot.Nominal
 
                        Language.Pilot.Examples
-                       Language.Pilot.Examples.Counter
-                       Language.Pilot.Examples.Engine
-                       Language.Pilot.Examples.Heater
-                       Language.Pilot.Examples.LTL
-                       Language.Pilot.Examples.Voting
+                       Language.Pilot.Examples.Copilot
+                       Language.Pilot.Examples.Copilot.Counter
+                       Language.Pilot.Examples.Copilot.Engine
+                       Language.Pilot.Examples.Copilot.Heater
+                       Language.Pilot.Examples.Copilot.LTL
+                       Language.Pilot.Examples.Copilot.Voting
 
   build-depends:       base
   hs-source-dirs:      src

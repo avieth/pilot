@@ -1,5 +1,5 @@
 {-|
-Module      : Language.Pilot.Examples.Voting
+Module      : Language.Pilot.Examples.Copilot.Voting
 Description : Boyer-Moore voting algorithm in pilot
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
@@ -77,7 +77,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Language.Pilot.Examples.Voting where
+module Language.Pilot.Examples.Copilot.Voting where
 
 import qualified Prelude
 import Language.Pilot
