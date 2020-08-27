@@ -83,9 +83,6 @@ module Language.Pilot.Object
   , Wider (..)
   , type Vector
 
-  , MapImage (..)
-  , KnownMapPreImage (..)
-
   , let_
   , let_auto
   , local
