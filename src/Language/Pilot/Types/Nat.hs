@@ -60,6 +60,17 @@ pattern Seven = S_Rep Six
 pattern Eight = S_Rep Seven
 pattern Nine = S_Rep Eight
 
+decEq :: DecEq NatRep
+decEq Z_Rep Z_Rep = Just Refl
+decEq (S_Rep n) (S_Rep m) = case decEq n m of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+decEq (S_Rep _) Z_Rep = Nothing
+decEq Z_Rep (S_Rep _) = Nothing
+
+instance TestEquality NatRep where
+  testEquality = decEq
+
 instance Represented Nat where
   type Rep Nat = NatRep
 
@@ -175,6 +186,17 @@ vecMap :: (s -> t) -> Vec n s -> Vec n t
 vecMap _ VNil = VNil
 vecMap f (VCons t vs) = VCons (f t) (vecMap f vs)
 
+vecZip :: (s -> t -> u) -> Vec n s -> Vec n t -> Vec n u
+vecZip _ VNil         VNil         = VNil
+vecZip f (VCons s ss) (VCons t ts) = VCons (f s t) (vecZip f ss ts)
+
+vecUnzip :: (s -> (t, u)) -> Vec n s -> (Vec n t, Vec n u)
+vecUnzip _ VNil         = (VNil, VNil)
+vecUnzip f (VCons s ss) = (VCons t ts, VCons u us)
+  where
+  (t,  u)  = f s
+  (ts, us) = vecUnzip f ss
+
 vecTraverse :: Applicative f => (s -> f t) -> Vec n s -> f (Vec n t)
 vecTraverse f VNil = pure VNil
 vecTraverse f (VCons t ts) = VCons <$> f t <*> vecTraverse f ts
@@ -186,6 +208,9 @@ vecReverse (VCons t ts) = vecSnoc (vecReverse ts) t
 vecSnoc :: Vec n t -> t -> Vec (S n) t
 vecSnoc VNil t = VCons t VNil
 vecSnoc (VCons t ts) t' = VCons t (vecSnoc ts t')
+
+vecDropFirst :: Vec (S n) t -> Vec n t
+vecDropFirst (VCons _ vs) = vs
 
 vecDropLast :: Vec (S n) t -> Vec n t
 vecDropLast (VCons _ VNil)           = VNil

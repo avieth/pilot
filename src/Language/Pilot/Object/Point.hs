@@ -19,6 +19,12 @@ Portability : non-portable (GHC only)
 module Language.Pilot.Object.Point
   ( Type (..)
   , TypeRep (..)
+  , decEq
+
+  , integer_t
+  , bytes_t
+  , product_t
+  , sum_t
 
   , Product
   , Sum
@@ -67,6 +73,9 @@ module Language.Pilot.Object.Point
   , Signedness (..)
   , SignednessRep (..)
 
+  , signed_t
+  , unsigned_t
+
   ) where
 
 import Prelude hiding (Bool, Either, Maybe)
@@ -84,6 +93,13 @@ data WidthRep (w :: Width) where
   W_Two_r   :: WidthRep 'W_Two_t
   W_Four_r  :: WidthRep 'W_Four_t
   W_Eight_r :: WidthRep 'W_Eight_t
+
+instance TestEquality WidthRep where
+  testEquality W_One_r   W_One_r   = Just Refl
+  testEquality W_Two_r   W_Two_r   = Just Refl
+  testEquality W_Four_r  W_Four_r  = Just Refl
+  testEquality W_Eight_r W_Eight_r = Just Refl
+  testEquality _         _         = Nothing
 
 instance Represented Width where
   type Rep Width = WidthRep
@@ -107,6 +123,17 @@ data Signedness where
 data SignednessRep (s :: Signedness) where
   Signed_r   :: SignednessRep 'Signed_t
   Unsigned_r :: SignednessRep 'Unsigned_t
+
+instance TestEquality SignednessRep where
+  testEquality Signed_r   Signed_r   = Just Refl
+  testEquality Unsigned_r Unsigned_r = Just Refl
+  testEquality _          _          = Nothing
+
+signed_t :: SignednessRep 'Signed_t
+signed_t = Signed_r
+
+unsigned_t :: SignednessRep 'Unsigned_t
+unsigned_t = Unsigned_r
 
 instance Represented Signedness where
   type Rep Signedness = SignednessRep
@@ -135,6 +162,43 @@ data TypeRep (t :: Type) where
   Bytes_r   :: WidthRep w -> TypeRep ('Bytes_t w)
   Product_r :: All TypeRep fields -> TypeRep ('Product_t fields)
   Sum_r     :: All TypeRep fields -> TypeRep ('Sum_t fields)
+
+decEq :: DecEq TypeRep
+
+decEq (Integer_r s w) (Integer_r s' w') = case testEquality s s' of
+  Nothing -> Nothing
+  Just Refl -> case testEquality w w' of
+    Nothing -> Nothing
+    Just Refl -> Just Refl
+
+decEq (Bytes_r w) (Bytes_r w') = case testEquality w w' of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+
+decEq (Product_r ps) (Product_r qs) = case testEquality ps qs of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+
+decEq (Sum_r ss) (Sum_r ts) = case testEquality ss ts of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+
+decEq _ _ = Nothing
+
+instance TestEquality TypeRep where
+  testEquality = decEq
+
+integer_t :: SignednessRep s -> WidthRep w -> TypeRep ('Integer_t s w)
+integer_t = Integer_r
+
+bytes_t :: WidthRep w -> TypeRep ('Bytes_t w)
+bytes_t = Bytes_r
+
+product_t :: All TypeRep fields -> TypeRep ('Product_t fields)
+product_t = Product_r
+
+sum_t :: All TypeRep fields -> TypeRep ('Sum_t fields)
+sum_t = Sum_r
 
 instance Represented Type where
   type Rep Type = TypeRep

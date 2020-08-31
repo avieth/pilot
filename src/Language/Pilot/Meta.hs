@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Language.Pilot.Meta
@@ -26,16 +27,22 @@ module Language.Pilot.Meta
 
   , TypeRep (..)
   , object_t
+  , to_object_t
   , arrow_t
   , product_t
   , terminal_t
   , (.->)
   , (.*)
+  , pattern Obj
+  , pattern (:->)
+  , pattern (:*)
+  , pattern Terminal
 
   , type Curry
   , type CurryFull
   , type Uncurry
   , type UncurryFull
+
   ) where
 
 import Language.Pilot.Types
@@ -64,6 +71,38 @@ data TypeRep (rep :: obj -> Hask) (t :: Type obj) where
   Product_r  :: TypeRep rep s -> TypeRep rep t -> TypeRep rep ('Product_t s t)
   Terminal_r :: TypeRep rep 'Terminal_t
 
+{-# COMPLETE Obj, (:->), (:*), Terminal #-}
+
+pattern Obj t = Object_r t
+pattern a :-> b = Arrow_r a b
+pattern a :* b  = Product_r a b
+pattern Terminal = Terminal_r
+
+decEq :: DecEq rep -> DecEq (TypeRep rep)
+
+decEq eqRep (Object_r x) (Object_r y) = case eqRep x y of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+
+decEq eqRep (Arrow_r s t) (Arrow_r q r) = case decEq eqRep s q of
+  Nothing -> Nothing
+  Just Refl -> case decEq eqRep t r of
+    Nothing -> Nothing
+    Just Refl -> Just Refl
+
+decEq eqRep (Product_r s t) (Product_r q r) = case decEq eqRep s q of
+  Nothing -> Nothing
+  Just Refl -> case decEq eqRep t r of
+    Nothing -> Nothing
+    Just Refl -> Just Refl
+
+decEq _ Terminal_r Terminal_r = Just Refl
+
+decEq _ _ _ = Nothing
+
+instance TestEquality rep => TestEquality (TypeRep rep) where
+  testEquality = decEq testEquality
+
 instance Represented t => Represented (Type t) where
   type Rep (Type t) = TypeRep (Rep t)
 
@@ -78,6 +117,9 @@ instance (Known a, Known b) => Known ('Product_t a b) where
 
 instance (Represented k) => Known ('Terminal_t :: Type k) where
   known _ = Terminal_r
+
+to_object_t :: TypeRep rep ('Object_t t) -> rep t
+to_object_t (Object_r orep) = orep
 
 object_t :: rep t -> TypeRep rep ('Object_t t)
 object_t orep = Object_r orep

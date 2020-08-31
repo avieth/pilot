@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -25,6 +26,7 @@ Portability : non-portable (GHC only)
 module Language.Pilot.Object
   ( Type (..)
   , TypeRep (..)
+  , Language.Pilot.Object.decEq
 
   , Constant
   , Varying
@@ -51,7 +53,10 @@ module Language.Pilot.Object
   , Pair
   , Either
 
+  , pattern Varying
+  , pattern Constant
   , varying_t
+  , to_constant_t
   , constant_t
   , uint8_t
   , uint16_t
@@ -176,7 +181,6 @@ module Language.Pilot.Object
   , vectorMapImage
   , vector_t
 
-
   ) where
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
@@ -185,7 +189,8 @@ import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
-import Language.Pilot.Meta (Obj, Terminal, type (:->), type (:*), (.->), (.*))
+import Language.Pilot.Meta (Obj, Terminal, type (:->), type (:*), (.->), (.*),
+  pattern Obj)
 import qualified Language.Pilot.Meta as Meta
 import Language.Pilot.Repr hiding (fst, snd)
 import Language.Pilot.Types
@@ -203,11 +208,36 @@ data TypeRep (t :: Type) where
   Constant_r :: Point.TypeRep p -> TypeRep ('Constant_t p)
   Varying_r  :: NatRep n -> Point.TypeRep p -> TypeRep ('Varying_t n p)
 
+{-# COMPLETE Constant, Varying #-}
+
+pattern Constant p = Constant_r p
+pattern Varying n p = Varying_r n p
+
+decEq :: DecEq TypeRep
+
+decEq (Constant_r  s) (Constant_r  t) = case Point.decEq s t of
+  Nothing -> Nothing
+  Just Refl -> Just Refl
+
+decEq (Varying_r n s) (Varying_r m t) = case natEq n m of
+  Nothing -> Nothing
+  Just Refl -> case Point.decEq s t of
+    Nothing -> Nothing
+    Just Refl -> Just Refl
+
+decEq _ _ = Nothing
+
+instance TestEquality TypeRep where
+  testEquality = Language.Pilot.Object.decEq
+
 varying_t :: NatRep n -> Point.TypeRep t -> TypeRep (Varying n t)
 varying_t = Varying_r
 
 constant_t :: Point.TypeRep t -> TypeRep (Constant t)
 constant_t = Constant_r
+
+to_constant_t :: TypeRep (Constant t) -> Point.TypeRep t
+to_constant_t (Constant_r trep) = trep
 
 instance Represented Type where
   type Rep Type = TypeRep
@@ -358,12 +388,13 @@ data Form (t :: Meta.Type Type) where
   Stream_Shift_f :: Form
     (Obj (Varying ('S n) t) :-> Obj (Varying n t))
 
-  -- Let bindings for object-language values. To let-bind a meta-language
-  -- value you would just use the Haskell let. Notice that the result can
-  -- be a meta-language thing. That's key: you _are_ able to let-bind outside
-  -- of meta-language products, for instance, thereby allowing the expression
-  -- of sharing between more than one value without building a product in the
-  -- object-language.
+  -- Notice that the result can be a meta-language thing. That's key: you
+  -- _are_ able to let-bind outside of meta-language products, for instance,
+  -- thereby allowing the expression of sharing between more than one value
+  -- without building a product in the object-language.
+  --
+  -- TODO explain the meaning of this when x is a meta-language thing.
+  -- Is it possibly different from using Haskell's let?
   Let_f :: Form (x :-> (x :-> r) :-> r)
 
 -- | Proof that t is the image of s in the functor map from constants to

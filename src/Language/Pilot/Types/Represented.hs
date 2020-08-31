@@ -13,6 +13,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Language.Pilot.Types.Represented
   ( Represented (..)
@@ -20,9 +21,14 @@ module Language.Pilot.Types.Represented
   , Known (..)
   , auto
 
+  , DecEq
+  , (:~:)(Refl)
+  , TestEquality (..)
+
   , Proxy (..)
   ) where
 
+import Data.Type.Equality ((:~:)(Refl), TestEquality (..))
 import qualified Data.Kind as Haskell (Type)
 import Data.Functor.Identity (Identity)
 
@@ -48,3 +54,7 @@ class Represented k => Known (t :: k) where
 
 auto :: forall k (t :: k) . Known t => Rep k t
 auto = known (Proxy :: Proxy t)
+
+-- | Decidable equality that GHC can be made aware of. Useful for the
+-- value-level representations of the type data kind of an EDSL.
+type DecEq (f :: k -> Haskell.Type) = forall x y . f x -> f y -> Maybe (x :~: y)
