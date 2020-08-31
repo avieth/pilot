@@ -16,6 +16,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Language.Pilot.Interp.Pure
   ( Value (..)
@@ -39,7 +40,8 @@ import Data.Functor.Identity (Identity (..))
 
 import Language.Pilot.Types
 import Language.Pilot.Meta (Obj, type (:->), type (:*))
-import Language.Pilot.Object as Object hiding (Point (..), constant)
+import Language.Pilot.Object as Object hiding (Point (..), pattern Varying,
+  pattern Constant, pattern Program, constant)
 import Language.Pilot.Repr
 
 import Language.Pilot.Interp.Pure.Point as Point
@@ -51,11 +53,13 @@ instance Interprets Object.Form Identity Value where
 data Value (t :: Object.Type) where
   Constant :: Point t -> Value (Constant t)
   Varying  :: PrefixList n Point t -> Value (Varying n t)
+  Program  :: Repr Identity Value t -> Value (Program t)
 
 showValue :: Prelude.Maybe Int -> Value t -> String
 showValue n it = case it of
   Constant pt  -> Point.prettyPrint pt
   Varying  lst -> PrefixList.prettyPrint n Point.prettyPrint lst
+  Program  rep -> "<program>"
 
 constantToPoint :: Repr Identity Value (Obj (Constant t)) -> Point t
 constantToPoint = fromConstant . fromObject . runIdentity . getRepr
@@ -78,6 +82,9 @@ constant = Constant
 
 varying :: PrefixList n Point t -> Value (Varying n t)
 varying = Varying
+
+program :: Repr Identity Value t -> Value (Program t)
+program = Program
 
 fromVarying :: Value (Varying n t) -> PrefixList n Point t
 fromVarying (Varying lst) = lst
@@ -179,7 +186,28 @@ interpPure trep form = case form of
 
   Stream_Map_f nrep limage rimage -> interp_map nrep limage rimage
 
+  Program_Map_f -> interp_prog_map
+  Program_Pure_f -> interp_prog_pure
+  Program_Ap_f -> interp_prog_ap
+  Program_Join_f -> interp_prog_join
+
   Stream_Knot_f kn -> interp_knot kn
+
+interp_prog_map :: Repr Identity Value ((s :-> t) :-> Obj (Program s) :-> Obj (Program t))
+interp_prog_map = fun $ \f -> fun $ \p -> case fromObject (runIdentity (getRepr p)) of
+  Program repr -> object $ program $ f <@> repr
+
+interp_prog_pure :: Repr Identity Value (t :-> Obj (Program t))
+interp_prog_pure = fun $ \t -> object $ program t
+
+interp_prog_ap :: Repr Identity Value (Obj (Program (s :-> t)) :-> Obj (Program s) :-> Obj (Program t))
+interp_prog_ap = fun $ \mf -> fun $ \mx -> case fromObject (runIdentity (getRepr mf)) of
+  Program f -> case fromObject (runIdentity (getRepr mx)) of
+    Program x -> object $ program $ f <@> x
+
+interp_prog_join :: Repr Identity Value (Obj (Program (Obj (Program t))) :-> Obj (Program t))
+interp_prog_join = fun $ \mt -> case fromObject (runIdentity (getRepr mt)) of
+  Program t -> t
 
 interp_cast :: Cast a b -> Repr Identity Value (Obj (Constant a) :-> Obj (Constant b))
 interp_cast c = fun $ \a -> object $ constant $ case (c, fromConstant (fromObject (runIdentity (getRepr a)))) of
@@ -410,27 +438,25 @@ interp_map nrep limage rimage = fun $ \preimage -> fun $ \q ->
         runroll = unroll r rlst
     in  lunroll &> runroll
 
--- |
 interp_knot
-  :: forall s t q i r .
-     Knot s t q i
-  -> Repr Identity Value ((s :-> t) :-> (q :-> r) :-> (i :-> r))
-interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
+  :: forall s t i r .
+     Knot s t i r
+  -> Repr Identity Value ((s :-> t) :-> (i :-> Obj (Program r)))
+interp_knot kn = fun $ \fknot -> fun $ \inits ->
   -- We have
   --
   --   fknot :: s :-> t
-  --   fcont :: q :-> r
   --   inits :: i
   --
-  -- where s t q i are related by the GADT value kn.
+  -- where s t i are related by the GADT value kn.
   --
   -- Suppose we match on the first and it's a Tie. In this case, we can
   -- get
   --
   --   s ~ Obj (Varying n a) :* s1
   --   t ~ Obj (Varying Z a) :* t1
-  --   q ~ Obj (Varying (S n) a :* q1
   --   i ~ Vector (S n) (Obj (Constant a)) :* i1
+  --   r ~ Obj (Varying (S n) a :* q1
   --
   -- and we also have a NatRep n, so we can get some work done. We would match
   -- on inits, which we know to be a product containing a vector, and use that
@@ -447,10 +473,9 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   -- reference anything beyond what is determined by the init vectors.
   let initvals = runIdentity (getRepr inits)
       prefixes = knot_prefixes kn initvals suffixes
-      streams  = knot_streams kn initvals suffixes
+      streams  = knot_streams  kn initvals suffixes
       suffixes = runIdentity . getRepr . app fknot . valuef . Identity $ prefixes
-      results  = runIdentity . getRepr . app fcont . valuef . Identity $ streams
-  in  valuef . Identity $ results
+  in  object . program . valuef . Identity $ streams
 
   where
 
@@ -475,25 +500,14 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
   -- at the moment.
 
   -- Compute the prefixes of the knot: the inputs to the knot-tying function.
-  knot_prefixes :: forall s t q i .
-       Knot s t q i
+  knot_prefixes :: forall s t i r .
+       Knot s t i r
     -> Val Identity Value i
     -> Val Identity Value t
     -> Val Identity Value s
   knot_prefixes kn i t = case kn of
-    Tied nrep     -> prefix_tied nrep i t
+    Tied nrep     -> prefix_tied nrep     i t
     Tie  nrep kn' -> prefix_tie  nrep kn' i t
-
-  -- Compute the entire streams of the knot: the resulting full streams that
-  -- are passed to the output continuation.
-  knot_streams :: forall s t q i .
-       Knot s t q i
-    -> Val Identity Value i
-    -> Val Identity Value t
-    -> Val Identity Value q
-  knot_streams kn i t = case kn of
-    Tied nrep     -> streams_tied nrep i t
-    Tie  nrep kn' -> streams_tie  nrep kn' i t
 
   prefix_tied
     :: forall n a .
@@ -508,9 +522,9 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
     in  Object (Varying (PrefixList.map fromConstant full))
 
   prefix_tie
-    :: forall n a s t q i .
+    :: forall n a s t i r .
        NatRep ('S n)
-    -> Knot s t q i
+    -> Knot s t i r
     -> Val Identity Value (Vector ('S n) (Obj (Constant a)) :* i)
     -> Val Identity Value (Obj (Varying 'Z a) :* t)
     -> Val Identity Value (Obj (Varying  n a) :* s)
@@ -526,6 +540,17 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
         there = knot_prefixes kn (runIdentity (getRepr is)) (runIdentity (getRepr rs))
     in  Language.Pilot.Repr.Product (object here, valuef (Identity there))
 
+  -- Compute the entire streams of the knot: the resulting full streams that
+  -- are passed to the output continuation.
+  knot_streams :: forall s t i r .
+       Knot s t i r
+    -> Val Identity Value i
+    -> Val Identity Value t
+    -> Val Identity Value r
+  knot_streams kn i t = case kn of
+    Tied nrep     -> streams_tied nrep i t
+    Tie  nrep kn' -> streams_tie  nrep kn' i t
+
   streams_tied
     :: forall n a .
        NatRep ('S n)
@@ -539,12 +564,12 @@ interp_knot kn = fun $ \fknot -> fun $ \fcont -> fun $ \inits ->
     in  Object (Varying (PrefixList.map fromConstant full))
 
   streams_tie
-    :: forall n a s t q i .
+    :: forall n a s t i r .
        NatRep ('S n)
-    -> Knot s t q i
+    -> Knot s t i r
     -> Val Identity Value (Vector ('S n) (Obj (Constant a)) :* i)
     -> Val Identity Value (Obj (Varying 'Z a) :* t)
-    -> Val Identity Value (Obj (Varying ('S n) a) :* q)
+    -> Val Identity Value (Obj (Varying ('S n) a) :* r)
   streams_tie nrep kn ip rp =
     let (i, is) = fromProduct ip
         (r, rs) = fromProduct rp

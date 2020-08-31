@@ -30,6 +30,7 @@ module Language.Pilot.Object
 
   , Constant
   , Varying
+  , Program
 
   , UInt8
   , UInt16
@@ -55,9 +56,11 @@ module Language.Pilot.Object
 
   , pattern Varying
   , pattern Constant
+  , pattern Program
   , varying_t
   , to_constant_t
   , constant_t
+  , program_t
   , uint8_t
   , uint16_t
   , uint32_t
@@ -142,6 +145,13 @@ module Language.Pilot.Object
   , drop
   , drop_auto
 
+  , prog_map
+  , prog_pure
+  , prog_ap
+  , prog_join
+  , prog_bind
+  , (>>=)
+
   , unit
   , absurd
   , true
@@ -185,7 +195,7 @@ module Language.Pilot.Object
 
 import Prelude hiding (Bool, Maybe, Either, maybe, id, drop, pair, fst, snd,
   const, subtract, negate, abs, and, or, mod, div, (<), (>), (<=), (>=), (==),
-  (/=), (-), (+), (*), (||), (&&), map)
+  (/=), (-), (+), (*), (||), (&&), map, (>>=), (>>))
 import qualified Data.Word as Haskell
 import qualified Data.Int as Haskell
 
@@ -203,27 +213,40 @@ import qualified Language.Pilot.Object.Point as Point
 data Type where
   Constant_t :: Point.Type -> Type
   Varying_t  :: Nat -> Point.Type -> Type
+  -- | An endofunctor on `Meta.Type Type` (it makes a `Type`, whihc is in
+  -- `Meta.Type Type`). Akin to IO in Haskell.
+  Program_t  :: Meta.Type Type -> Type
 
 data TypeRep (t :: Type) where
   Constant_r :: Point.TypeRep p -> TypeRep ('Constant_t p)
   Varying_r  :: NatRep n -> Point.TypeRep p -> TypeRep ('Varying_t n p)
+  Program_r  :: Meta.TypeRep TypeRep t -> TypeRep ('Program_t t)
 
-{-# COMPLETE Constant, Varying #-}
+{-# COMPLETE Constant, Varying, Program #-}
 
-pattern Constant p = Constant_r p
-pattern Varying n p = Varying_r n p
+pattern Constant   p = Constant_r   p
+pattern Varying  n p = Varying_r  n p
+pattern Program    p = Program_r    p
+
+type Constant = 'Constant_t
+type Varying  = 'Varying_t
+type Program  = 'Program_t
 
 decEq :: DecEq TypeRep
 
 decEq (Constant_r  s) (Constant_r  t) = case Point.decEq s t of
-  Nothing -> Nothing
+  Nothing   -> Nothing
   Just Refl -> Just Refl
 
 decEq (Varying_r n s) (Varying_r m t) = case natEq n m of
-  Nothing -> Nothing
+  Nothing   -> Nothing
   Just Refl -> case Point.decEq s t of
-    Nothing -> Nothing
+    Nothing   -> Nothing
     Just Refl -> Just Refl
+
+decEq (Program_r s) (Program_r t) = case testEquality s t of
+  Nothing   -> Nothing
+  Just Refl -> Just Refl
 
 decEq _ _ = Nothing
 
@@ -239,6 +262,9 @@ constant_t = Constant_r
 to_constant_t :: TypeRep (Constant t) -> Point.TypeRep t
 to_constant_t (Constant_r trep) = trep
 
+program_t :: Meta.TypeRep TypeRep t -> TypeRep (Program t)
+program_t = Program_r
+
 instance Represented Type where
   type Rep Type = TypeRep
 
@@ -247,9 +273,6 @@ instance Known t => Known ('Constant_t t) where
 
 instance (Known n, Known t) => Known ('Varying_t n t) where
   known _ = Varying_r (known (Proxy :: Proxy n)) (known (Proxy :: Proxy t))
-
-type Constant = 'Constant_t
-type Varying = 'Varying_t
 
 data Form (t :: Meta.Type Type) where
 
@@ -381,12 +404,20 @@ data Form (t :: Meta.Type Type) where
   Stream_Map_f  :: NatRep n -> MapImage n s t -> MapImage n q r -> Form
     ((s :-> q) :-> (t :-> r))
 
-  Stream_Knot_f :: Knot s t q i -> Form ((s :-> t) :-> (q :-> r) :-> (i :-> r))
+  -- | The Knot GADT ensures that the function `s :-> t` defines a
+  -- mutually-recursive set of streams without using the Program type. This
+  -- means that it's impossible to do a knot within another knot definition.
+  Stream_Knot_f :: Knot s t i r -> Form ((s :-> t) :-> (i :-> Obj (Program r)))
 
   Stream_Drop_f :: Form
     (Obj (Varying ('S n) t) :-> Obj (Varying n t))
   Stream_Shift_f :: Form
     (Obj (Varying ('S n) t) :-> Obj (Varying n t))
+
+  Program_Map_f  :: Form ((s :-> t) :-> (Obj (Program s) :-> Obj (Program t)))
+  Program_Pure_f :: Form (t :-> Obj (Program t))
+  Program_Ap_f   :: Form (Obj (Program (s :-> t)) :-> Obj (Program s) :-> Obj (Program t))
+  Program_Join_f :: Form (Obj (Program (Obj (Program t))) :-> Obj (Program t))
 
   -- Notice that the result can be a meta-language thing. That's key: you
   -- _are_ able to let-bind outside of meta-language products, for instance,
@@ -478,24 +509,22 @@ data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
 --   each stream determined by the vector inits.
 -- - `t` is the output product for the definition function, giving suffixes for
 --   each stream.
--- - `q` is the input product for the continuation function, or equivalently
---   the output product for the knot itself. It gives the whole streams, as
---   defined recursively by the definition function.
 -- - `i` is the input product for the resulting function. This is an init vector
 --   for each of the streams.
+-- - `r` is the outsputs: the streams with their full prefix sizes.
 --
-data Knot (s :: Meta.Type Type) (t :: Meta.Type Type) (q :: Meta.Type Type) (i :: Meta.Type Type) where
+data Knot (s :: Meta.Type Type) (t :: Meta.Type Type) (i :: Meta.Type Type) (r :: Meta.Type Type) where
   Tied :: NatRep ('S n)
        -> Knot (Obj (Varying n a))
                (Obj (Varying 'Z a))
-               (Obj (Varying ('S n) a))
                (Vector ('S n) (Obj (Constant a)))
+               (Obj (Varying ('S n) a))
   Tie  :: NatRep ('S n)
-       -> Knot s t q i
+       -> Knot s t i r
        -> Knot ((Obj (Varying n a)) :* s)
                ((Obj (Varying 'Z a)) :* t)
-               ((Obj (Varying ('S n) a)) :* q)
                ((Vector ('S n) (Obj (Constant a))) :* i)
+               ((Obj (Varying ('S n) a)) :* r)
 
 -- | Constructs a vector type in Meta.Type of a given length. It's slightly
 -- non-regular in that 0-length vectors are Terminal, but non-zero-length
@@ -1066,18 +1095,67 @@ shift_auto = shift auto auto
 -- 'knot_auto' can be used when GHC has Known for all of the necessary types.
 knot :: Meta.TypeRep TypeRep s
      -> Meta.TypeRep TypeRep t
-     -> Meta.TypeRep TypeRep q
      -> Meta.TypeRep TypeRep i
      -> Meta.TypeRep TypeRep r
-     -> Knot s t q i
-     -> E Form f val ((s :-> t) :-> (q :-> r) :-> (i :-> r))
-knot srep trep qrep irep rrep sig = formal (Stream_Knot_f sig) rep
+     -> Knot s t i r
+     -> E Form f val ((s :-> t) :-> (i :-> Obj (Program r)))
+knot srep trep irep rrep sig = formal (Stream_Knot_f sig) rep
   where
-  rep = (srep .-> trep) .-> (qrep .-> rrep) .-> (irep .-> rrep)
+  rep = (srep .-> trep) .-> (irep .-> Meta.object_t (program_t rrep))
 
 -- | Like 'knot' but GHC knows all of the types involved.
 knot_auto
-  :: (Known s, Known t, Known q, Known r, Known i)
-  => Knot s t q i
-  -> E Form f val ((s :-> t) :-> (q :-> r) :-> (i :-> r))
-knot_auto = knot auto auto auto auto auto
+  :: (Known s, Known t, Known i, Known r)
+  => Knot s t i r
+  -> E Form f val ((s :-> t) :-> (i :-> Obj (Program r)))
+knot_auto = knot auto auto auto auto
+
+-- |
+-- = Functor/Applicative/Monad for Program
+
+prog_map
+  :: Meta.TypeRep TypeRep s
+  -> Meta.TypeRep TypeRep t
+  -> E Form f val ((s :-> t) :-> Obj (Program s) :-> Obj (Program t))
+prog_map srep trep = formal Program_Map_f rep
+  where
+  rep = (srep .-> trep) .-> (Meta.object_t (program_t srep) .-> Meta.object_t (program_t trep))
+
+prog_pure
+  :: Meta.TypeRep TypeRep t
+  -> E Form f val (t :-> Obj (Program t))
+prog_pure trep = formal Program_Pure_f rep
+  where
+  rep = trep .-> Meta.object_t (program_t trep)
+
+prog_ap
+  :: Meta.TypeRep TypeRep s
+  -> Meta.TypeRep TypeRep t
+  -> E Form f val (Obj (Program (s :-> t)) :-> Obj (Program s) :-> Obj (Program t))
+prog_ap srep trep = formal Program_Ap_f rep
+  where
+  rep = Meta.object_t (program_t (srep .-> trep)) .-> Meta.object_t (program_t srep) .-> Meta.object_t (program_t trep)
+
+prog_join
+  :: Meta.TypeRep TypeRep t
+  -> E Form f val (Obj (Program (Obj (Program t))) :-> Obj (Program t))
+prog_join trep = formal Program_Join_f rep
+  where
+  rep = Meta.object_t (program_t (Meta.object_t (program_t trep))) .-> Meta.object_t (program_t trep)
+
+prog_bind
+  :: Meta.TypeRep TypeRep s
+  -> Meta.TypeRep TypeRep t
+  -> E Form f val (Obj (Program s))
+  -> E Form f val (s :-> Obj (Program t))
+  -> E Form f val (Obj (Program t))
+prog_bind srep trep p k = prog_join trep <@> (prog_map srep trep' <@> k <@> p)
+  where
+  trep' = Meta.object_t (program_t trep)
+
+(>>=)
+  :: (Known s, Known t)
+  => E Form f val (Obj (Program s))
+  -> E Form f val (s :-> Obj (Program t))
+  -> E Form f val (Obj (Program t))
+(>>=) = prog_bind auto auto

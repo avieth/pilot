@@ -42,9 +42,9 @@ type Clock = Obj (Varying 'Z Bool)
 -- NB: the phase and period are not in the object-language. This defines a
 -- family of different object-language clocks, indexed in the meta-language
 -- by phase and period.
-clock :: Phase -> Period -> E f val Clock
+clock :: Phase -> Period -> E f val (Obj (Program Clock))
 clock phase period = if period Prelude.== 0
-  then constant_auto Zero <@> true
+  then prog_pure auto <@> (constant_auto Zero <@> true)
   else clockPeriodLessOne phase (period Prelude.- 1)
 
 -- | Called with the period minus 1.
@@ -52,9 +52,9 @@ clock phase period = if period Prelude.== 0
 -- A memory stream (knot) is expressed using the period, and then this stream
 -- is transformed into a Varying Z Bool by testing equality on the phase
 -- (corrected to be modulo the period + 1)
-clockPeriodLessOne :: forall f val . Phase -> Period -> E f val Clock
+clockPeriodLessOne :: forall f val . Phase -> Period -> E f val (Obj (Program Clock))
 clockPeriodLessOne phase periodLessOne =
-  map_auto Zero <@> atPhase <@> (counter <@> u8 truePeriod)
+  prog_map auto auto <@> (map_auto Zero <@> atPhase) <@> (counter <@> u8 truePeriod)
   where
   atPhase :: E f val (Obj (Constant UInt8) :-> Obj (Constant Bool))
   atPhase = fun $ \count -> count == u8 truePhase
@@ -63,10 +63,10 @@ clockPeriodLessOne phase periodLessOne =
 
 -- | Uses the 'clockStep' to make a counter. Its value is the number of ticks
 -- since the start of the last period. It assumes the period is nonzero.
-counter :: forall f val . E f val (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8))
+counter :: forall f val . E f val (Obj (Constant UInt8) :-> Obj (Program (Obj (Varying 'Z UInt8))))
 counter = fun $ \period ->
   let recdef = fun $ \prev -> map_auto Zero <@> (clockStep <@> period) <@> prev
-  in  knot_auto (Tied One) <@> recdef <@> shift_auto <@> u8 0
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> u8 0)
 
 -- | Defines the clock step at an instant, where the third parameter is the
 -- number of steps since the last high signal.

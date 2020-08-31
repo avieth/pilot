@@ -67,7 +67,7 @@ import Language.Pilot
 --
 -- NB: this is something which cannot be written pointwise and then
 -- lifted/mapped, since it is fundamentally about streams, and requires memory.
-always :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+always :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))
 always = fun $ \bs ->
   -- Type annotations are optional. The top-level annotation (on 'always') is
   -- enough for GHC to figure it out.
@@ -78,26 +78,20 @@ always = fun $ \bs ->
       -- the next frame.
       recdef :: E f val (Obj (Varying (Decimal 0) Bool) :-> Obj (Varying (Decimal 0) Bool))
       recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> land) <@> (prev <& bs)
-      -- The result value of this knot: take the resulting stream, which has
-      -- prefix size 1, and shift it. That means it appears to have prefix size
-      -- 0, but no values are lost.
-      result :: E f val (Obj (Varying (Decimal 1) Bool) :-> Obj (Varying (Decimal 0) Bool))
-      result = shift_auto
       -- The initial values. Since there's only one stream in this knot, there's
       -- only one initial value, and we set it to true. If it were false, then
       -- the entire stream would always be false.
       inits :: E f val (Vector (Decimal 1) (Obj (Constant Bool)))
       inits = true
-  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
 
 -- | Just like 'always' except we use || to combine and false to initialize.
 -- This is "eventuallyPrev" from PTLTL.
-eventually :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+eventually :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))
 eventually = fun $ \bs ->
   let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> lor) <@> (prev <& bs)
-      result = shift_auto
       inits = false
-  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
 
 -- | Shows how we can express 'always' and 'eventually' using a higher-order
 -- function: a fold on memory streams with a single cell of memory.
@@ -105,33 +99,37 @@ ltlFold :: forall f val t . (Known t) => E f val
   (   (Obj (Constant t) :-> Obj (Constant t) :-> Obj (Constant t))
   :-> Obj (Constant t)
   :-> Obj (Varying 'Z t)
-  :-> Obj (Varying 'Z t)
+  :-> Obj (Program (Obj (Varying 'Z t)))
   )
 ltlFold = fun $ \f -> fun $ \t -> fun $ \bs ->
   let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> f) <@> (prev <& bs)
-      result = shift_auto
       inits = t
-  in  knot_auto (Tied One) <@> recdef <@> result <@> inits
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
 
 -- | Same as 'always' but more succinct.
-alwaysBeen :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+alwaysBeen :: E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))
 alwaysBeen = ltlFold <@> land <@> true
 
 -- | Same as 'eventually' but more succinct.
-eventuallyPrev :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+eventuallyPrev :: E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))
 eventuallyPrev = ltlFold <@> lor <@> false
 
 -- | Another PTLTL notion: it's true whenever the parameter was true on the
 -- immediately-previous frame.
-previous :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+previous :: E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))
 previous = ltlFold <@> (flip <@> const) <@> false
 
 -- | Changed from the copilot presentation: `eventually <@> y` rather than
 -- `eventually <@> (previous <@> y)`. Maybe I'm wrong but this one seems to
 -- be the proper definition?
-since  :: E f val (Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool) :-> Obj (Varying 'Z Bool))
+since :: E f val
+  (   Obj (Varying 'Z Bool)
+  :-> Obj (Varying 'Z Bool)
+  :-> Obj (Program (Obj (Varying 'Z Bool)))
+  )
 since = fun $ \x -> fun $ \y ->
-  always <@> (map_auto Zero <@> (uncurry <@> implies) <@> ((eventually <@> y) <& x))
+  (eventuallyPrev <@> y) >>= (fun $ \y' ->
+  (alwaysBeen <@> (map_auto Zero <@> (uncurry <@> implies) <@> (y' <& x))))
 
 -- TODO bounded LTL can be expressed in a type-safe way by using the `Fin`
 -- datatype, giving types such as

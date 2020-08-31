@@ -49,6 +49,7 @@ module Language.Pilot
   , Point_k
   , Object.Constant
   , Object.Varying
+  , Object.Program
 
   , Object.UInt8
   , Object.UInt16
@@ -163,6 +164,13 @@ module Language.Pilot
   , Object.Variant (..)
   , Object.Selector (..)
   , Object.Cases (..)
+
+  , Object.prog_map
+  , Object.prog_pure
+  , Object.prog_ap
+  , Object.prog_join
+  , Object.prog_bind
+  , (Object.>>=)
 
   , Object.unit
   , Object.absurd

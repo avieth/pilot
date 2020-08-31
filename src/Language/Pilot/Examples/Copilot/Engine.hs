@@ -74,14 +74,15 @@ type Cooler f val = Obj (Varying 'Z Bool)
 engineMonitor
   :: forall n f val .
      NatRep n
-  -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Varying 'Z Bool))
+  -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Program (Obj (Varying 'Z Bool))))
 engineMonitor numElements = fun $ \probes -> fun $ \cooler ->
-  map_auto Z_Rep <@> lnot <@> (engineOk numElements <@> probes <@> cooler)
+  (engineOk numElements <@> probes <@> cooler) >>= (fun $ \isOk ->
+    prog_pure auto <@> (map_auto Zero <@> lnot <@> isOk))
 
 engineOk
   :: forall n f val .
      NatRep n
-  -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Varying 'Z Bool))
+  -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Program (Obj (Varying 'Z Bool))))
 engineOk numElements = fun $ \probes -> fun $ \cooler -> always <@>
   (local_auto (boyerMooreVarying Zero numElements <@> probes) $ \mMaj ->
     (map_auto Z_Rep <@> (uncurry <@> overheatImpliesCooler) <@> (mMaj <& cooler)))

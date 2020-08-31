@@ -25,7 +25,7 @@ module Language.Pilot.Examples
 import Data.Functor.Identity
 import Data.Proxy
 import Language.Pilot as Pilot
-import Language.Pilot.Repr (evalObject)
+import Language.Pilot.Repr (evalObject, fromObject, getRepr)
 import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
@@ -35,6 +35,14 @@ import Language.Pilot.Examples.Copilot as Examples
 showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value (Obj (Varying n t)) -> String
 showPureStream n e = case runIdentity (evalObject e) of
   Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
+
+showPureStreamProgram
+  :: Prelude.Maybe Int
+  -> E Identity Pure.Value (Obj (Program (Obj (Varying n t))))
+  -> String
+showPureStreamProgram n e = case runIdentity (evalObject e) of
+  Pure.Program p -> case runIdentity (evalObject p) of
+    Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
 
 showPurePoint :: E Identity Pure.Value (Obj (Constant t)) -> String
 showPurePoint e = case runIdentity (evalObject e) of
@@ -95,20 +103,18 @@ example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
 -- initial value of this stream. So this is essentially the same thing as
 -- `lift` specialized to `'S 'Z` prefix size and `Constant UInt8` type.
 example_5 :: E f val
-  (Obj (Constant UInt8) :-> Obj (Varying ('S 'Z) UInt8))
-example_5 = knot_auto (Tied (S_Rep Z_Rep)) <@> loop <@> k
+  (Obj (Constant UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
+example_5 = knot_auto (Tied (S_Rep Z_Rep)) <@> loop
   where
   loop :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
   loop = Pilot.identity
-  k :: E f val (Obj (Varying ('S 'Z) UInt8) :-> Obj (Varying ('S 'Z) UInt8))
-  k = Pilot.identity
 
 -- | Here's an integral.
 example_6 :: E f val
-  (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Varying ('S 'Z) UInt8))
+  (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
 example_6 = fun $ \c -> fun $ \f ->
   let loop = fun $ \pre -> map_auto Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
-  in  knot_auto (Tied (S_Rep Z_Rep)) <@> loop <@> Pilot.identity <@> c
+  in  knot_auto (Tied (S_Rep Z_Rep)) <@> loop <@> c
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
@@ -118,5 +124,5 @@ example_8 :: Known n => NatRep n -> E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
 example_8 nrep = Pilot.curry <@> (map_auto nrep <@> (Pilot.uncurry <@> add))
 
-example_9 = showPureStream (Just 100) $
+example_9 = showPureStreamProgram (Just 100) $
   counter <@> (Pilot.constant_auto Z_Rep <@> true) <@> (Pilot.constant_auto Z_Rep <@> false)
