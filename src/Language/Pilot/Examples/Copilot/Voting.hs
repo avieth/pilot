@@ -81,6 +81,7 @@ module Language.Pilot.Examples.Copilot.Voting where
 
 import qualified Prelude
 import Language.Pilot
+import qualified Language.Pilot.Object as Object (pair_auto, fst_auto, snd_auto)
 
 -- To start, let's look at two different notions of foldr/foldl
 --
@@ -175,17 +176,25 @@ foldl_ nrep = fun $ \f -> fun $ \args -> foldl nrep <@> f <@> (fst args) <@> (sn
 -- | First pass of the Boyer-Moore algorithm: fold this over a list of UInt8s
 -- and it will give the candidate. If there is a majority, then this is
 -- definitely the majority element.
+--
+-- Notice that this folding function uses object-language products, whereas the
+-- fold itself uses meta-language products. That's not surprising: the folding
+-- function itself must actually run in whatever the target representation is,
+-- whereas the fold itself is completely elaborated in Haskell at interpretation
+-- (or "code generation") time.
 boyerMooreCandidateStep :: forall f val . E f val
-  (   (Obj (Constant UInt8) :* Obj (Constant UInt8))
-  :->  Obj (Constant UInt8)
-  :-> (Obj (Constant UInt8) :* Obj (Constant UInt8))
+  (   Obj (Constant (Pair UInt8 UInt8))
+  :-> Obj (Constant UInt8)
+  :-> Obj (Constant (Pair UInt8 UInt8))
   )
 boyerMooreCandidateStep = fun $ \acc -> fun $ \cur ->
-  let maj = fst acc -- The current majority candidate
-      cnt = snd acc -- The count so far
-  in  ifThenElse (cnt == u8 0) (cur &> u8 1) $
-        ifThenElse (cur == maj) (cur &> (cnt + u8 1)) $
-          (maj &> (cnt - u8 1))
+  -- Not using the EDSL let binding because these projects are cheap and
+  -- do not need to be shared.
+  let maj = Object.fst_auto <@> acc -- The current majority candidate
+      cnt = Object.snd_auto <@> acc -- The count so far
+  in  ifThenElse (cnt == u8 0) (Object.pair_auto <@> cur <@> u8 1) $
+        ifThenElse (cur == maj) (Object.pair_auto <@> cur <@> (cnt + u8 1)) $
+          (Object.pair_auto <@> maj <@> (cnt - u8 1))
 
 -- | Second pass of the Boyer-Moore algorithm: when used in a fold, it counts
 -- the occurrences of the number given as the first parameter.
@@ -203,10 +212,10 @@ boyerMoore :: forall n f val . NatRep n -> E f val
   :-> Obj (Constant (Maybe UInt8))
   )
 boyerMoore numElements = fun $ \elements ->
-  local_auto (foldl_ numElements <@> boyerMooreCandidateStep <@> ((u8 0 <& u8 0) <& elements)) $ \result ->
-    local_auto (foldl_ numElements <@> (boyerMooreCountStep <@> fst result) <@> (u8 0 <& elements)) $ \totalCount ->
+  local_auto (foldl_ numElements <@> boyerMooreCandidateStep <@> ((Object.pair_auto <@> u8 0 <@> u8 0) <& elements)) $ \result ->
+    local_auto (foldl_ numElements <@> (boyerMooreCountStep <@> (Object.fst_auto <@> result)) <@> (u8 0 <& elements)) $ \totalCount ->
       -- Would check for overflow or use a wider integer type.
-      ifThenElse ((u8 2 * totalCount) > listSize) (just (fst result)) nothing
+      ifThenElse ((u8 2 * totalCount) > listSize) (just (Object.fst_auto <@> result)) nothing
   where
   listSize = u8 (natToIntegral numElements)
 
@@ -250,6 +259,7 @@ boyerMooreVarying numPrefix numElements =
 
 -- Something to think about: under what conditions are qqq and qqq' the same?
 
+{-
 qq :: E f val
   (   ((Obj (Constant UInt8) :* Obj (Constant UInt8)) :* Vector (Decimal 2) (Obj (Constant UInt8)))
   :->  (Obj (Constant UInt8) :* Obj (Constant UInt8))
@@ -267,3 +277,4 @@ qqq' :: E f val
   :->  (Obj (Varying 'Z UInt8) :* Obj (Varying 'Z UInt8))
   )
 qqq' = foldl_ Two <@> (curry <@> (map_auto Zero <@> (uncurry <@> boyerMooreCandidateStep)))
+-}

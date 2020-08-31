@@ -319,10 +319,10 @@ interp_sum_intro variant = fun $ \v -> objectf $
 -- function type without actually evaluating the product itself, instead looking
 -- only at the `Selector`.
 interp_product_elim
-  :: forall f q r fields .
+  :: forall f fields field .
      ( Monad f )
-  => Selector fields q r
-  -> Repr f Value (Obj (Constant (Product fields)) :-> q)
+  => Selector fields field
+  -> Repr f Value (Obj (Constant (Product fields)) :-> Obj (Constant field))
 interp_product_elim selector = fun $ \p -> valuef $ do
   -- Get the representation of the product...
   fields <- fmap (fromConstant . fromObject) (getRepr p)
@@ -333,13 +333,12 @@ interp_product_elim selector = fun $ \p -> valuef $ do
   where
 
   select
-    :: forall fields r .
-       Selector fields q r
+    :: forall fields field .
+       Selector fields field
     -> Point (Product fields)
-    -> Repr f Value q
+    -> Repr f Value (Obj (Constant field))
   select (S_There s) (Product_r (And _ ps)) = select s (Product_r ps)
-  select S_Here      (Product_r (And it _)) = fun $ \proj ->
-    app proj (object (fromConstantRep it))
+  select S_Here      (Product_r (And it _)) = object (fromConstantRep it)
 
 interp_sum_elim
   :: forall f r variants .

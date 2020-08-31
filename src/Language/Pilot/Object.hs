@@ -375,13 +375,11 @@ data Form (t :: Meta.Type Type) where
     (r :-> Obj (Constant ('Sum_t variants)))
 
   -- | Product elimination takes one field selector.
-  Product_Elim_f :: Selector fields q r -> Form
-    (Obj (Constant ('Product_t fields)) :-> q)
+  Product_Elim_f :: Selector fields field -> Form
+    (Obj (Constant ('Product_t fields)) :-> Obj (Constant field))
 
   -- | Sum elimination takes a meta-language products of functions, one for
   -- each variant, with a common return value.
-  --
-  -- TODO look into making product elimination similar to this (no q parameter).
   Sum_Elim_f :: Cases variants r -> Form
     (Obj (Constant ('Sum_t variants)) :-> r)
 
@@ -487,10 +485,10 @@ data Fields (r :: Meta.Type Type) (fields :: [Point.Type]) where
   F_And :: Fields                          r            fields
         -> Fields (Obj (Constant field) :* r) (field ': fields)
 
-data Selector (fields :: [Point.Type]) (q :: Meta.Type Type) (r :: Meta.Type Type) where
-  S_Here  :: Selector (field ': fields) ((Obj (Constant field) :-> r) :-> r) r
-  S_There :: Selector           fields  q r
-          -> Selector (field ': fields) q r
+data Selector (fields :: [Point.Type]) (r :: Point.Type) where
+  S_Here  :: Selector (field ': fields) field
+  S_There :: Selector           fields  r
+          -> Selector (field ': fields) r
 
 -- | `Cases repr variants q r` means that given a sum of `variants`, you can
 -- get something of type `r`. It is defined in such a way that `r` is always a
@@ -498,10 +496,11 @@ data Selector (fields :: [Point.Type]) (q :: Meta.Type Type) (r :: Meta.Type Typ
 -- common type--except when the variants is '[], in which case you can get any
 -- type.
 --
+-- The type that's returned must be a constant object type.
 data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
-  C_Any :: Cases '[] x
-  C_Or  :: Cases             variants  (                                   q  :-> r)
-        -> Cases (variant ': variants) (((Obj (Constant variant) :-> r) :* q) :-> r)
+  C_Any :: Cases                   '[] (                                           Terminal  :-> Obj (Constant r))
+  C_Or  :: Cases             variants  (                                                  q  :-> Obj (Constant r))
+        -> Cases (variant ': variants) (((Obj (Constant variant) :-> Obj (Constant r)) :* q) :-> Obj (Constant r))
 
 -- |
 --
@@ -795,8 +794,8 @@ choose :: (Known ('Sum_t variants), Known r) => Variant r variants -> E Form f v
 choose variant = formal_auto (Sum_Intro_f variant)
 
 -- | Eliminate a product
-project :: (Known ('Product_t fields), Known q) => Selector fields q r -> E Form f val
-  (Obj (Constant ('Product_t fields)) :-> q)
+project :: (Known ('Product_t fields), Known field) => Selector fields field -> E Form f val
+  (Obj (Constant ('Product_t fields)) :-> Obj (Constant field))
 project selector = formal_auto (Product_Elim_f selector)
 
 match :: (Known ('Sum_t variants), Known r) => Cases variants r -> E Form f val
@@ -831,9 +830,9 @@ false = formal_auto (Sum_Intro_f V_This) <@> unit
 
 if_then_else_ :: Known r => E Form f val
   (   Obj (Constant Bool)
-  :-> r
-  :-> r
-  :-> r
+  :-> Obj (Constant r)
+  :-> Obj (Constant r)
+  :-> Obj (Constant r)
   )
 if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
   formal_auto (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifFalse) &> (const <@> ifTrue) &> terminal)
@@ -841,9 +840,9 @@ if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
 if_then_else
   :: Known r
   => E Form f val (Obj (Constant Bool))
-  -> E Form f val r -- True case
-  -> E Form f val r -- False case
-  -> E Form f val r
+  -> E Form f val (Obj (Constant r)) -- True case
+  -> E Form f val (Obj (Constant r)) -- False case
+  -> E Form f val (Obj (Constant r))
 if_then_else b ifTrue ifFalse = formal_auto (Sum_Elim_f (C_Or (C_Or C_Any)))
   <@> b
   -- Note the order, w.r.t. the 'false' and 'true' functions: the first variant
@@ -1015,10 +1014,10 @@ nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
 nothing = formal_auto (Sum_Intro_f V_This) <@> unit
 
 maybe :: (Known s, Known r) => E Form f val
-  (   r
-  :-> (Obj (Constant s) :-> r)
+  (   Obj (Constant r)
+  :-> (Obj (Constant s) :-> Obj (Constant r))
   :-> Obj (Constant (Maybe s))
-  :-> r
+  :-> Obj (Constant r)
   )
 maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
   formal_auto (Sum_Elim_f (C_Or (C_Or C_Any)))
@@ -1046,18 +1045,16 @@ pair_auto = pair auto auto
 
 fst :: Point.TypeRep a -> Point.TypeRep b -> E Form f val
   (Obj (Constant (Pair a b)) :-> Obj (Constant a))
-fst arep brep = fun $ \p -> formal (Product_Elim_f S_Here) rep <@> p <@> identity
+fst arep brep = fun $ \p -> formal (Product_Elim_f S_Here) rep <@> p
   where
   rep =      Meta.object_t (constant_t (Point.pair_t arep brep))
-        .-> (Meta.object_t (constant_t arep) .-> Meta.object_t (constant_t arep))
         .->  Meta.object_t (constant_t arep)
 
 snd :: Point.TypeRep a -> Point.TypeRep b -> E Form f val
   (Obj (Constant (Pair a b)) :-> Obj (Constant b))
-snd arep brep = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) rep <@> p <@> identity
+snd arep brep = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) rep <@> p
   where
   rep =      Meta.object_t (constant_t (Point.pair_t arep brep))
-        .-> (Meta.object_t (constant_t brep) .-> Meta.object_t (constant_t brep))
         .->  Meta.object_t (constant_t brep)
 
 fst_auto :: (Known a, Known b) => E Form f val (Obj (Constant (Pair a b)) :-> Obj (Constant a))

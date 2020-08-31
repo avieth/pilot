@@ -238,9 +238,9 @@ type Point_k = Object.Point.Type
 -- | For rebindable syntax
 ifThenElse :: Known r
            => E f val (Point Object.Bool)
-           -> E f val r
-           -> E f val r
-           -> E f val r
+           -> E f val (Point r)
+           -> E f val (Point r)
+           -> E f val (Point r)
 ifThenElse = Object.if_then_else
 
 -- TODO
