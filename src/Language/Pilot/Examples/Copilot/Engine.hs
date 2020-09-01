@@ -84,8 +84,11 @@ engineOk
      NatRep n
   -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Program (Obj (Varying 'Z Bool))))
 engineOk numElements = fun $ \probes -> fun $ \cooler -> always <@>
-  (local_auto (boyerMooreVarying Zero numElements <@> probes) $ \mMaj ->
-    (map_auto Z_Rep <@> (uncurry <@> overheatImpliesCooler) <@> (mMaj <& cooler)))
+  (map_auto Z_Rep <@> (uncurry <@> overheatImpliesCooler) <@>
+    ( (boyerMooreVarying Zero numElements <@> probes)
+    <& cooler
+    )
+  )
 
 -- | Function on constants, checking at an instant that if a majority of
 -- probes show overheating, then the cooler is engaged.

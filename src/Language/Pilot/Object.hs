@@ -417,14 +417,17 @@ data Form (t :: Meta.Type Type) where
   Program_Ap_f   :: Form (Obj (Program (s :-> t)) :-> Obj (Program s) :-> Obj (Program t))
   Program_Join_f :: Form (Obj (Program (Obj (Program t))) :-> Obj (Program t))
 
-  -- Notice that the result can be a meta-language thing. That's key: you
-  -- _are_ able to let-bind outside of meta-language products, for instance,
-  -- thereby allowing the expression of sharing between more than one value
-  -- without building a product in the object-language.
+  -- Constants can be let-bound, to introduce sharing.
   --
-  -- TODO explain the meaning of this when x is a meta-language thing.
-  -- Is it possibly different from using Haskell's let?
-  Let_f :: Form (x :-> (x :-> r) :-> r)
+  -- Notice that the result can be a meta-language thing. You _are_ able to
+  -- let-bind outside of meta-language products, for instance, thereby allowing
+  -- the expression of sharing between more than one value without building a
+  -- product in the object-language.
+  --
+  -- Even though values of type Varying n cannot be let-bound, sharing can still
+  -- be expressed between/over these, by using let-bindings on constants within
+  -- functions which are mapped to create varyings.
+  Let_f :: Form (Obj (Constant x) :-> (Obj (Constant x) :-> r) :-> r)
 
 -- | Proof that t is the image of s in the functor map from constants to
 -- varyings of a given prefix size n.
@@ -596,29 +599,32 @@ data Wider (w1 :: Width) (w2 :: Width) where
   EightWiderTwo  :: Wider ('W_Eight_t) ('W_Two_t)
   EightWiderFour :: Wider ('W_Eight_t) ('W_Four_t)
 
-let_ :: Meta.TypeRep TypeRep a
+let_ :: Point.TypeRep a
      -> Meta.TypeRep TypeRep b
-     -> E Form f val (a :-> (a :-> b) :-> b)
+     -> E Form f val (Obj (Constant a) :-> (Obj (Constant a) :-> b) :-> b)
 let_ arep brep = formal Let_f rep
   where
-  rep = arep .-> (arep .-> brep) .-> brep
+  rep =    Meta.object_t (constant_t arep)
+      .-> (Meta.object_t (constant_t arep) .-> brep)
+      .-> brep
 
-let_auto :: (Known a, Known b) => E Form f val (a :-> (a :-> b) :-> b)
+let_auto :: (Known a, Known b) => E Form f val
+  (Obj (Constant a) :-> (Obj (Constant a) :-> b) :-> b)
 let_auto = let_ auto auto
 
 -- | Same as 'let_', but using typical Haskell functions rather than the
 -- fun/<@> construction.
-local :: Meta.TypeRep TypeRep a
+local :: Point.TypeRep a
       -> Meta.TypeRep TypeRep b
-      -> E Form f val a
-      -> (E Form f val a -> E Form f val b)
+      -> E Form f val (Obj (Constant a))
+      -> (E Form f val (Obj (Constant a)) -> E Form f val b)
       -> E Form f val b
 local arep brep x k = let_ arep brep <@> x <@> (fun $ \x' -> k x')
 
 local_auto
   :: (Known a, Known b)
-  => E Form f val a
-  -> (E Form f val a -> E Form f val b)
+  => E Form f val (Obj (Constant a))
+  -> (E Form f val (Obj (Constant a)) -> E Form f val b)
   -> E Form f val b
 local_auto = local auto auto
 
