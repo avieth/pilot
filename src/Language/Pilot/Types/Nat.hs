@@ -197,6 +197,10 @@ vecUnzip f (VCons s ss) = (VCons t ts, VCons u us)
   (t,  u)  = f s
   (ts, us) = vecUnzip f ss
 
+vecSequence :: Applicative f => Vec n (f t) -> f (Vec n t)
+vecSequence VNil = pure VNil
+vecSequence (VCons t ts) = VCons <$> t <*> vecSequence ts
+
 vecTraverse :: Applicative f => (s -> f t) -> Vec n s -> f (Vec n t)
 vecTraverse f VNil = pure VNil
 vecTraverse f (VCons t ts) = VCons <$> f t <*> vecTraverse f ts
