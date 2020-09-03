@@ -76,8 +76,8 @@ engineMonitor
      NatRep n
   -> E f val (Vector n (Probe f val) :-> Cooler f val :-> Obj (Program (Obj (Varying 'Z Bool))))
 engineMonitor numElements = fun $ \probes -> fun $ \cooler ->
-  (engineOk numElements <@> probes <@> cooler) >>= (fun $ \isOk ->
-    prog_pure auto <@> (map_auto Zero <@> lnot <@> isOk))
+  (engineOk numElements <@> probes <@> cooler) >>= \isOk ->
+    prog_pure auto <@> (map_auto Zero <@> lnot <@> isOk)
 
 engineOk
   :: forall n f val .

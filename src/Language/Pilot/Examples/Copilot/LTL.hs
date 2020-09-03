@@ -128,8 +128,8 @@ since :: E f val
   :-> Obj (Program (Obj (Varying 'Z Bool)))
   )
 since = fun $ \x -> fun $ \y ->
-  (eventuallyPrev <@> y) >>= (fun $ \y' ->
-  (alwaysBeen <@> (map_auto Zero <@> (uncurry <@> implies) <@> (y' <& x))))
+  (eventuallyPrev <@> y) >>= \y' ->
+  (alwaysBeen <@> (map_auto Zero <@> (uncurry <@> implies) <@> (y' <& x)))
 
 -- TODO bounded LTL can be expressed in a type-safe way by using the `Fin`
 -- datatype, giving types such as

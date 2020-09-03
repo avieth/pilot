@@ -15,6 +15,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 
 module Language.Pilot.Examples
   ( module Language.Pilot.Examples
@@ -22,11 +23,14 @@ module Language.Pilot.Examples
   , module Examples
   ) where
 
+import qualified Prelude
+import Prelude (String, Int)
 import Data.Functor.Identity
 import Data.Proxy
 import Language.Pilot as Pilot
 import Language.Pilot.Repr (evalObject, fromObject, getRepr)
 import Language.Pilot.Interp.Pure as Pure
+import qualified Language.Pilot.Interp.C as C
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
 import qualified Language.Pilot.Interp.Pure.Point as Point
 
@@ -140,6 +144,11 @@ example_6 :: E f val
 example_6 = fun $ \c -> fun $ \f ->
   let loop = fun $ \pre -> map_auto Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
   in  knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop <@> c
+
+example_6_c :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
+example_6_c = C.externInput "blargh" uint8_t >>= \inp ->
+  (example_6 <@> u8 0 <@> inp) >>= \result ->
+    prog_pure auto <@> (drop_auto <@> result)
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))

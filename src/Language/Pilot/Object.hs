@@ -1158,9 +1158,10 @@ prog_bind srep trep p k = prog_join trep <@> (prog_map srep trep' <@> k <@> p)
   where
   trep' = Meta.object_t (program_t trep)
 
+-- | 'prog_bind' but with a type that makes it easier to use infix.
 (>>=)
   :: (Known s, Known t)
   => E Form f val (Obj (Program s))
-  -> E Form f val (s :-> Obj (Program t))
+  -> (E Form f val s -> E Form f val (Obj (Program t)))
   -> E Form f val (Obj (Program t))
-(>>=) = prog_bind auto auto
+(>>=) it k = prog_bind auto auto it (fun k)
