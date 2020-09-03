@@ -24,6 +24,9 @@ library
                        Language.Pilot.Types.Nat
                        Language.Pilot.Types.Represented
 
+                       Language.Pilot.Interp.C
+                       Language.Pilot.Interp.C.Util
+
                        Language.Pilot.Interp.Pure
                        Language.Pilot.Interp.Pure.PrefixList
                        Language.Pilot.Interp.Pure.Point
@@ -39,7 +42,12 @@ library
                        Language.Pilot.Examples.Copilot.LTL
                        Language.Pilot.Examples.Copilot.Voting
 
-  build-depends:       base
+  build-depends:       base,
+                       containers,
+                       language-c99,
+                       pretty,
+                       transformers,
+                       text
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -fwarn-incomplete-patterns
