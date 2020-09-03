@@ -145,10 +145,16 @@ example_6 = fun $ \c -> fun $ \f ->
   let loop = fun $ \pre -> map_auto Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
   in  knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop <@> c
 
-example_6_c :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
-example_6_c = C.externInput "blargh" uint8_t >>= \inp ->
+example_6_c_0 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
+example_6_c_0 = C.externInput "blargh" uint8_t >>= \inp ->
   (example_6 <@> u8 0 <@> inp) >>= \result ->
     prog_pure auto <@> (drop_auto <@> result)
+
+example_6_c_1 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
+example_6_c_1 = example_6_c_0 >>= \stream ->
+  (C.externOutput "blorgh" uint8_t <@> stream) >>= \_ ->
+    -- We have to give a stream in order to make a translation unit.
+    prog_pure auto <@> (Pilot.constant_auto Z_Rep <@> u8 42)
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
