@@ -66,7 +66,7 @@ clockPeriodLessOne phase periodLessOne =
 counter :: forall f val . E f val (Obj (Constant UInt8) :-> Obj (Program (Obj (Varying 'Z UInt8))))
 counter = fun $ \period ->
   let recdef = fun $ \prev -> map_auto Zero <@> (clockStep <@> period) <@> prev
-  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> u8 0)
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One auto) <@> recdef <@> u8 0)
 
 -- | Defines the clock step at an instant, where the third parameter is the
 -- number of steps since the last high signal.

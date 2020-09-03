@@ -48,6 +48,31 @@ showPurePoint :: E Identity Pure.Value (Obj (Constant t)) -> String
 showPurePoint e = case runIdentity (evalObject e) of
   Pure.Constant p -> Point.prettyPrint p
 
+example_0_0 :: E f val (Obj (Constant UInt8))
+example_0_0 = u8 42
+
+example_0_1 :: E f val (Obj (Constant UInt8))
+example_0_1 = example_0_0 Pilot.+ example_0_0
+
+example_0_2 :: E f val (Obj (Constant UInt8))
+example_0_2 = local_auto example_0_0 $ \x -> x Pilot.+ x
+
+example_0_3 :: E f val (Obj (Constant UInt8))
+example_0_3 = local_auto example_0_2 $ \x -> x Pilot.* x
+
+example_0_4 :: E f val (Obj (Constant UInt16))
+example_0_4 = local_auto example_0_3 $ \x -> local_auto example_0_2 $ \y ->
+  (Pilot.cast (Pilot.UpCastInteger Pilot.TwoWiderOne) <@> x)
+  Pilot.+
+  (Pilot.cast (Pilot.UpCastInteger Pilot.TwoWiderOne) <@> y)
+
+example_0_5 :: E f val (Obj (Varying Z UInt8))
+example_0_5 =
+  Pilot.map_auto Z_Rep <@> (Pilot.uncurry <@> Pilot.add) <@>
+    (  (Pilot.constant_auto Z_Rep <@> example_0_1)
+    <& (Pilot.constant_auto Z_Rep <@> example_0_0)
+    )
+
 example_1 :: E f val (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
 example_1 = pair_auto <@> true <@> false
 
@@ -104,7 +129,7 @@ example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
 -- `lift` specialized to `'S 'Z` prefix size and `Constant UInt8` type.
 example_5 :: E f val
   (Obj (Constant UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
-example_5 = knot_auto (Tied (S_Rep Z_Rep)) <@> loop
+example_5 = knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop
   where
   loop :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
   loop = Pilot.identity
@@ -114,7 +139,7 @@ example_6 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
 example_6 = fun $ \c -> fun $ \f ->
   let loop = fun $ \pre -> map_auto Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
-  in  knot_auto (Tied (S_Rep Z_Rep)) <@> loop <@> c
+  in  knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop <@> c
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
@@ -124,5 +149,6 @@ example_8 :: Known n => NatRep n -> E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n UInt8) :-> Obj (Varying n UInt8))
 example_8 nrep = Pilot.curry <@> (map_auto nrep <@> (Pilot.uncurry <@> add))
 
-example_9 = showPureStreamProgram (Just 100) $
-  counter <@> (Pilot.constant_auto Z_Rep <@> true) <@> (Pilot.constant_auto Z_Rep <@> false)
+example_9 :: E f val (Obj (Program (Obj (Varying Z Int32))))
+example_9 = prog_map auto auto <@> shift_auto <@>
+  (counter <@> (Pilot.constant_auto Z_Rep <@> true) <@> (Pilot.constant_auto Z_Rep <@> false))

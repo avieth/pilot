@@ -83,7 +83,7 @@ always = fun $ \bs ->
       -- the entire stream would always be false.
       inits :: E f val (Vector (Decimal 1) (Obj (Constant Bool)))
       inits = true
-  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One auto) <@> recdef <@> inits)
 
 -- | Just like 'always' except we use || to combine and false to initialize.
 -- This is "eventuallyPrev" from PTLTL.
@@ -91,7 +91,7 @@ eventually :: forall f val . E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Ob
 eventually = fun $ \bs ->
   let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> lor) <@> (prev <& bs)
       inits = false
-  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One auto) <@> recdef <@> inits)
 
 -- | Shows how we can express 'always' and 'eventually' using a higher-order
 -- function: a fold on memory streams with a single cell of memory.
@@ -104,7 +104,7 @@ ltlFold :: forall f val t . (Known t) => E f val
 ltlFold = fun $ \f -> fun $ \t -> fun $ \bs ->
   let recdef = fun $ \prev -> map_auto Zero <@> (uncurry <@> f) <@> (prev <& bs)
       inits = t
-  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One) <@> recdef <@> inits)
+  in  prog_map auto auto <@> shift_auto <@> (knot_auto (Tied One auto) <@> recdef <@> inits)
 
 -- | Same as 'always' but more succinct.
 alwaysBeen :: E f val (Obj (Varying 'Z Bool) :-> Obj (Program (Obj (Varying 'Z Bool))))

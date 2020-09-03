@@ -517,11 +517,13 @@ data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
 --
 data Knot (s :: Meta.Type Type) (t :: Meta.Type Type) (i :: Meta.Type Type) (r :: Meta.Type Type) where
   Tied :: NatRep ('S n)
+       -> Point.TypeRep a
        -> Knot (Obj (Varying n a))
                (Obj (Varying 'Z a))
                (Vector ('S n) (Obj (Constant a)))
                (Obj (Varying ('S n) a))
   Tie  :: NatRep ('S n)
+       -> Point.TypeRep a
        -> Knot s t i r
        -> Knot ((Obj (Varying n a)) :* s)
                ((Obj (Varying 'Z a)) :* t)

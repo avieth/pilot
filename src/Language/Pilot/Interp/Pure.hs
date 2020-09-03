@@ -505,8 +505,8 @@ interp_knot kn = fun $ \fknot -> fun $ \inits ->
     -> Val Identity Value t
     -> Val Identity Value s
   knot_prefixes kn i t = case kn of
-    Tied nrep     -> prefix_tied nrep     i t
-    Tie  nrep kn' -> prefix_tie  nrep kn' i t
+    Tied nrep _     -> prefix_tied nrep     i t
+    Tie  nrep _ kn' -> prefix_tie  nrep kn' i t
 
   prefix_tied
     :: forall n a .
@@ -547,8 +547,8 @@ interp_knot kn = fun $ \fknot -> fun $ \inits ->
     -> Val Identity Value t
     -> Val Identity Value r
   knot_streams kn i t = case kn of
-    Tied nrep     -> streams_tied nrep i t
-    Tie  nrep kn' -> streams_tie  nrep kn' i t
+    Tied nrep _     -> streams_tied nrep i t
+    Tie  nrep _ kn' -> streams_tie  nrep kn' i t
 
   streams_tied
     :: forall n a .
