@@ -143,6 +143,7 @@ module Language.Pilot
 
   , Object.Cast (..)
   , Object.cast
+  , Object.Wider (..)
 
   , Object.bundle
   , Object.project
