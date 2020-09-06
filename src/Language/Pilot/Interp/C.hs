@@ -32,17 +32,17 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import qualified Control.Monad.Trans.Except as Except
 import qualified Control.Monad.Trans.Class as Trans (lift)
 import qualified Data.Foldable as Foldable (toList)
+import Data.Functor.Compose
 import Data.Functor.Identity
+import qualified Data.List (sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
-import Data.Set (Set)
-import qualified Data.Set as Set
+import qualified Data.Ord (Down (..))
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Text (Text)
 import Numeric.Natural (Natural)
 
 import Language.Pilot.Meta (Obj, type (:->), type (:*), pattern Obj, pattern (:->), pattern (:*))
@@ -69,34 +69,29 @@ instance Repr.Interprets Object.Form ValueM Value where
 prettyPrintC :: Pretty a => a -> String
 prettyPrintC = render . pretty
 
--- | Evaluates a constant value and elaborates it to a C function called
--- "step". Useful for debugging / toying around.
-stepFunctionConstant :: Repr.Repr ValueM Value (Obj (Constant t)) -> C.FunDef
-stepFunctionConstant repr = elaborateConstantToFunction ident v
-  where
-  v = Repr.fromObject (runValueM_ (Repr.getRepr repr))
-  !ident = assertValidStringIdentifier "step"
-
--- | Same as 'stepFunctionConstant' but for a 0-prefix Varying.
-stepFunctionVarying :: Repr.Repr ValueM Value (Obj (Varying 'Z t)) -> C.FunDef
-stepFunctionVarying repr = elaborateVaryingToFunction ident v
-  where
-  v = Repr.fromObject (runValueM_ (Repr.getRepr repr))
-  !ident = assertValidStringIdentifier "step"
-
 -- | Make the translation unit and write it to a file.
+--
+-- FIXME TODO this also throws down some includes, but that's just because I
+-- haven't gotten around to doing this in a better way.
 elaborateProgramAndWrite
   :: forall n t .
-     IO.FilePath
+     String -- ^ Program name
+  -> IO.FilePath
   -> Repr.Repr ValueM Value (Obj (Program (Obj (Varying n t))))
   -> IO (Either ProgramError ())
-elaborateProgramAndWrite fileName repr = case elaborateProgram repr of
+elaborateProgramAndWrite progName fileName repr = case elaborateProgram progName repr of
   Left err -> pure (Left err)
-  Right tu -> IO.writeFile fileName (prettyPrintC tu) >> pure (Right ())
+  Right tu -> IO.writeFile fileName (includes ++ prettyPrintC tu) >> pure (Right ())
+  where
+  includes = mconcat
+    [ "#include <stddef.h>\n"
+    , "#include <stdint.h>\n"
+    , "\n"
+    ]
 
 -- | Elaborate a program to a C translation unit. This is:
 --
--- - [ ] Type declarations for every compound type needed
+-- - [\] Type declarations for every compound type needed
 -- - [x] Extern I/O declarations
 -- - [ ] Marshalling functions for the user-facing types for I/O
 -- - [x] An "init" function to initialize all static streams (for knots)
@@ -107,10 +102,17 @@ elaborateProgramAndWrite fileName repr = case elaborateProgram repr of
 -- NB: the first (earliest) element of the varying is returned.
 elaborateProgram
   :: forall n t .
-     Repr.Repr ValueM Value (Obj (Program (Obj (Varying n t))))
+     String -- ^ Name of the program; used to prefix some C names.
+  -> Repr.Repr ValueM Value (Obj (Program (Obj (Varying n t))))
   -> Either ProgramError C.TransUnit
-elaborateProgram repr = fmap (mkTransUnit pstate) result
+elaborateProgram name repr = case result of
+  Left  err -> Left err
+  Right val -> case mkTransUnit name pstate val of
+    Left err' -> Left err'
+    Right it  -> Right it
+
   where
+
   -- Bindings made in the ValueM outside the ProgramM must be passed along
   -- through to the ProgramM.
   -- Maybe there's a better way to express this.
@@ -125,22 +127,47 @@ elaborateProgram repr = fmap (mkTransUnit pstate) result
   progM :: ProgramM (Value (Varying n t))
   progM = do
     repr <- valueProgramRepr (Repr.fromObject v)
-    Repr.fromObject <$> valueMInProgramM (Repr.getRepr repr)
+    valueMInProgramM (Repr.fromObject <$> Repr.getRepr repr)
 
   (result, pstate) = runProgramM progM pureState
 
-mkTransUnit :: forall n t . ProgramState -> Value (Varying n t) -> C.TransUnit
-mkTransUnit pstate v =
-  declns
-  `appendTransUnitL`
-  (appendTransUnit initFun stepFun)
+-- |
+--
+-- TODO should give a header and a main. Header should only include explicitly
+-- declared user-facing types (from externInput and externOutput). The main
+-- function will use generated marshalling functions from/to these.
+-- The header should also have all of these externs.
+--
+mkTransUnit
+  :: forall n t .
+     String -- ^ Program name. Will prefix certain names.
+  -> ProgramState
+  -> Value (Varying n t)
+  -> Either ProgramError C.TransUnit
+mkTransUnit progName pstate v = case mProgNameIdent of
+  Nothing -> Left $ InvalidProgramName progName
+  Just _  -> Right $
+    declns
+    `appendTransUnitL`
+    (appendTransUnit initFun stepFun)
 
   where
 
-  -- TODO
-  -- this is type declarations
-  -- followed by static array declarations
-  -- followed by extern I/O declarations
+  mProgNameIdent = stringIdentifier progName
+
+  (identStep, identInit) = let Just progNameIdent = mProgNameIdent in
+    ( C.append_ident progNameIdent (assertValidStringIdentifier "_step")
+    , C.append_ident progNameIdent (assertValidStringIdentifier "_init")
+    )
+
+  Varying nrep trep = valueType v
+
+  varyingExpr :: LocalM C.Expr
+  VCons varyingExpr _ = valueVaryingExprs v
+
+  inhabited = varyingValueIsInhabited v
+  tyName = valueVaryingTypeName v
+
   declns :: Maybe C.TransUnit
   declns =
     transUnitFromDeclns typeDeclns
@@ -149,9 +176,23 @@ mkTransUnit pstate v =
     `C.appendTransUnitLR`
     transUnitFromDeclns knotDeclns
 
-  -- TODO
+  -- Type declarations
+
+  pureState :: PureState
+  pureState = program_state_pure_state pstate
+
   typeDeclns :: [C.Decln]
-  typeDeclns = []
+  typeDeclns = concatMap (NE.toList . ctrep_declns) sortedCompositeTypeReps
+
+  -- Here we sort the composite type declarations by serial number _descending_
+  -- because transUnitFromDeclns reverses the order, so that they will appear
+  -- ultimately in ascending order.
+  sortedCompositeTypeReps :: [CompositeTypeRep]
+  sortedCompositeTypeReps = Data.List.sortOn
+    (Data.Ord.Down . ctrep_serial_number)
+    (Map.elems (pure_state_composite_types pureState))
+
+  -- Extern IO declarations
 
   externIOs :: [ExternIO]
   externIOs = Map.elems (impure_state_extern_io (program_state_impure_state pstate))
@@ -162,6 +203,8 @@ mkTransUnit pstate v =
   copyExternInputs, copyExternOutputs :: [LocalM ()]
   copyExternInputs = mapMaybe externIOCopyInput externIOs
   copyExternOutputs = mapMaybe externIOCopyOutput externIOs
+
+  -- Static array (for knots) declarations
 
   deferredKnots :: [DeferredKnot]
   deferredKnots = Foldable.toList (impure_state_knots (program_state_impure_state pstate))
@@ -193,12 +236,6 @@ mkTransUnit pstate v =
   stepFunDef :: C.FunDef
   stepFunDef = elaborateToFunction identStep tyName (Just <$> varyingExprWithUpdates)
 
-  (_, ty) = valueVaryingType v
-  tyName = typeName (Constant ty)
-
-  varyingExpr :: LocalM C.Expr
-  VCons varyingExpr _ = valueVaryingExprs v
-
   -- We can use the LocalM monad to include the I/O and memory stream stuff.
   --
   -- The do notation should make things fairly clear. Inline comments hopefully
@@ -219,7 +256,7 @@ mkTransUnit pstate v =
     -- Now the program can be elaborated to get the return value, but we
     -- must assign it, because it may use values that are about to be updated.
     cexpr <- varyingExpr
-    retIdent <- makeBinding ty cexpr
+    retIdent <- makeBinding trep inhabited tyName cexpr
     -- Copy outputs to their extern locations.
     sequence copyExternOutputs
     -- The static array indices must advance now, so that on the next frame
@@ -227,15 +264,13 @@ mkTransUnit pstate v =
     updateStaticArrayIndices
     pure $ C.identIsExpr retIdent
 
-  !identStep = assertValidStringIdentifier "step"
-  !identInit = assertValidStringIdentifier "init"
-
   -- | Updates the arrays as well as their indices.
   updateStaticArrays :: LocalM ()
   updateStaticArrays = forM_ deferredKnots deferredKnotArrayUpdates
 
   updateStaticArrayIndices :: LocalM ()
   updateStaticArrayIndices = forM_ deferredKnots deferredKnotIndexUpdates
+
 
 newtype Gen = Gen { unGen :: Integer }
 
@@ -269,6 +304,64 @@ genFreshName = LocalM $ do
 
 mkBinderName :: Integer -> String
 mkBinderName = (++) "local_" . show
+
+type CompositeTypeIdGen = Gen
+
+-- | For naming of composite types, and for sorting their declarations to
+-- give an acceptable order for a C compiler.
+newtype CompositeTypeId = CompositeTypeId { getCompositeTypeId :: Integer }
+
+deriving instance Eq CompositeTypeId
+deriving instance Ord CompositeTypeId
+
+genCompositeTypeId :: ValueM CompositeTypeId
+genCompositeTypeId = ValueM $ do
+  st <- State.get
+  let (typeId, !st') = genValue pure_state_type_id_gen (\x s -> s { pure_state_type_id_gen = x }) mkCompositeTypeId st
+  State.put st'
+  pure typeId
+
+mkCompositeTypeId :: Integer -> CompositeTypeId
+mkCompositeTypeId = CompositeTypeId
+
+
+-- | Information about composite types to be held in the ValueM state monad's
+-- PureState. It will be keyed in a map on SomeTypeRep. Ensures that proper
+-- products and sums, which are represented using C compound datatypes (structs,
+-- enums, unions) can get unique names, and that their declarations can be
+-- put into the translation unit when the entire ValueM is run.
+data CompositeTypeRep = CompositeTypeRep
+  { ctrep_declns        :: !(NonEmpty C.Decln)
+    -- | Useful to have when writing out the C declarations, because if they
+    -- are put out in the order of this serial number ascending, then the C
+    -- compiler will accept them.
+  , ctrep_serial_number :: !CompositeTypeId
+  }
+
+
+-- | The callback is run when the type rep is not already known.
+-- Only call this with the type rep of a _normalized_ type.
+--
+-- TODO could make that more clear by taking a NormalizedType parameter?
+withCompositeTypeId
+  :: Object.Point.SomeTypeRep
+  -> (CompositeTypeId -> ValueM (NonEmpty C.Decln))
+  -> ValueM CompositeTypeId
+withCompositeTypeId strep k = do
+  mIt <- ValueM $ State.gets (Map.lookup strep . pure_state_composite_types)
+  case mIt of
+    Just it -> pure $ ctrep_serial_number it
+    Nothing -> do
+      serialNumber <- genCompositeTypeId
+      declns <- k serialNumber
+      let !ctrep = CompositeTypeRep
+            { ctrep_declns        = declns
+            , ctrep_serial_number = serialNumber
+            }
+      ValueM $ State.modify' $ \st -> st
+        { pure_state_composite_types = Map.insert strep ctrep (pure_state_composite_types st) }
+      pure serialNumber
+
 
 type BinderIdGen = Gen
 
@@ -306,11 +399,13 @@ data Binding where
 -- the result is cached in the 'local_state_binders'.
 makeIdempotent
   :: Object.Point.TypeRep t
+  -> Inhabited t
   -> LocalM C.Expr
   -> ValueM (Value (Constant t))
-makeIdempotent trep lm = do
+makeIdempotent trep inhabited lm = do
   binderId <- genBinderId
-  pure $ constantValue (Obj (Constant trep)) $ LocalM $ do
+  tyName <- typeName inhabited (Constant trep)
+  pure $ constantValue (Obj (Constant trep)) inhabited tyName $ LocalM $ do
     lst <- State.get
     case Map.lookup binderId (local_state_binders lst) of
       Just (Binding ident expr) -> pure (C.identIsExpr ident)
@@ -323,18 +418,18 @@ makeIdempotent trep lm = do
         case Map.lookup binderId binders of
           Just _  -> error "bug: binder id taken"
           Nothing -> do
-            ident <- unLocalM $ makeBinding trep cexpr
+            ident <- unLocalM $ makeBinding trep inhabited tyName cexpr
             -- Even though makeBinding has added the block item, we must also
             -- update the BinderId map.
             unLocalM $ addBinding binderId ident cexpr
             pure $ C.identIsExpr ident
 
 -- | Makes an identifier for the binding and adds the block item to do the
--- assignment.
-makeBinding :: Object.Point.TypeRep t -> C.Expr -> LocalM C.Ident
-makeBinding trep cexpr = do
+-- assignment. The binding is const.
+makeBinding :: Object.Point.TypeRep t -> Inhabited t -> C.TypeName -> C.Expr -> LocalM C.Ident
+makeBinding trep inhabited tyName cexpr = do
   ident <- genFreshName
-  let !bm = C.blockItemInitialize (typeNameMeta (Obj (Constant trep))) ident cexpr
+  let !bm = C.blockItemInitialize tyName ident cexpr
   addBlockItem bm
   pure ident
 
@@ -384,18 +479,14 @@ addBlockItem bm = LocalM $ State.modify $ \ls ->
 -- | Runs the LocalM with an empty binding context, creating a C function
 -- definition which takes no arguments and returns the given value's C
 -- representation.
-elaborateConstantToFunction :: C.Ident -> Value (Constant t) -> C.FunDef
-elaborateConstantToFunction funName v = elaborateToFunction funName tyName (Just <$> lm)
+elaborateConstantToFunction :: C.TypeName -> C.Ident -> Value (Constant t) -> C.FunDef
+elaborateConstantToFunction tyName funName v = elaborateToFunction funName tyName (Just <$> lm)
   where
-  ty = valueConstantType v
-  tyName = typeName (Constant ty)
   lm = valueConstantExpr v
 
-elaborateVaryingToFunction :: C.Ident -> Value (Varying Z t) -> C.FunDef
-elaborateVaryingToFunction funName v = elaborateToFunction funName tyName (Just <$> lm)
+elaborateVaryingToFunction :: C.TypeName -> C.Ident -> Value (Varying Z t) -> C.FunDef
+elaborateVaryingToFunction tyName funName v = elaborateToFunction funName tyName (Just <$> lm)
   where
-  (_, ty) = valueVaryingType v
-  tyName = typeName (Constant ty)
   VCons lm VNil = valueVaryingExprs v
 
 -- | Make a function with a given C.Ident, returning a given C.TypeName.
@@ -437,21 +528,1059 @@ elaborateLocalM lm = (t, bms)
   bms = local_state_block_items st
 
 
--- |
--- = Compound type representations
+data Of :: (k -> k -> Hask) -> k -> Hask where
+  Of :: f k x -> Of f k
+
+
+-- | Opposite of 'normalizedTypeRep'.
+typeRepFromNormalized
+  :: NormalizedType a b
+  -> Object.Point.TypeRep b
+  -> Object.Point.TypeRep a
+
+typeRepFromNormalized IntegerIsNormal trep = trep
+typeRepFromNormalized BytesIsNormal   trep = trep
+
+typeRepFromNormalized (NormalizedProduct nonUnits normP) trep =
+  typeRepFromNormalizedProduct nonUnits normP trep
+
+typeRepFromNormalized (NormalizedSum nonVoids normS) trep =
+  typeRepFromNormalizedSum nonVoids normS trep
+
+
+typeRepFromNormalizedProduct
+  :: NonUnitFields fields nonUnits
+  -> NormalizedProduct nonUnits norm
+  -> Object.Point.TypeRep norm
+  -> Object.Point.TypeRep ('Object.Point.Product_t fields)
+
+typeRepFromNormalizedProduct nonUnits UnitIsNormal _ =
+  Object.Point.Product_r (typeRepFromNormalizedProductUnit nonUnits)
+
+typeRepFromNormalizedProduct nonUnits NormalizedProductSingleton trep =
+  Object.Point.Product_r (typeRepFromNormalizedProductSingleton nonUnits trep)
+
+typeRepFromNormalizedProduct nonUnits NormalizedProductProper (Object.Point.Product_r treps) =
+  Object.Point.Product_r (typeRepFromNormalizedProductProper nonUnits treps)
+
+
+typeRepFromNormalizedProductUnit
+  :: NonUnitFields fields '[]
+  -> All Object.Point.TypeRep fields
+typeRepFromNormalizedProductUnit NonUnitNil = All
+typeRepFromNormalizedProductUnit (NonUnitAbsorb nty isUnit rec) = case isUnit of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.unit_t)
+    (typeRepFromNormalizedProductUnit rec)
+
+
+typeRepFromNormalizedProductSingleton
+  :: NonUnitFields fields '[nonUnit]
+  -> Object.Point.TypeRep nonUnit
+  -> All Object.Point.TypeRep fields
+typeRepFromNormalizedProductSingleton (NonUnitAbsorb nty isUnit rec) trep = case isUnit of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.unit_t)
+    (typeRepFromNormalizedProductSingleton rec trep)
+typeRepFromNormalizedProductSingleton (NonUnitCons nty _ rec) trep =
+  And (typeRepFromNormalized nty trep)
+      (typeRepFromNormalizedProductUnit rec)
+
+
+typeRepFromNormalizedProductProper
+  :: NonUnitFields fields tys
+  -> All Object.Point.TypeRep tys
+  -> All Object.Point.TypeRep fields
+typeRepFromNormalizedProductProper NonUnitNil All = All
+typeRepFromNormalizedProductProper (NonUnitAbsorb nty isUnit rec) treps = case isUnit of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.unit_t)
+    (typeRepFromNormalizedProductProper rec treps)
+typeRepFromNormalizedProductProper (NonUnitCons nty _ rec) (And trep treps) =
+  And (typeRepFromNormalized nty trep)
+      (typeRepFromNormalizedProductProper rec treps)
+
+
+typeRepFromNormalizedSum
+  :: NonVoidVariants variants nonVoids
+  -> NormalizedSum nonVoids norm
+  -> Object.Point.TypeRep norm
+  -> Object.Point.TypeRep ('Object.Point.Sum_t variants)
+
+typeRepFromNormalizedSum nonVoids VoidIsNormal _ =
+  Object.Point.Sum_r (typeRepFromNormalizedSumVoid nonVoids)
+
+typeRepFromNormalizedSum nonVoids NormalizedSumSingleton trep =
+  Object.Point.Sum_r (typeRepFromNormalizedSumSingleton nonVoids trep)
+
+typeRepFromNormalizedSum nonVoids NormalizedSumProper (Object.Point.Sum_r treps) =
+  Object.Point.Sum_r (typeRepFromNormalizedSumProper nonVoids treps)
+
+
+typeRepFromNormalizedSumVoid
+  :: NonVoidVariants variants '[]
+  -> All Object.Point.TypeRep variants
+typeRepFromNormalizedSumVoid NonVoidNil = All
+typeRepFromNormalizedSumVoid (NonVoidAbsorb nty isVoid rec) = case isVoid of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.void_t)
+    (typeRepFromNormalizedSumVoid rec)
+
+
+typeRepFromNormalizedSumSingleton
+  :: NonVoidVariants variants '[nonVoid]
+  -> Object.Point.TypeRep nonVoid
+  -> All Object.Point.TypeRep variants
+typeRepFromNormalizedSumSingleton (NonVoidAbsorb nty isVoid rec) trep = case isVoid of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.void_t)
+    (typeRepFromNormalizedSumSingleton rec trep)
+typeRepFromNormalizedSumSingleton (NonVoidCons nty _ rec) trep =
+  And (typeRepFromNormalized nty trep)
+      (typeRepFromNormalizedSumVoid rec)
+
+
+typeRepFromNormalizedSumProper
+  :: NonVoidVariants variants tys
+  -> All Object.Point.TypeRep tys
+  -> All Object.Point.TypeRep variants
+typeRepFromNormalizedSumProper NonVoidNil All = All
+typeRepFromNormalizedSumProper (NonVoidAbsorb nty isVoid rec) treps = case isVoid of
+  Refl -> And
+    (typeRepFromNormalized nty Object.Point.void_t)
+    (typeRepFromNormalizedSumProper rec treps)
+typeRepFromNormalizedSumProper (NonVoidCons nty _ rec) (And trep treps) =
+  And (typeRepFromNormalized nty trep)
+      (typeRepFromNormalizedSumProper rec treps)
+
+
+normalizedTypeRep
+  :: NormalizedType t n
+  -> Object.Point.TypeRep t
+  -> Object.Point.TypeRep n
+
+normalizedTypeRep IntegerIsNormal (Object.Point.Integer_r s w) = Object.Point.Integer_r s w
+
+normalizedTypeRep BytesIsNormal (Object.Point.Bytes_r w) = Object.Point.Bytes_r w
+
+normalizedTypeRep (NormalizedProduct nonUnits norm) (Object.Point.Product_r fields) =
+  normalizedProductTypeRep fields nonUnits norm
+
+normalizedTypeRep (NormalizedSum nonVoids norm) (Object.Point.Sum_r variants) =
+  normalizedSumTypeRep variants nonVoids norm
+
+
+-- TODO rewrite in the style of normalizedSumTypeRep, which matches primarily
+-- on the NormalizedSum value, and seems to be better organized.
+normalizedProductTypeRep
+  :: All Object.Point.TypeRep fields
+  -> NonUnitFields fields nonUnits
+  -> NormalizedProduct nonUnits norm
+  -> Object.Point.TypeRep norm
+
+normalizedProductTypeRep All NonUnitNil UnitIsNormal = Object.Point.unit_t
+
+normalizedProductTypeRep (And _ _) _ UnitIsNormal = Object.Point.unit_t
+
+normalizedProductTypeRep (And ty _) (NonUnitCons nty _ _) NormalizedProductSingleton =
+  normalizedTypeRep nty ty
+
+normalizedProductTypeRep (And _ tys) (NonUnitAbsorb _ _ rec) NormalizedProductSingleton =
+  normalizedProductTypeRep tys rec NormalizedProductSingleton
+
+normalizedProductTypeRep (And _ tys) (NonUnitAbsorb _ _ rec) NormalizedProductProper =
+  normalizedProductTypeRep tys rec NormalizedProductProper
+
+normalizedProductTypeRep
+    (And ty (And _ tys))
+    (NonUnitCons nty notUnit (NonUnitAbsorb _ _ rec))
+    NormalizedProductProper =
+  normalizedProductTypeRep (And ty tys) (NonUnitCons nty notUnit rec) NormalizedProductProper
+
+normalizedProductTypeRep (And _ All) (NonUnitCons _ _ rec) NormalizedProductProper =
+  case rec of {}
+
+normalizedProductTypeRep
+    (And ty (And ty' (And _ ands)))
+    (NonUnitCons nty notUnit (NonUnitCons nty' notUnit' (NonUnitAbsorb _ _ rec)))
+    NormalizedProductProper =
+  normalizedProductTypeRep
+    (And ty (And ty' ands))
+    (NonUnitCons nty notUnit (NonUnitCons nty' notUnit' rec))
+    NormalizedProductProper
+
+normalizedProductTypeRep
+    (And ty (And ty' All))
+    (NonUnitCons nty _ (NonUnitCons nty' _ NonUnitNil))
+    NormalizedProductProper =
+  Object.Point.Product_r
+    (And (normalizedTypeRep nty  ty)
+    (And (normalizedTypeRep nty' ty')
+    All))
+
+normalizedProductTypeRep
+    (And ty and@(And _ (And _ _)))
+    (NonUnitCons nty _ rec@(NonUnitCons _ _ (NonUnitCons _ _ _)))
+    NormalizedProductProper =
+  case normalizedProductTypeRep and rec NormalizedProductProper of
+    Object.Point.Product_r ands -> Object.Point.Product_r $
+      And (normalizedTypeRep nty ty) ands
+
+
+normalizedSumTypeRep
+  :: All Object.Point.TypeRep variants
+  -> NonVoidVariants variants nonVoids
+  -> NormalizedSum nonVoids norm
+  -> Object.Point.TypeRep norm
+
+normalizedSumTypeRep _ _ VoidIsNormal = Object.Point.void_t
+
+normalizedSumTypeRep all nonVoids NormalizedSumSingleton = case all of
+  All -> case nonVoids of {}
+  And ty all' -> case nonVoids of
+    NonVoidAbsorb _ _ rec -> normalizedSumTypeRep all' rec NormalizedSumSingleton
+    NonVoidCons nty _ _ -> normalizedTypeRep nty ty
+
+normalizedSumTypeRep all nonVoids NormalizedSumProper = case all of
+  All -> case nonVoids of {}
+  And ty all' -> case nonVoids of
+
+    NonVoidAbsorb _ _ rec -> normalizedSumTypeRep all' rec NormalizedSumProper
+
+    NonVoidCons nty _ (NonVoidCons nty' _ NonVoidNil) -> case all' of
+      And ty' All -> Object.Point.Sum_r
+        (And (normalizedTypeRep nty ty)
+        (And (normalizedTypeRep nty' ty')
+        All))
+
+    NonVoidCons nty _ rec@(NonVoidCons _ _ (NonVoidCons _ _ _)) ->
+      case normalizedSumTypeRep all' rec NormalizedSumProper of
+        Object.Point.Sum_r ands -> Object.Point.Sum_r $
+          And (normalizedTypeRep nty ty) ands
+
+    NonVoidCons nty notVoid (NonVoidCons nty' notVoid' (NonVoidAbsorb _ _ rec)) ->
+      case all' of
+        And ty' (And _ all'') -> normalizedSumTypeRep
+          (And ty (And ty' all''))
+          (NonVoidCons nty notVoid (NonVoidCons nty' notVoid' rec))
+          NormalizedSumProper
+
+    NonVoidCons nty notVoid (NonVoidAbsorb _ _ rec) -> case all' of
+      And _ all'' -> normalizedSumTypeRep
+        (And ty all'')
+        (NonVoidCons nty notVoid rec)
+        NormalizedSumProper
+
+
+-- | Every point type can be normalized. This will be useful for defining sum
+-- and product intro and elim interpretations, such that their C representations
+-- are sparse.
 --
--- It would be nice to normalize sum and product types so that they are either
--- - Void
--- - Unit
--- - A product of 2 or more non-void and non-unit types
--- - A sum of 2 or more non-void and non-unit types
+-- NB: there is a normalized type even for uninhabited types. A product
+-- containing a void, for example, will normalize to a product which still
+-- contains that void.
+normalizedType :: Object.Point.TypeRep t -> NormalizedType `Of` t
+
+normalizedType (Object.Point.Integer_r _ _) = Of IntegerIsNormal
+normalizedType (Object.Point.Bytes_r     _) = Of BytesIsNormal
+
+normalizedType (Object.Point.Product_r fields) = normalizedProduct normFields
+  where
+  normFields = forAll normalizedType fields
+
+normalizedType (Object.Point.Sum_r variants) = normalizedSum normVariants
+  where
+  normVariants = forAll normalizedType variants
+
+
+-- | Given normalized types of the fields, construct the normalized type of
+-- the product of those fields.
+normalizedProduct
+  :: All (Of NormalizedType) fields
+  -> NormalizedType `Of` ('Object.Point.Product_t fields)
+
+normalizedProduct All = Of $ NormalizedProduct NonUnitNil UnitIsNormal
+
+normalizedProduct (And (Of nty) ntys) = case (isUnit, rest) of
+
+  -- Rest of it reduce to unit, next type is not unit, so it's a singleton.
+  (No isNotUnit, Of (NormalizedProduct nonUnits UnitIsNormal)) -> Of $ NormalizedProduct
+    (NonUnitCons nty isNotUnit nonUnits)
+    NormalizedProductSingleton
+
+  -- Rest of it reduces to a singleton, next type is not unit, so it's a proper
+  -- product.
+  (No isNotUnit, Of (NormalizedProduct nonUnits NormalizedProductSingleton)) -> Of $ NormalizedProduct
+    (NonUnitCons nty isNotUnit nonUnits)
+    NormalizedProductProper
+
+  -- Rest of it reduces to a proper product, next type is not unit, so it
+  -- remains a proper product, but longer.
+  (No isNotUnit, Of (NormalizedProduct nonUnits NormalizedProductProper)) -> Of $ NormalizedProduct
+    (NonUnitCons nty isNotUnit nonUnits)
+    NormalizedProductProper
+
+  -- Rest of it is unit, next type is unit, so it remains unit overall.
+  (Yes isIndeedUnit, Of (NormalizedProduct nonUnits UnitIsNormal)) -> Of $ NormalizedProduct
+    (NonUnitAbsorb nty isIndeedUnit nonUnits)
+    UnitIsNormal
+
+  -- Rest of it is a singleton, next type is unit, so it remains a singleton.
+  (Yes isIndeedUnit, Of (NormalizedProduct nonUnits NormalizedProductSingleton)) -> Of $ NormalizedProduct
+    (NonUnitAbsorb nty isIndeedUnit nonUnits)
+    NormalizedProductSingleton
+
+  -- Rest of it is a proper product, next type is unit, so it remains a
+  -- proper product.
+  (Yes isIndeedUnit, Of (NormalizedProduct nonUnits NormalizedProductProper)) -> Of $ NormalizedProduct
+    (NonUnitAbsorb nty isIndeedUnit nonUnits)
+    NormalizedProductProper
+
+  where
+
+  rest = normalizedProduct ntys
+  isUnit = decideNormalizedTypeIsUnit nty
+
+
+-- | Given normalized types of the variants, construct the normalized type of
+-- the sum of those variants.
+normalizedSum
+  :: All (Of NormalizedType) variants
+  -> NormalizedType `Of` (Object.Point.Sum_t variants)
+
+normalizedSum All = Of $ NormalizedSum NonVoidNil VoidIsNormal
+
+normalizedSum (And (Of nty) ntys) = case (isVoid, rest) of
+
+  -- See normalizedProduct for comments that may or may not be helpful.
+  -- This is exactly the same idea: whether the next type is void or not
+  -- determines what the normalized sum becomes.
+
+  (No isNotVoid, Of (NormalizedSum nonVoids VoidIsNormal)) -> Of $ NormalizedSum
+    (NonVoidCons nty isNotVoid nonVoids)
+    NormalizedSumSingleton
+
+  (No isNotVoid, Of (NormalizedSum nonVoids NormalizedSumSingleton)) -> Of $ NormalizedSum
+    (NonVoidCons nty isNotVoid nonVoids)
+    NormalizedSumProper
+
+  (No isNotVoid, Of (NormalizedSum nonVoids NormalizedSumProper)) -> Of $ NormalizedSum
+    (NonVoidCons nty isNotVoid nonVoids)
+    NormalizedSumProper
+
+  (Yes isIndeedVoid, Of (NormalizedSum nonVoids VoidIsNormal)) -> Of $ NormalizedSum
+    (NonVoidAbsorb nty isIndeedVoid nonVoids)
+    VoidIsNormal
+
+  (Yes isIndeedVoid, Of (NormalizedSum nonVoids NormalizedSumSingleton)) -> Of $ NormalizedSum
+    (NonVoidAbsorb nty isIndeedVoid nonVoids)
+    NormalizedSumSingleton
+
+  (Yes isIndeedVoid, Of (NormalizedSum nonVoids NormalizedSumProper)) -> Of $ NormalizedSum
+    (NonVoidAbsorb nty isIndeedVoid nonVoids)
+    NormalizedSumProper
+
+  where
+
+  rest = normalizedSum ntys
+  isVoid = decideNormalizedTypeIsVoid nty
+
+
+decideNormalizedTypeIsUnit
+  :: NormalizedType ty n
+  -> Decision (n :~: 'Object.Point.Product_t '[])
+
+decideNormalizedTypeIsUnit IntegerIsNormal = No (\it -> case it of {})
+decideNormalizedTypeIsUnit BytesIsNormal   = No (\it -> case it of {})
+
+decideNormalizedTypeIsUnit (NormalizedProduct _ UnitIsNormal) = Yes Refl
+decideNormalizedTypeIsUnit (NormalizedProduct (NonUnitCons _ it _) NormalizedProductSingleton) =
+  No it
+decideNormalizedTypeIsUnit (NormalizedProduct _ NormalizedProductProper) =
+  No (\it -> case it of {})
+decideNormalizedTypeIsUnit (NormalizedProduct (NonUnitAbsorb _ _ rec) NormalizedProductSingleton) =
+  decideNormalizedTypeIsUnit (NormalizedProduct rec NormalizedProductSingleton)
+
+decideNormalizedTypeIsUnit (NormalizedSum _ VoidIsNormal) = No (\it -> case it of {})
+decideNormalizedTypeIsUnit (NormalizedSum (NonVoidCons nty _ _) NormalizedSumSingleton) =
+  decideNormalizedTypeIsUnit nty
+decideNormalizedTypeIsUnit (NormalizedSum (NonVoidCons _ _ _) NormalizedSumProper) =
+  No (\it -> case it of {})
+decideNormalizedTypeIsUnit (NormalizedSum (NonVoidAbsorb _ _ rec) it) =
+  decideNormalizedTypeIsUnit (NormalizedSum rec it)
+
+
+decideNormalizedTypeIsVoid
+  :: NormalizedType ty n
+  -> Decision (n :~: 'Object.Point.Sum_t '[])
+
+decideNormalizedTypeIsVoid IntegerIsNormal = No (\it -> case it of {})
+decideNormalizedTypeIsVoid BytesIsNormal   = No (\it -> case it of {})
+
+decideNormalizedTypeIsVoid (NormalizedSum _ VoidIsNormal) = Yes Refl
+decideNormalizedTypeIsVoid (NormalizedSum (NonVoidCons _ it _) NormalizedSumSingleton) = No it
+decideNormalizedTypeIsVoid (NormalizedSum _ NormalizedSumProper) = No (\it -> case it of {})
+decideNormalizedTypeIsVoid (NormalizedSum (NonVoidAbsorb _ _ rec) it) =
+  decideNormalizedTypeIsVoid (NormalizedSum rec it)
+
+decideNormalizedTypeIsVoid (NormalizedProduct _ UnitIsNormal) = No (\it -> case it of {})
+decideNormalizedTypeIsVoid (NormalizedProduct (NonUnitCons nty _ _) NormalizedProductSingleton) =
+  decideNormalizedTypeIsVoid nty
+decideNormalizedTypeIsVoid (NormalizedProduct (NonUnitCons _ _ _) NormalizedProductProper) =
+  No (\it -> case it of {})
+decideNormalizedTypeIsVoid (NormalizedProduct (NonUnitAbsorb _ _ rec) it) =
+  decideNormalizedTypeIsVoid (NormalizedProduct rec it)
+
+
+-- | Opposite of 'normalizationPreservesInhabitedness'
+inhabitedFromNormalized
+  :: NormalizedType a b
+  -> Inhabited b
+  -> Inhabited a
+
+inhabitedFromNormalized IntegerIsNormal inh = inh
+inhabitedFromNormalized BytesIsNormal   inh = inh
+
+inhabitedFromNormalized (NormalizedProduct nonUnits normP) inh =
+  inhabitedFromNormalizedProduct nonUnits normP inh
+
+inhabitedFromNormalized (NormalizedSum nonVoids normS) inh =
+  inhabitedFromNormalizedSum nonVoids normS inh
+
+
+inhabitedFromNormalizedProduct
+  :: NonUnitFields fields nonUnits
+  -> NormalizedProduct nonUnits norm
+  -> Inhabited norm
+  -> Inhabited ('Object.Point.Product_t fields)
+
+-- If it normalizes to unit, then we know all of its fields normalize to
+-- unit, so they're all inhabited (since unit is inhabited).
+inhabitedFromNormalizedProduct nonUnitFields UnitIsNormal _ =
+  inhabitedFromNormalizedProductUnit nonUnitFields
+
+inhabitedFromNormalizedProduct nonUnitFields NormalizedProductSingleton inhabited =
+  inhabitedFromNormalizedProductSingleton nonUnitFields inhabited
+
+inhabitedFromNormalizedProduct nonUnitFields NormalizedProductProper inhabited =
+  inhabitedFromNormalizedProductProper nonUnitFields (allInhabitedFields inhabited Refl)
+
+
+inhabitedFromNormalizedProductUnit
+  :: NonUnitFields fields '[]
+  -> Inhabited ('Object.Point.Product_t fields)
+inhabitedFromNormalizedProductUnit (NonUnitAbsorb nty isUnit rec) = case isUnit of
+  -- The product normalizes to unit, so we know therefore that it's inhabited,
+  -- because unit is inhabited.
+  -- Along with recursion onto the rest of the product (which also normalizes
+  -- to unit), that's enough to conclude that the whole product must be
+  -- inhabited.
+  Refl -> productStillInhabited
+    (inhabitedFromNormalized nty unitIsInhabited)
+    (inhabitedFromNormalizedProductUnit rec)
+inhabitedFromNormalizedProductUnit NonUnitNil = unitIsInhabited
+
+
+inhabitedFromNormalizedProductSingleton
+  :: NonUnitFields fields '[nonUnit]
+  -> Inhabited nonUnit
+  -> Inhabited ('Object.Point.Product_t fields)
+inhabitedFromNormalizedProductSingleton (NonUnitAbsorb nty isUnit rec) inh = case isUnit of
+  Refl -> productStillInhabited
+    (inhabitedFromNormalized nty unitIsInhabited)
+    (inhabitedFromNormalizedProductSingleton rec inh)
+inhabitedFromNormalizedProductSingleton (NonUnitCons nty isNotUnit rec) inh =
+  productStillInhabited
+    (inhabitedFromNormalized nty inh)
+    (inhabitedFromNormalizedProductUnit rec)
+
+
+inhabitedFromNormalizedProductProper
+  :: NonUnitFields fields (nonUnit1 ': nonUnit2 ': nonUnits)
+  -> All Inhabited (nonUnit1 ': nonUnit2 ': nonUnits)
+  -> Inhabited ('Object.Point.Product_t fields)
+inhabitedFromNormalizedProductProper (NonUnitAbsorb nty isUnit rec) inhs = case isUnit of
+  Refl -> productStillInhabited
+    (inhabitedFromNormalized nty unitIsInhabited)
+    (inhabitedFromNormalizedProductProper rec inhs)
+
+inhabitedFromNormalizedProductProper (NonUnitCons nty _ rec) inhs = case inhs of
+
+  And inh inhs@(And inh' All) ->
+    productStillInhabited
+      (inhabitedFromNormalized nty inh)
+      (inhabitedFromNormalizedProductSingleton rec inh')
+
+  And inh inhs@(And _ (And _ _)) ->
+    productStillInhabited
+      (inhabitedFromNormalized nty inh)
+      (inhabitedFromNormalizedProductProper rec inhs)
+
+
+inhabitedFromNormalizedSum
+  :: NonVoidVariants variants nonVoids
+  -> NormalizedSum nonVoids norm
+  -> Inhabited norm
+  -> Inhabited ('Object.Point.Sum_t variants)
+
+-- The sum normalized to void, but you have proof that the normalized type
+-- is inhabited? Inconceivable!
+inhabitedFromNormalizedSum nonVoids VoidIsNormal inhabited =
+  notEmptySum inhabited Refl
+
+inhabitedFromNormalizedSum nonVoids NormalizedSumSingleton inhabited =
+  inhabitedFromNormalizedSumSingleton nonVoids inhabited
+
+inhabitedFromNormalizedSum nonVoids NormalizedSumProper inhabited =
+  inhabitedFromNormalizedSumProper nonVoids (someInhabitedVariant inhabited Refl)
+
+
+inhabitedFromNormalizedSumSingleton
+  :: NonVoidVariants variants '[nonVoid]
+  -> Inhabited nonVoid
+  -> Inhabited ('Object.Point.Sum_t variants)
+
+inhabitedFromNormalizedSumSingleton (NonVoidAbsorb _ _ rec) inhabited =
+  sumStillInhabited (inhabitedFromNormalizedSumSingleton rec inhabited)
+
+inhabitedFromNormalizedSumSingleton (NonVoidCons nty _ _) inhabited =
+  sumIsInhabited (Some (inhabitedFromNormalized nty inhabited))
+
+
+-- | Notice the unexpected type: it's surprisingly easy to prove this one,
+-- and the more general type actually makes it easier.
+inhabitedFromNormalizedSumProper
+  :: NonVoidVariants variants nonVoids
+  -> Some Inhabited nonVoids
+  -> Inhabited ('Object.Point.Sum_t variants)
+
+inhabitedFromNormalizedSumProper NonVoidNil some = case some of {}
+
+inhabitedFromNormalizedSumProper (NonVoidAbsorb _ _ rec) some =
+  sumStillInhabited (inhabitedFromNormalizedSumProper rec some)
+
+inhabitedFromNormalizedSumProper (NonVoidCons nty _ _) (Some inhabited) =
+  sumIsInhabited (Some (inhabitedFromNormalized nty inhabited))
+
+inhabitedFromNormalizedSumProper (NonVoidCons _ _ rec) (Or someMore) =
+  sumStillInhabited (inhabitedFromNormalizedSumProper rec someMore)
+
+
+
+
+normalizationPreservesInhabitedness
+  :: NormalizedType t n
+  -> Inhabited t
+  -> Inhabited n
+
+normalizationPreservesInhabitedness IntegerIsNormal inh = inh
+normalizationPreservesInhabitedness BytesIsNormal   inh = inh
+
+normalizationPreservesInhabitedness (NormalizedProduct a b) inh =
+  normalizationPreservesInhabitednessProduct a b (allInhabitedFields inh Refl)
+
+normalizationPreservesInhabitedness (NormalizedSum a b) inh =
+  normalizationPreservesInhabitednessSum a b (someInhabitedVariant inh Refl)
+
+
+normalizationPreservesInhabitednessProduct
+  :: NonUnitFields fields nonUnits
+  -> NormalizedProduct nonUnits norm
+  -> All Inhabited fields
+  -> Inhabited norm
+
+normalizationPreservesInhabitednessProduct
+    NonUnitNil
+    UnitIsNormal
+    All =
+  unitIsInhabited
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitAbsorb nty isIndeedUnit rec)
+    nh
+    (And _ inh) =
+  normalizationPreservesInhabitednessProduct rec nh inh
+
+-- For the remaining cases we have to pattern match twice deep on the
+-- NonUnitFields, so that we are able to choose a NormalizedProduct value for
+-- recursion.
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit NonUnitNil)
+    NormalizedProductSingleton
+    (And inh _) =
+  normalizationPreservesInhabitedness nty inh
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit (NonUnitAbsorb nty' isIndeedUnit rec))
+    np
+    (And inh (And _ inhs)) =
+  normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit rec)
+    np
+    (And inh inhs)
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit (NonUnitCons nty' isNotUnit' NonUnitNil))
+    NormalizedProductProper
+    (And inh (And inh' All)) =
+  productIsInhabited
+    (And (normalizationPreservesInhabitedness nty inh)
+    (And (normalizationPreservesInhabitedness nty' inh')
+     All))
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit (NonUnitCons nty' isNotUnit' (NonUnitAbsorb _ _ rec)))
+    NormalizedProductProper
+    (And inh (And inh' (And _ inhs))) =
+  normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit (NonUnitCons nty' isNotUnit' rec))
+    NormalizedProductProper
+    (And inh (And inh' inhs))
+
+normalizationPreservesInhabitednessProduct
+    (NonUnitCons nty isNotUnit rec@(NonUnitCons nty' isNotUnit' (NonUnitCons _ _ _)))
+    NormalizedProductProper
+    (And inh inhs@(And _ _)) =
+  productStillInhabited
+    (normalizationPreservesInhabitedness nty inh)
+    (normalizationPreservesInhabitednessProduct rec NormalizedProductProper inhs)
+
+
+-- | Proves that if at least one of the variants of the non-normalized sum is
+-- inhabited, then the normalized sum is inhabited.
+normalizationPreservesInhabitednessSum
+  :: NonVoidVariants variants nonVoids
+  -> NormalizedSum nonVoids norm
+  -> Some Inhabited variants
+  -> Inhabited norm
+
+-- TODO FIXME there must be a better/shorter way to write this
+
+normalizationPreservesInhabitednessSum
+  NonVoidNil
+  VoidIsNormal
+  it = case it of {}
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons _ _ NonVoidNil)
+    NormalizedSumSingleton
+    (Or inhs) = case inhs of {}
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid NonVoidNil)
+    NormalizedSumSingleton
+    (Some inh) =
+  normalizationPreservesInhabitedness nty inh
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' _))
+    NormalizedSumProper
+    (Some inh) =
+  sumIsInhabited (Some (normalizationPreservesInhabitedness nty inh))
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' _))
+    NormalizedSumProper
+    (Or (Some inh)) =
+  sumStillInhabited (sumIsInhabited (Some (normalizationPreservesInhabitedness nty' inh)))
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons _ _ (NonVoidCons _ _ NonVoidNil))
+    NormalizedSumProper
+    (Or (Or it)) = case it of {}
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons _ _ rec@(NonVoidCons _ _ (NonVoidCons _ _ _)))
+    NormalizedSumProper
+    (Or inhs) =
+  sumStillInhabited (normalizationPreservesInhabitednessSum
+    rec
+    NormalizedSumProper
+    inhs)
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' (NonVoidAbsorb _ _ rec)))
+    NormalizedSumProper
+    (Or (Or (Or (Or inhs)))) =
+  normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' rec))
+    NormalizedSumProper
+    (Or (Or (Or inhs)))
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons _ _ (NonVoidCons _ _ (NonVoidAbsorb nty isIndeedVoid rec)))
+    NormalizedSumProper
+    (Or (Or (Some inh))) =
+  notEmptySum (normalizationPreservesInhabitedness nty inh) isIndeedVoid
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' (NonVoidAbsorb _ _ rec)))
+    NormalizedSumProper
+    (Or (Or (Or (Some inh)))) =
+  normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidCons nty' isNotVoid' rec))
+    NormalizedSumProper
+    (Or (Or (Some inh)))
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidAbsorb _ _ rec))
+    ns
+    (Or (Or inhs)) =
+  normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid rec)
+    ns
+    (Or inhs)
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons _ _ (NonVoidAbsorb nty isIndeedVoid _))
+    _
+    (Or (Some inh)) =
+  notEmptySum (normalizationPreservesInhabitedness nty inh) isIndeedVoid
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidAbsorb _ _ _))
+    NormalizedSumSingleton
+    (Some inh) =
+  normalizationPreservesInhabitedness nty inh
+
+normalizationPreservesInhabitednessSum
+    (NonVoidCons nty isNotVoid (NonVoidAbsorb _ _ rec))
+    NormalizedSumProper
+    (Some inh) =
+  sumIsInhabited (Some (normalizationPreservesInhabitedness nty inh))
+
+normalizationPreservesInhabitednessSum
+    (NonVoidAbsorb nty isIndeedVoid rec)
+    ns
+    (Some inh) =
+  notEmptySum (normalizationPreservesInhabitedness nty inh) isIndeedVoid
+
+normalizationPreservesInhabitednessSum
+    (NonVoidAbsorb nty isIndeedVoid rec)
+    ns
+    (Or inhs) =
+  normalizationPreservesInhabitednessSum
+    rec
+    ns
+    inhs
+
+
+-- | A key proper of type normalization: if we normalize twice, we get the same
+-- form.
+normalizationIsIdempotent :: NormalizedType a b -> NormalizedType b c -> b :~: c
+
+normalizationIsIdempotent IntegerIsNormal IntegerIsNormal = Refl
+
+normalizationIsIdempotent BytesIsNormal BytesIsNormal = Refl
+
+normalizationIsIdempotent (NormalizedProduct nonUnits normP) norm =
+  normalizationIsIdempotentForProduct nonUnits normP norm
+
+normalizationIsIdempotent (NormalizedSum nonVoids normS) norm =
+  normalizationIsIdempotentForSum nonVoids normS norm
+
+
+normalizationIsIdempotentForProduct
+  :: NonUnitFields fields nonUnits
+  -> NormalizedProduct nonUnits norm
+  -> NormalizedType norm norm'
+  -> norm :~: norm'
+
+-- When the normalized product is unit, the proof is easy.
+
+normalizationIsIdempotentForProduct
+    NonUnitNil
+    UnitIsNormal
+    (NormalizedProduct NonUnitNil UnitIsNormal) =
+  Refl
+
+normalizationIsIdempotentForProduct
+    (NonUnitAbsorb _ _ rec)
+    UnitIsNormal
+    norm' =
+  normalizationIsIdempotentForProduct rec UnitIsNormal norm'
+
+-- When the normalized product is a singleton it's also straightforward: find
+-- out what the type is and defer to normalizationIsIdempotent on that one.
+
+normalizationIsIdempotentForProduct
+    (NonUnitCons nty _ _)
+    NormalizedProductSingleton
+    norm' =
+  normalizationIsIdempotent nty norm'
+
+normalizationIsIdempotentForProduct
+    (NonUnitAbsorb _ _ rec)
+    NormalizedProductSingleton
+    norm' =
+  normalizationIsIdempotentForProduct rec NormalizedProductSingleton norm'
+
+-- Now the cases for proper products. Here we know that
 --
--- - Void and Unit are represented by NULL and have type void*.
---   Unit introduction can just give NULL, since it can never be eliminated.
---   Void elimination can generate no code, since it can never be introduced.
+--   nonUnits ~ (nonUnit1 ': nonUnit2 ': nonUnits)
+--   norm ~ Product (nonUnit1 ': nonUnit2 ': nonUnits)
 --
--- - Singleton sums and products are represented by the underlying types.
--- - 
+-- but that list is in the NonUnitFields relation, and we know that this is
+-- idempotent (nonUnitFieldsIsIdempotent) so we can therefore infer that the
+-- NormalizedProduct is also NormalizedProductProper and that's it that's all.
+
+normalizationIsIdempotentForProduct
+    nonUnits
+    NormalizedProductProper
+    norm' =
+  case norm' of
+    NormalizedProduct nonUnits' normP -> case nonUnitFieldsIsIdempotent nonUnits nonUnits' of
+      Refl -> case normP of
+        NormalizedProductProper -> Refl
+
+
+-- | If `b` is `a` without the non unit parts, then taking the non unit parts
+-- of `b` doesn't change `b`. Seems reasonable.
+nonUnitFieldsIsIdempotent
+  :: NonUnitFields a b
+  -> NonUnitFields b c
+  -> b :~: c
+
+nonUnitFieldsIsIdempotent NonUnitNil NonUnitNil = Refl
+
+nonUnitFieldsIsIdempotent (NonUnitAbsorb _ _ rec) x =
+  case nonUnitFieldsIsIdempotent rec x of
+    Refl -> Refl
+
+nonUnitFieldsIsIdempotent (NonUnitCons nty _ rec) (NonUnitCons nty' _ rec') =
+  case normalizationIsIdempotent nty nty' of
+    Refl -> case nonUnitFieldsIsIdempotent rec rec' of
+      Refl -> Refl
+
+nonUnitFieldsIsIdempotent (NonUnitCons nty isNotUnit _) (NonUnitAbsorb nty' isUnit _) =
+  case normalizationIsIdempotent nty nty' of
+    Refl -> isNotUnit isUnit
+
+
+normalizationIsIdempotentForSum
+  :: NonVoidVariants variants nonVoids
+  -> NormalizedSum nonVoids norm
+  -> NormalizedType norm norm'
+  -> norm :~: norm'
+
+normalizationIsIdempotentForSum
+    NonVoidNil
+    VoidIsNormal
+    (NormalizedSum NonVoidNil VoidIsNormal) =
+  Refl
+
+normalizationIsIdempotentForSum
+    (NonVoidAbsorb _ _ rec)
+    VoidIsNormal
+    norm' =
+  normalizationIsIdempotentForSum rec VoidIsNormal norm'
+
+normalizationIsIdempotentForSum
+    (NonVoidCons nty _ _)
+    NormalizedSumSingleton
+    norm' =
+  normalizationIsIdempotent nty norm'
+
+normalizationIsIdempotentForSum
+    (NonVoidAbsorb _ _ rec)
+    NormalizedSumSingleton
+    norm' =
+  normalizationIsIdempotentForSum rec NormalizedSumSingleton norm'
+
+-- Just as the product case uses NonUnitFields, idempotency for sums is proved
+-- by way of idempotency of the NonVoidVariants.
+
+normalizationIsIdempotentForSum
+    nonVoids
+    NormalizedSumProper
+    norm' =
+  case norm' of
+    NormalizedSum nonVoids' normS -> case nonVoidVariantsIsIdempotent nonVoids nonVoids' of
+      Refl -> case normS of
+        NormalizedSumProper -> Refl
+
+
+-- | Same idea as 'nonUnitFieldsIsIdempotent'
+nonVoidVariantsIsIdempotent
+  :: NonVoidVariants a b
+  -> NonVoidVariants b c
+  -> b :~: c
+
+nonVoidVariantsIsIdempotent NonVoidNil NonVoidNil = Refl
+
+nonVoidVariantsIsIdempotent (NonVoidAbsorb _ _ rec) x =
+  case nonVoidVariantsIsIdempotent rec x of
+    Refl -> Refl
+
+nonVoidVariantsIsIdempotent (NonVoidCons nty _ rec) (NonVoidCons nty' _ rec') =
+  case normalizationIsIdempotent nty nty' of
+    Refl -> case nonVoidVariantsIsIdempotent rec rec' of
+      Refl -> Refl
+
+nonVoidVariantsIsIdempotent (NonVoidCons nty isNotVoid _) (NonVoidAbsorb nty' isVoid _) =
+  case normalizationIsIdempotent nty nty' of
+    Refl -> isNotVoid isVoid
+
+
+-- | This proves that the NormalizedType relation is a function.
+--
+uniqueNormalizedType
+  :: NormalizedType ty n1
+  -> NormalizedType ty n2
+  -> n1 :~: n2
+
+uniqueNormalizedType IntegerIsNormal IntegerIsNormal = Refl
+uniqueNormalizedType BytesIsNormal   BytesIsNormal   = Refl
+
+uniqueNormalizedType
+    (NormalizedProduct nonUnitFields  normProduct)
+    (NormalizedProduct nonUnitFields' normProduct') =
+  case uniqueNonUnitFields nonUnitFields nonUnitFields' of
+    Refl -> uniqueNormalizedProduct normProduct normProduct'
+
+uniqueNormalizedType
+    (NormalizedSum nonVoidVariants  normSum)
+    (NormalizedSum nonVoidVariants' normSum') =
+  case uniqueNonVoidVariants nonVoidVariants nonVoidVariants' of
+    Refl -> uniqueNormalizedSum normSum normSum'
+
+
+uniqueNonUnitFields
+  :: NonUnitFields fields nonUnits
+  -> NonUnitFields fields nonUnits'
+  -> (nonUnits :~: nonUnits')
+
+uniqueNonUnitFields NonUnitNil NonUnitNil = Refl
+
+uniqueNonUnitFields (NonUnitAbsorb _ _ nuFields) (NonUnitAbsorb _ _ nuFields') =
+  case uniqueNonUnitFields nuFields nuFields' of Refl -> Refl
+
+uniqueNonUnitFields (NonUnitCons nty _ nuFields) (NonUnitCons nty' _ nuFields') =
+  case uniqueNormalizedType nty nty' of
+    Refl -> case uniqueNonUnitFields nuFields nuFields' of
+      Refl -> Refl
+
+uniqueNonUnitFields (NonUnitCons nty isNotUnit _) (NonUnitAbsorb nty' isUnit _) =
+  case uniqueNormalizedType nty nty' of
+    Refl -> isNotUnit isUnit
+
+uniqueNonUnitFields (NonUnitAbsorb nty isUnit _) (NonUnitCons nty' isNotUnit _) =
+  case uniqueNormalizedType nty nty' of
+    Refl -> isNotUnit isUnit
+
+
+uniqueNonVoidVariants
+  :: NonVoidVariants variants nonVoids
+  -> NonVoidVariants variants nonVoids'
+  -> (nonVoids :~: nonVoids')
+
+uniqueNonVoidVariants NonVoidNil NonVoidNil = Refl
+
+uniqueNonVoidVariants (NonVoidAbsorb _ _ nvVariants) (NonVoidAbsorb _ _ nvVariants') =
+  case uniqueNonVoidVariants nvVariants nvVariants' of Refl -> Refl
+
+uniqueNonVoidVariants (NonVoidCons nty _ nvVariants) (NonVoidCons nty' _ nvVariants') =
+  case uniqueNormalizedType nty nty' of
+    Refl -> case uniqueNonVoidVariants nvVariants nvVariants' of
+      Refl -> Refl
+
+uniqueNonVoidVariants (NonVoidCons nty isNotVoid _) (NonVoidAbsorb nty' isVoid _) =
+  case uniqueNormalizedType nty nty' of
+    Refl -> isNotVoid isVoid
+
+uniqueNonVoidVariants (NonVoidAbsorb nty isVoid _) (NonVoidCons nty' isNotVoid _) =
+  case uniqueNormalizedType nty nty' of
+    Refl -> isNotVoid isVoid
+
+uniqueNormalizedProduct
+  :: NormalizedProduct nonUnits norm
+  -> NormalizedProduct nonUnits norm'
+  -> norm :~: norm'
+uniqueNormalizedProduct UnitIsNormal               UnitIsNormal               = Refl
+uniqueNormalizedProduct NormalizedProductSingleton NormalizedProductSingleton = Refl
+uniqueNormalizedProduct NormalizedProductProper    NormalizedProductProper    = Refl
+
+uniqueNormalizedSum
+  :: NormalizedSum nonVoids norm
+  -> NormalizedSum nonVoids norm'
+  -> norm :~: norm'
+uniqueNormalizedSum VoidIsNormal           VoidIsNormal           = Refl
+uniqueNormalizedSum NormalizedSumSingleton NormalizedSumSingleton = Refl
+uniqueNormalizedSum NormalizedSumProper    NormalizedSumProper    = Refl
+
+-- | Relates two types, indicating that the second one is the normalization of
+-- the first one. It's in fact a function (see 'uniqueNormalizedType'). It's
+-- notable that type normalization is defined without using any type families.
+data NormalizedType (ty :: Object.Point.Type) (norm :: Object.Point.Type) where
+
+  IntegerIsNormal :: NormalizedType ('Object.Point.Integer_t s w) ('Object.Point.Integer_t s w)
+  BytesIsNormal   :: NormalizedType ('Object.Point.Bytes_t     w) ('Object.Point.Bytes_t     w)
+
+  NormalizedProduct
+    :: NonUnitFields fields nonUnits
+    -> NormalizedProduct nonUnits norm
+    -> NormalizedType ('Object.Point.Product_t fields) norm
+
+  NormalizedSum
+    :: NonVoidVariants variants nonVoids
+    -> NormalizedSum nonVoids norm
+    -> NormalizedType ('Object.Point.Sum_t variants) norm
+
+-- | `NonUnitFields fields nonUnits` means that `nonUnits` is the sub-list of
+-- `fields` (order-preserved) consisting of all of the `fields` which are not
+-- empty products after normalization.
+data NonUnitFields (fields :: [Object.Point.Type]) (nonUnits :: [Object.Point.Type]) where
+  NonUnitNil :: NonUnitFields '[] '[]
+  NonUnitCons
+    :: NormalizedType field norm
+    -> Not (norm :~: 'Object.Point.Product_t '[])
+    -> NonUnitFields           fields            nonUnits
+    -> NonUnitFields (field ': fields) (norm ': nonUnits)
+  NonUnitAbsorb
+    :: NormalizedType field norm
+    -> (norm :~: 'Object.Point.Product_t '[])
+    -> NonUnitFields           fields  nonUnits
+    -> NonUnitFields (field ': fields) nonUnits
+
+-- | Like 'NonUnitFields' but for sums and voids.
+data NonVoidVariants (variants :: [Object.Point.Type]) (nonVoids :: [Object.Point.Type]) where
+  NonVoidNil :: NonVoidVariants '[] '[]
+  NonVoidCons
+    :: NormalizedType variant norm
+    -> Not (norm :~: 'Object.Point.Sum_t '[])
+    -> NonVoidVariants             variants           nonVoids
+    -> NonVoidVariants (variant ': variants) (norm ': nonVoids)
+  NonVoidAbsorb
+    :: NormalizedType variant norm
+    -> (norm :~: 'Object.Point.Sum_t '[])
+    -> NonVoidVariants             variants  nonVoids
+    -> NonVoidVariants (variant ': variants) nonVoids
+
+
+data NormalizedProduct (nonUnits :: [Object.Point.Type]) (norm :: Object.Point.Type) where
+
+  UnitIsNormal :: NormalizedProduct '[] ('Object.Point.Product_t '[])
+
+  -- | A singleton product is represented by its component type.
+  NormalizedProductSingleton :: NormalizedProduct '[nonUnitField] nonUnitField
+
+  -- | 2 or more types which normalize to non-units form a "proper" product.
+  NormalizedProductProper :: NormalizedProduct
+    (nonUnitField1 ': nonUnitField2 ': nonUnitFields)
+    (Object.Point.Product_t (nonUnitField1 ': nonUnitField2 ': nonUnitFields))
+
+
+data NormalizedSum (variants :: [Object.Point.Type]) (norm :: Object.Point.Type) where
+
+  VoidIsNormal :: NormalizedSum '[] ('Object.Point.Sum_t '[])
+
+  NormalizedSumSingleton :: NormalizedSum '[nonVoidField] nonVoidField
+
+  NormalizedSumProper :: NormalizedSum
+    (nonVoidVariant1 ': nonVoidVariant2 ': nonVoidVariants)
+    (Object.Point.Sum_t (nonVoidVariant1 ': nonVoidVariant2 ': nonVoidVariants))
+
 
 -- | This is the state that must accompany a C Expr in order to give it meaning.
 -- The expression may make reference to names assumed to be bound in the local
@@ -462,7 +1591,18 @@ data PureState = PureState
   { -- | For non-empty sum and product types, we need enum, union, and struct
     -- declarations, and we need to know the names of these things and of
     -- their constructors.
-    pure_state_type_decls  :: !() -- (Map (Some Object.Point.TypeRep) ())
+    --
+    -- The C.Ident is needed in order to construct values of these compound
+    -- types. The list of C.Declns are those declarations required in the C
+    -- sources (enums, structs, unions).
+    --
+    -- When writing out the declarations, they must be ordered appropriately, so
+    -- that the C compiler always has every referenced struct or enum in scope.
+    -- Ordering them by the CompositeTypeId ascending will achieve this, for
+    -- all types used by one composite type are added to this map before the
+    -- composite.
+    pure_state_composite_types :: !(Map Object.Point.SomeTypeRep CompositeTypeRep)
+  , pure_state_type_id_gen     :: !CompositeTypeIdGen
     -- | A "global" counter to identify let bindings.
     -- It is used to generate `LetBindId`, which are used as keys in the
     -- `LocalM` state.
@@ -471,8 +1611,9 @@ data PureState = PureState
 
 initialPureState :: PureState
 initialPureState = PureState
-  { pure_state_type_decls = ()
-  , pure_state_binder_id_gen = Gen 0
+  { pure_state_composite_types = Map.empty
+  , pure_state_type_id_gen     = Gen 0
+  , pure_state_binder_id_gen   = Gen 0
   }
 
 newtype ValueM t = ValueM
@@ -503,6 +1644,10 @@ data ProgramError where
 
   DuplicateExternName :: !String -> ProgramError
   InvalidExternName   :: !String -> ProgramError
+
+  InvalidProgramName :: !String -> ProgramError
+
+deriving instance Show ProgramError
 
 newtype ProgramM t = ProgramM
   { unProgramM :: ExceptT ProgramError (StateT ProgramState Identity) t }
@@ -537,6 +1682,8 @@ data ExternIODefn where
 
 data ExternIO = forall t . ExternIO
   { extern_io_type  :: !(Object.Point.TypeRep t)
+  , extern_io_inhabited :: !(Inhabited t)
+  , extern_io_type_name :: !C.TypeName
     -- | Identifier of the extern storage class name.
   , extern_io_ident :: !C.Ident
   , extern_io_defn  :: !ExternIODefn
@@ -547,23 +1694,34 @@ data ExternIO = forall t . ExternIO
 
 -- | Static declarations required for an `ExternIO`.
 externIOStaticDeclns :: ExternIO -> [C.Decln]
-externIOStaticDeclns (ExternIO trep ident defn) = case defn of
-  ExternOutput _ -> [externOutputStaticDecln trep ident]
+externIOStaticDeclns (ExternIO trep inhabited tyName ident defn) = case defn of
+  ExternOutput _ -> [externOutputStaticDecln trep inhabited tyName ident]
   ExternInput (ExternInputData i) ->
-    let (a, b) = externInputStaticDeclns trep ident i in [a, b]
+    let (a, b) = externInputStaticDeclns trep inhabited tyName ident i in [a, b]
 
 -- | For extern outputs, there is just one declaration: an extern of the
 -- appropriate type.
-externOutputStaticDecln :: Object.Point.TypeRep t -> C.Ident -> C.Decln
-externOutputStaticDecln trep ident = C.Decln specs (Just initList)
+externOutputStaticDecln
+  :: Object.Point.TypeRep t
+  -> Inhabited t
+  -> C.TypeName
+  -> C.Ident
+  -> C.Decln
+externOutputStaticDecln trep inhabited tyName ident = C.Decln specs (Just initList)
   where
   specs = C.DeclnSpecsStorage C.SExtern (Just (C.specQualListToDeclnSpecs tySpecs))
   initList = C.InitDeclrBase $ C.InitDeclr $ C.Declr mPtr (C.DirectDeclrIdent ident)
   mPtr = C.mAbstractDeclrToPtr mAbsDeclr
-  C.TypeName tySpecs mAbsDeclr = typeName (Constant trep)
+  C.TypeName tySpecs mAbsDeclr = tyName
 
-externInputStaticDeclns :: Object.Point.TypeRep t -> C.Ident -> C.Ident -> (C.Decln, C.Decln)
-externInputStaticDeclns trep ident identCopy = (externDecln, copyDecln)
+externInputStaticDeclns
+  :: Object.Point.TypeRep t
+  -> Inhabited t
+  -> C.TypeName
+  -> C.Ident
+  -> C.Ident
+  -> (C.Decln, C.Decln)
+externInputStaticDeclns trep inhabited tyName ident identCopy = (externDecln, copyDecln)
   where
   externDecln = C.Decln (C.DeclnSpecsStorage C.SExtern (Just specs)) (Just externInitList)
   copyDecln   = C.Decln                                      specs   (Just copyInitList)
@@ -573,12 +1731,12 @@ externInputStaticDeclns trep ident identCopy = (externDecln, copyDecln)
 
   specs = C.specQualListToDeclnSpecs tySpecs
   mPtr = C.mAbstractDeclrToPtr mAbsDeclr
-  C.TypeName tySpecs mAbsDeclr = typeName (Constant trep)
+  C.TypeName tySpecs mAbsDeclr = tyName
 
 -- | Elaborates to the LocalM which copies the extern input to its copy
 -- location. Gives Nothing if the ExternIO is an output.
 externIOCopyInput :: ExternIO -> Maybe (LocalM ())
-externIOCopyInput (ExternIO trep ident defn) = case defn of
+externIOCopyInput (ExternIO trep inhabited tyName ident defn) = case defn of
   ExternOutput _ -> Nothing
   ExternInput (ExternInputData identCopy) -> Just $
     let !identExpr = C.identIsExpr ident
@@ -593,7 +1751,7 @@ externIOCopyInput (ExternIO trep ident defn) = case defn of
 -- | Elaborates to the LocalM which computes and copies the output's value to
 -- its extern location. Gives Nothing if it's an input.
 externIOCopyOutput :: ExternIO -> Maybe (LocalM ())
-externIOCopyOutput (ExternIO trep ident defn) = case defn of
+externIOCopyOutput (ExternIO trep inhabited tyName ident defn) = case defn of
   ExternInput _ -> Nothing
   ExternOutput (ExternOutputData lm) -> Just $ do
     cexpr <- lm
@@ -608,8 +1766,9 @@ externIOCopyOutput (ExternIO trep ident defn) = case defn of
 externInput
   :: String
   -> Object.Point.TypeRep t
+  -> Inhabited t
   -> Repr.Repr ValueM Value (Obj (Program (Obj (Varying Z t))))
-externInput name trep = Repr.object $ programValue vrep $ do
+externInput name trep inhabited = Repr.object $ programValue vrep $ do
 
   (ident, identCopy) <- ProgramM $ do
     let fullName = "input_" ++ name
@@ -618,6 +1777,8 @@ externInput name trep = Repr.object $ programValue vrep $ do
     -- If input_<name> is valid, so is input_copy_<name>
     let !identCopy = assertValidStringIdentifier fullNameCopy
     pure (ident, identCopy)
+
+  tyName <- valueMInProgramM $ typeName inhabited (Constant trep)
   
   let inputData :: ExternInputData
       inputData = ExternInputData identCopy
@@ -627,6 +1788,8 @@ externInput name trep = Repr.object $ programValue vrep $ do
   
       externIO = ExternIO
         { extern_io_type  = trep
+        , extern_io_inhabited = inhabited
+        , extern_io_type_name = tyName
         , extern_io_ident = ident
         , extern_io_defn  = defn
         }
@@ -646,7 +1809,7 @@ externInput name trep = Repr.object $ programValue vrep $ do
   --  identifier.
   let vrep = Obj (Varying Z_Rep trep)
       cexpr = identIsExpr identCopy
-      value = varyingValue_ vrep (VCons cexpr VNil)
+      value = varyingValue_ vrep inhabited tyName (VCons cexpr VNil)
 
   pure $ Repr.object value
 
@@ -664,7 +1827,11 @@ externOutput name trep = Repr.fun $ \stream -> Repr.object $ programValue Meta.t
 
   -- Run the ValueM of the stream here, and store the resulting LocalM in the
   -- state to be elaborated when we generate the translation unit.
-  obj <- valueMInProgramM $ Repr.getRepr stream
+  (obj, inhabited, tyName) <- valueMInProgramM $ do
+    obj <- Repr.getRepr stream
+    let inhabited = varyingValueIsInhabited (Repr.fromObject obj)
+    tyName <- typeName inhabited (Constant trep)
+    pure (obj, inhabited, tyName)
 
   let outputData :: ExternOutputData
       outputData = case valueVaryingExprs (Repr.fromObject obj) of
@@ -675,6 +1842,8 @@ externOutput name trep = Repr.fun $ \stream -> Repr.object $ programValue Meta.t
 
       externIO = ExternIO
         { extern_io_type  = trep
+        , extern_io_inhabited = inhabited
+        , extern_io_type_name = tyName
         , extern_io_ident = ident
         , extern_io_defn  = defn
         }
@@ -691,6 +1860,7 @@ externOutput name trep = Repr.fun $ \stream -> Repr.object $ programValue Meta.t
     Trans.lift (State.put st')
 
   pure Repr.terminal
+
 
 data DeferredKnot = forall s t i r . DeferredKnot
   { deferred_knot_signature :: !(Object.Knot s t i r)
@@ -710,21 +1880,26 @@ deferredKnotStaticDeclarations (DeferredKnot _ names _ _) = go names
 
   where
 
+  -- There are no declarations required for varyings over uninhabited types.
+
   go :: StaticVaryingNames r -> [C.Decln]
-  go (StaticVaryingNamesTied nrep trep names) =
-    [ arrayDeclaration (static_array_name names) nrep trep
+  go (StaticVaryingNamesTied nrep trep inhabited tyName names) =
+    [ arrayDeclaration (static_array_name names) nrep trep tyName
     , indexDeclaration (static_array_index_name names)
     ]
-  go (StaticVaryingNamesTie nrep trep names rec) =
-    [ arrayDeclaration (static_array_name names) nrep trep
+  go (StaticVaryingNamesTie nrep trep inhabited tyName names rec) =
+    [ arrayDeclaration (static_array_name names) nrep trep tyName
     , indexDeclaration (static_array_index_name names)
     ] ++ go rec
 
-  arrayDeclaration :: C.Ident -> NatRep ('S n) -> Object.Point.TypeRep t -> C.Decln
-  arrayDeclaration ident sizeLessOne trep =
-    let C.TypeName specQualList mAbsDeclr = typeName (Constant trep)
-
-        specs = C.specQualListToDeclnSpecs specQualList
+  arrayDeclaration
+    :: C.Ident
+    -> NatRep ('S n)
+    -> Object.Point.TypeRep t
+    -> C.TypeName
+    -> C.Decln
+  arrayDeclaration ident sizeLessOne trep (C.TypeName specQualList mAbsDeclr) =
+    let specs = C.specQualListToDeclnSpecs specQualList
 
         mPtr = C.mAbstractDeclrToPtr mAbsDeclr
 
@@ -763,10 +1938,11 @@ deferredKnotInits (DeferredKnot knotSig names _ inits) = go knotSig names inits
      -> StaticVaryingNames r
      -> StaticVaryingInits s i
      -> LocalM ()
-  go (Object.Tied _ _) (StaticVaryingNamesTied (S_Rep _) _ names) (StaticVaryingInitsTied arep vec) = do
+  go (Object.Tied _ _) (StaticVaryingNamesTied (S_Rep _) _ _ _ names) (StaticVaryingInitsTied arep inhabited vec) = do
     cexprs <- vecSequence vec
     initOne names cexprs
-  go (Object.Tie _ _ recKnot) (StaticVaryingNamesTie (S_Rep _) _ names recNames) (StaticVaryingInitsTie arep vec recInits) = do
+
+  go (Object.Tie _ _ recKnot) (StaticVaryingNamesTie (S_Rep _) _ _ _ names recNames) (StaticVaryingInitsTie arep inhabited vec recInits) = do
     cexprs <- vecSequence vec
     initOne names cexprs
     go recKnot recNames recInits
@@ -800,11 +1976,13 @@ deferredKnotArrayUpdates (DeferredKnot knotSig names nexts _) = go knotSig names
      -> StaticVaryingNames r
      -> StaticVaryingNexts t
      -> LocalM ()
-  go (Object.Tied _ _) (StaticVaryingNamesTied nrep _ names) (StaticVaryingNextsTied _ lm) = do
-    cexpr <- lm
+
+  go (Object.Tied _ _) (StaticVaryingNamesTied nrep _ _ _ names) (StaticVaryingNextsTied _ inhabited exprM) = do
+    cexpr <- exprM
     updateOne nrep names cexpr
-  go (Object.Tie _ _ kn) (StaticVaryingNamesTie  nrep _ names recNames) (StaticVaryingNextsTie _ lm recNexts) = do
-    cexpr <- lm
+
+  go (Object.Tie _ _ kn) (StaticVaryingNamesTie  nrep _ _ _ names recNames) (StaticVaryingNextsTie _ inhabited exprM recNexts) = do
+    cexpr <- exprM
     updateOne nrep names cexpr
     go kn recNames recNexts
 
@@ -856,8 +2034,8 @@ deferredKnotIndexUpdates (DeferredKnot _ names _ _) = go names
   where
 
   go :: StaticVaryingNames r -> LocalM ()
-  go (StaticVaryingNamesTied nrep _ names) = updateOne nrep names
-  go (StaticVaryingNamesTie nrep _ names rec) = do
+  go (StaticVaryingNamesTied nrep _ _ _ names) = updateOne nrep names
+  go (StaticVaryingNamesTie nrep _ _ _ names rec) = do
     updateOne nrep names
     go rec
 
@@ -892,15 +2070,19 @@ deferredKnotIndexUpdates (DeferredKnot _ names _ _) = go names
 -- match exhaustiveness. With only the 't' parameter, it's not such a good
 -- story, because it is always set to the type family Object.Vector.
 data StaticVaryingInits (s :: Meta.Type Object.Type) (t :: Meta.Type Object.Type) where
+
   StaticVaryingInitsTied
-    :: Object.Point.TypeRep i
+    :: Object.Point.TypeRep a
+    -> Inhabited a
     -> Vec (S n) (LocalM C.Expr)
-    -> StaticVaryingInits (Obj (Varying n a)) (Object.Vector ('S n) (Obj (Constant i)))
+    -> StaticVaryingInits (Obj (Varying n a)) (Object.Vector ('S n) (Obj (Constant a)))
+
   StaticVaryingInitsTie
-    :: Object.Point.TypeRep i
+    :: Object.Point.TypeRep a
+    -> Inhabited a
     -> Vec (S n) (LocalM C.Expr)
     -> StaticVaryingInits ss is
-    -> StaticVaryingInits (Obj (Varying n a) :* ss) (Object.Vector ('S n) (Obj (Constant i)) :* is)
+    -> StaticVaryingInits (Obj (Varying n a) :* ss) (Object.Vector ('S n) (Obj (Constant a)) :* is)
 
 staticVaryingInits
   :: forall s t i r .
@@ -909,33 +2091,37 @@ staticVaryingInits
   -> ValueM (StaticVaryingInits s i)
 
 staticVaryingInits (Object.Tied nrep arep) repr = do
-  vs <- staticVaryingInitVector arep nrep repr
-  pure $ StaticVaryingInitsTied arep vs
+  (inhabited, tyName, vec) <- staticVaryingInitVector arep nrep repr
+  pure $ StaticVaryingInitsTied arep inhabited vec
 
 staticVaryingInits (Object.Tie nrep arep knotSig) repr = do
   (l, r) <- Repr.fromProduct <$> Repr.getRepr repr
-  vs <- staticVaryingInitVector arep nrep l
+  (inhabited, tyName, vec) <- staticVaryingInitVector arep nrep l
   vss <- staticVaryingInits knotSig r
-  pure $ StaticVaryingInitsTie arep vs vss
+  pure $ StaticVaryingInitsTie arep inhabited vec vss
 
-
+-- | Construct the Vec of initial values for a static array, given the
+-- appropriately-sized Vector (a type family) of constants.
+--
 staticVaryingInitVector
   :: forall n a .
      Object.Point.TypeRep a
   -> NatRep ('S n)
   -> Repr.Repr ValueM Value (Object.Vector ('S n) (Obj (Constant a)))
-  -> ValueM (Vec ('S n) (LocalM C.Expr))
+  -> ValueM (Inhabited a, C.TypeName, Vec ('S n) (LocalM C.Expr))
 
 staticVaryingInitVector arep (S_Rep Z_Rep) repr = do
   v <- Repr.fromObject <$> Repr.getRepr repr
-  pure $ VCons (valueConstantExpr v) VNil
+  pure $ case valueDefn v of
+    ValueConstant inhabited tyName expr -> (inhabited, tyName, VCons expr VNil)
 
 staticVaryingInitVector arep (S_Rep nrep@(S_Rep _)) repr = do
   (l, r) <- Repr.fromProduct <$> Repr.getRepr repr
   v <- Repr.fromObject <$> Repr.getRepr l
-  vs <- staticVaryingInitVector arep nrep r
-  pure $ VCons (valueConstantExpr v) vs
-
+  case valueDefn v of
+    ValueConstant inhabited tyName expr -> do
+      (_inhabited, _, vec) <- staticVaryingInitVector arep nrep r
+      pure $ (inhabited, tyName, VCons expr vec)
 
 staticVaryingNexts
   :: forall s t i r .
@@ -944,35 +2130,37 @@ staticVaryingNexts
   -> ValueM (StaticVaryingNexts t)
 
 staticVaryingNexts (Object.Tied _ arep) repr = do
-  lexpr <- staticVaryingNext arep repr
-  pure $ StaticVaryingNextsTied arep lexpr
+  (inhabited, tyName, expr) <- staticVaryingNext arep repr
+  pure $ StaticVaryingNextsTied arep inhabited expr
 
 staticVaryingNexts (Object.Tie _ arep knotSig) repr = do
   (l, r) <- Repr.fromProduct <$> Repr.getRepr repr
-  lexpr <- staticVaryingNext arep l
-  lexprs <- staticVaryingNexts knotSig r
-  pure $ StaticVaryingNextsTie arep lexpr lexprs
+  (inhabited, tyName, expr) <- staticVaryingNext arep l
+  rec <- staticVaryingNexts knotSig r
+  pure $ StaticVaryingNextsTie arep inhabited expr rec
 
 
 staticVaryingNext
   :: forall a .
      Object.Point.TypeRep a
   -> Repr.Repr ValueM Value (Obj (Varying Z a))
-  -> ValueM (LocalM C.Expr)
+  -> ValueM (Inhabited a, C.TypeName, LocalM C.Expr)
 
 staticVaryingNext arep repr = do
   v <- Repr.fromObject <$> Repr.getRepr repr
-  case valueVaryingExprs v of
-    VCons it VNil -> pure it
+  pure $ case valueDefn v of
+    ValueVarying inhabited tyName (VCons it VNil) -> (inhabited, tyName, it)
 
 
 data StaticVaryingNexts (t :: Meta.Type Object.Type) where
   StaticVaryingNextsTied
     :: Object.Point.TypeRep t
+    -> Inhabited t
     -> LocalM C.Expr
     -> StaticVaryingNexts (Obj (Varying Z t))
   StaticVaryingNextsTie
     :: Object.Point.TypeRep t
+    -> Inhabited t
     -> LocalM C.Expr
     -> StaticVaryingNexts ts
     -> StaticVaryingNexts (Obj (Varying Z t) :* ts)
@@ -1043,14 +2231,20 @@ addDeferredKnot defKnot = ProgramM $ do
 
 -- TODO rename? KnotSignature?
 data StaticVaryingNames (r :: Meta.Type Object.Type) where
+
   StaticVaryingNamesTied
     :: NatRep ('S n)
     -> Object.Point.TypeRep a
+    -> Inhabited a
+    -> C.TypeName
     -> StaticArrayNames
     -> StaticVaryingNames (Obj (Varying ('S n) a))
+
   StaticVaryingNamesTie
     :: NatRep ('S n)
     -> Object.Point.TypeRep a
+    -> Inhabited a
+    -> C.TypeName
     -> StaticArrayNames
     -> StaticVaryingNames r
     -> StaticVaryingNames (Obj (Varying ('S n) a) :* r)
@@ -1110,29 +2304,48 @@ genStaticVaryingNames
   :: forall s t i r .
      Meta.TypeRep Object.TypeRep r
   -> Object.Knot s t i r
+  -> StaticVaryingInits s i
   -> ProgramM (StaticVaryingNames r)
-genStaticVaryingNames (Obj (Varying _ arep))       (Object.Tied nrep _)    = do
+
+genStaticVaryingNames (Obj (Varying _ arep)) (Object.Tied nrep _) (StaticVaryingInitsTied _ inhabited _) = do
   names <- genStaticArrayNames
-  pure $ StaticVaryingNamesTied nrep arep names
-genStaticVaryingNames (Obj (Varying _ arep) :* rs) (Object.Tie  nrep _ kn) = do
+  tyName <- valueMInProgramM $ typeName inhabited (Constant arep)
+  pure $ StaticVaryingNamesTied nrep arep inhabited tyName names
+
+genStaticVaryingNames (Obj (Varying _ arep) :* rs) (Object.Tie nrep _ kn) (StaticVaryingInitsTie _ inhabited _ recInits) = do
   names <- genStaticArrayNames
-  rec <- genStaticVaryingNames rs kn
-  pure $ StaticVaryingNamesTie nrep arep names rec
+  tyName <- valueMInProgramM $ typeName inhabited (Constant arep)
+  rec <- genStaticVaryingNames rs kn recInits
+  pure $ StaticVaryingNamesTie nrep arep inhabited tyName names rec
+
+-- TODO FIXME why can't GHC figure out that the above 2 clauses are an
+-- exhaustive match? Should not have to give all of the following explicit
+-- demonstrations.
+
+genStaticVaryingNames (_ :-> _) it _ = case it of {}
+genStaticVaryingNames ((_ :-> _) :* _) it _ = case it of {}
+genStaticVaryingNames Meta.Terminal it _ = case it of {}
+genStaticVaryingNames (Meta.Terminal :* _) it _ = case it of {}
+genStaticVaryingNames ((_ :* _) :* _) it _ = case it of {}
+genStaticVaryingNames (Obj (Program _)) it _ = case it of {}
+genStaticVaryingNames (Obj (Constant _)) it _ = case it of {}
+genStaticVaryingNames (Obj (Program _) :* _) it _ = case it of {}
+genStaticVaryingNames (Obj (Constant _) :* _) it _ = case it of {}
 
 -- | Use the names to get values of varyings. This is done by taking the
 -- array name indexed at the array index value, plus each of the valid offsets,
 -- modulo the size of the array.
 staticVaryingValues :: StaticVaryingNames r -> Repr.Repr ValueM Value r
 
-staticVaryingValues (StaticVaryingNamesTie  nrep trep names rec) = Repr.product
-  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) (staticArrayIndexExprs names arraySize nrep))
+staticVaryingValues (StaticVaryingNamesTie nrep trep inhabited tyName names rec) = Repr.product
+  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep))
   , staticVaryingValues rec
   )
   where
   arraySize = natToIntegral nrep + 1
 
-staticVaryingValues (StaticVaryingNamesTied nrep trep names) = Repr.object $
-  varyingValue_ (Obj (Varying nrep trep)) (staticArrayIndexExprs names arraySize nrep)
+staticVaryingValues (StaticVaryingNamesTied nrep trep inhabited tyName names) = Repr.object $
+  varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep)
   where
   arraySize = natToIntegral nrep + 1
 
@@ -1147,13 +2360,13 @@ shiftedStaticVaryingValues
   :: Object.Knot s t i r
   -> StaticVaryingNames r
   -> Repr.Repr ValueM Value s
-shiftedStaticVaryingValues (Object.Tied _ _)   (StaticVaryingNamesTied (S_Rep nrep) trep names)     = Repr.object $
-  varyingValue_ (Obj (Varying nrep trep)) (staticArrayIndexExprs names arraySize nrep)
+shiftedStaticVaryingValues (Object.Tied _ _)   (StaticVaryingNamesTied (S_Rep nrep) trep inhabited tyName names)     = Repr.object $
+  varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep)
   where
   arraySize = natToIntegral nrep + 2
 
-shiftedStaticVaryingValues (Object.Tie _ _ kn) (StaticVaryingNamesTie  (S_Rep nrep) trep names rec) = Repr.product
-  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) (staticArrayIndexExprs names arraySize nrep))
+shiftedStaticVaryingValues (Object.Tie _ _ kn) (StaticVaryingNamesTie  (S_Rep nrep) trep inhabited tyName names rec) = Repr.product
+  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep))
   , shiftedStaticVaryingValues kn rec
   )
   where
@@ -1179,18 +2392,53 @@ valueMInProgramM vm = ProgramM $ Trans.lift $
 
 -- | A value is any C expression. However it's not meaningful on its own in
 -- general; it requires context (type declarations, statements binding names,
--- etc.).
+-- etc.) which come from ValueM and LocalM monads.
 data Value (t :: Object.Type) = Value
-  { valueType :: Object.TypeRep t
-  , valueDefn :: ValueDefn t
+  { valueType  :: !(Object.TypeRep t)
+  , valueDefn  :: !(ValueDefn t)
   }
 
+-- | For constant and varying values, we include proof that they are inhabited.
+-- Types which are not inhabited do not get a C representation, which should
+-- in theory make it easier to define a correct interpretation.
 data ValueDefn (t :: Object.Type) where
-  ValueConstant ::            (LocalM C.Expr) -> ValueDefn (Constant   t)
+  ValueConstant :: Inhabited t -> !C.TypeName ->             LocalM C.Expr  -> ValueDefn (Constant   t)
   -- | A varying of prefix size 0 has 1 expression (the current, first/oldest
   -- value).
-  ValueVarying  :: Vec ('S n) (LocalM C.Expr) -> ValueDefn (Varying  n t)
-  ValueProgram  :: ProgramM (Repr.Repr ValueM Value t) -> ValueDefn (Program t)
+  ValueVarying  :: Inhabited t -> !C.TypeName -> Vec ('S n) (LocalM C.Expr) -> ValueDefn (Varying  n t)
+  ValueProgram  :: ProgramM (Repr.Repr ValueM Value t) -> ValueDefn (Program    t)
+
+-- | Change the type of a constant value without changing its C representation.
+-- The TypeName does not change.
+-- Use with care. It should only be used to change between values which do
+-- indeed have the same C type and value.
+changeConstantValueType
+  :: (Object.Point.TypeRep s -> Object.Point.TypeRep t)
+  -> (Inhabited s -> Inhabited t)
+  -> Value (Constant s)
+  -> Value (Constant t)
+changeConstantValueType fty stillInhabited v = v'
+  where
+  v' = value (Constant (fty trep)) defn
+  Constant trep = valueType v
+  defn = case valueDefn v of
+    ValueConstant inh tyName cExpr -> ValueConstant (stillInhabited inh) tyName cExpr
+
+constantValueIsInhabited :: Value (Constant t) -> Inhabited t
+constantValueIsInhabited v = case valueDefn v of
+  ValueConstant inhabited _ _ -> inhabited
+
+varyingValueIsInhabited :: Value (Varying n t) -> Inhabited t
+varyingValueIsInhabited v = case valueDefn v of
+  ValueVarying inhabited _ _ -> inhabited
+
+noUninhabitedConstant :: Not (Inhabited t) -> Not (Value (Constant t))
+noUninhabitedConstant uninhabited v = case valueDefn v of
+  ValueConstant inhabited _ _ -> uninhabited inhabited
+
+noUninhabitedVarying :: Not (Inhabited t) -> Not (Value (Varying n t))
+noUninhabitedVarying uninhabited v = case valueDefn v of
+  ValueVarying inhabited _ _ -> uninhabited inhabited
 
 valueConstantType :: Value (Constant t) -> Object.Point.TypeRep t
 valueConstantType v = case valueType v of
@@ -1198,7 +2446,7 @@ valueConstantType v = case valueType v of
 
 valueConstantExpr :: Value (Constant t) -> LocalM C.Expr
 valueConstantExpr v = case valueDefn v of
-  ValueConstant e -> e
+  ValueConstant _ _ e -> e
 
 valueVaryingType :: Value (Varying n t) -> (NatRep n, Object.Point.TypeRep t)
 valueVaryingType v = case valueType v of
@@ -1206,7 +2454,7 @@ valueVaryingType v = case valueType v of
 
 valueVaryingExprs :: Value (Varying n t) -> Vec ('S n) (LocalM C.Expr)
 valueVaryingExprs v = case valueDefn v of
-  ValueVarying vs -> vs
+  ValueVarying _ _ vs -> vs
 
 valueProgramType :: Value (Program t) -> Meta.TypeRep Object.TypeRep t
 valueProgramType v = case valueType v of
@@ -1216,20 +2464,33 @@ valueProgramRepr :: Value (Program t) -> ProgramM (Repr.Repr ValueM Value t)
 valueProgramRepr v = case valueDefn v of
   ValueProgram it -> it
 
-constantValueToExpr :: Repr.Val ValueM Value (Obj (Constant t)) -> LocalM C.Expr
-constantValueToExpr v = case valueDefn (Repr.fromObject v) of
-  ValueConstant e -> e
+valueConstantTypeName :: Value (Constant t) -> C.TypeName
+valueConstantTypeName v = case valueDefn v of
+  ValueConstant _ tyName _ -> tyName
 
-varyingValueToExpr :: Repr.Val ValueM Value (Obj (Varying n t)) -> Index ('S n) -> LocalM C.Expr
-varyingValueToExpr v i = case valueDefn (Repr.fromObject v) of
-  ValueVarying vs -> index i vs
+valueVaryingTypeName :: Value (Varying n t) -> C.TypeName
+valueVaryingTypeName v = case valueDefn v of
+  ValueVarying _ tyName _ -> tyName
+
+
+constantValueToExpr
+  :: Repr.Val ValueM Value (Obj (Constant t))
+  -> LocalM C.Expr
+constantValueToExpr = valueConstantExpr . Repr.fromObject
+
+varyingValueToExpr
+  :: Repr.Val ValueM Value (Obj (Varying n t))
+  -> Index ('S n)
+  -> LocalM C.Expr
+varyingValueToExpr repr idx = index idx
+  (valueVaryingExprs (Repr.fromObject repr))
 
 dropVaryingValue :: Value (Varying ('S n) t) -> Value (Varying n t)
 dropVaryingValue v = Value
   { valueType = case valueType v of
       Varying (S_Rep nrep) trep -> Varying nrep trep
   , valueDefn = case valueDefn v of
-      ValueVarying vec -> ValueVarying (vecDropFirst vec)
+      ValueVarying inhabited tyName vec -> ValueVarying inhabited tyName (vecDropFirst vec)
   }
 
 shiftVaryingValue :: Value (Varying ('S n) t) -> Value (Varying n t)
@@ -1237,39 +2498,53 @@ shiftVaryingValue v = Value
   { valueType = case valueType v of
       Varying (S_Rep nrep) trep -> Varying nrep trep
   , valueDefn = case valueDefn v of
-      ValueVarying vec -> ValueVarying (vecDropLast vec)
+      ValueVarying inhabited tyName vec -> ValueVarying inhabited tyName (vecDropLast vec)
   }
 
-value :: Object.TypeRep t -> ValueDefn t -> Value t
+value
+  :: Object.TypeRep t
+  -> ValueDefn t
+  -> Value t
 value trep defn = Value { valueType = trep, valueDefn = defn }
 
 constantValueType :: Value (Constant t) -> Object.Point.TypeRep t
 constantValueType v = case valueType v of
   Object.Constant_r trep -> trep
 
+-- | Make an _inhabited_ constant value.
 constantValue
   :: Meta.TypeRep Object.TypeRep (Obj (Constant t))
+  -> Inhabited t
+  -> C.TypeName
   -> LocalM C.Expr
   -> Value (Constant t)
-constantValue (Obj trep) expr = value trep (ValueConstant expr)
+constantValue (Obj trep) inhabited tyName expr = value trep
+  (ValueConstant inhabited tyName expr)
 
 constantValue_
   :: Meta.TypeRep Object.TypeRep (Obj (Constant t))
+  -> Inhabited t
+  -> C.TypeName
   -> C.Expr
   -> Value (Constant t)
-constantValue_ trep cexpr = constantValue trep (pure cexpr)
+constantValue_ trep inhabited tyName cexpr = constantValue trep inhabited tyName (pure cexpr)
 
+-- | Make an _inhabited_ varying value.
 varyingValue
   :: Meta.TypeRep Object.TypeRep (Obj (Varying n t))
+  -> Inhabited t
+  -> C.TypeName
   -> Vec (S n) (LocalM C.Expr)
   -> Value (Varying n t)
-varyingValue (Obj trep) exprs = value trep (ValueVarying exprs)
+varyingValue (Obj trep) inhabited tyName exprs = value trep (ValueVarying inhabited tyName exprs)
 
 varyingValue_
   :: Meta.TypeRep Object.TypeRep (Obj (Varying n t))
+  -> Inhabited t
+  -> C.TypeName
   -> Vec (S n) C.Expr
   -> Value (Varying n t)
-varyingValue_ trep exprs = varyingValue trep (vecMap pure exprs)
+varyingValue_ trep inhabited tyName exprs = varyingValue trep inhabited tyName (vecMap pure exprs)
 
 programValue
   :: Meta.TypeRep Object.TypeRep t
@@ -1287,54 +2562,121 @@ overObject2
   -> (Repr.Val ValueM Value (Obj s) -> Repr.Val ValueM Value (Obj t) -> Repr.Val ValueM Value (Obj r))
 overObject2 f s t = Repr.Object (f (Repr.fromObject s) (Repr.fromObject t))
 
+-- | Map a C expression level function over inhabited values.
 overConstantValue1
-  :: (Object.Point.TypeRep s -> Object.Point.TypeRep t)
+  :: (Object.Point.TypeRep s -> Object.Point.TypeRep s)
   -> (C.Expr -> C.Expr)
-  -> (Value (Constant s) -> Value (Constant t))
+  -> (Value (Constant s) -> Value (Constant s))
 overConstantValue1 fty fexpr = \v ->
   let ty = fty (valueConstantType v)
       ex = fexpr <$> valueConstantExpr v
-  in  value (Constant ty) (ValueConstant ex)
+      inhabited = constantValueIsInhabited v
+      tyName = valueConstantTypeName v
+  in  value (Constant ty) (ValueConstant inhabited tyName ex)
 
+-- | Specialization of 'overConstantValue1' for integers, possible because we
+-- know that integer types are always inhabited, and we can get their type names
+-- without ValueM context.
+overConstantValue1Integer
+  :: (Object.Point.TypeRep ('Object.Point.Integer_t s w) -> Object.Point.TypeRep ('Object.Point.Integer_t s' w'))
+  -> (C.Expr -> C.Expr)
+  -> (Value (Constant ('Object.Point.Integer_t s w)) -> Value (Constant ('Object.Point.Integer_t s' w')))
+overConstantValue1Integer fty fexpr = \v ->
+  let ty = fty (valueConstantType v)
+      ex = fexpr <$> valueConstantExpr v
+      inhabited = integerIsInhabited
+      tyName = typeNameInteger ty
+  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+
+overConstantValue1Heterogeneous
+  :: Inhabited t
+  -> C.TypeName -- ^ of t
+  -> (Object.Point.TypeRep s -> Object.Point.TypeRep t)
+  -> (C.Expr -> C.Expr)
+  -> (Value (Constant s) -> Value (Constant t))
+overConstantValue1Heterogeneous inhabited tyName fty fexpr = \v ->
+  let ty = fty (valueConstantType v)
+      ex = fexpr <$> valueConstantExpr v
+  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+
+-- | Map a 2-arguemtn C expression level function over inhabited values.
 overConstantValue2
-  :: (Object.Point.TypeRep s -> Object.Point.TypeRep t -> Object.Point.TypeRep u)
+  :: (Object.Point.TypeRep s -> Object.Point.TypeRep x -> Object.Point.TypeRep s)
   -> (C.Expr -> C.Expr -> C.Expr)
-  -> (Value (Constant s) -> Value (Constant t) -> Value (Constant u))
+  -> (Value (Constant s) -> Value (Constant x) -> Value (Constant s))
 overConstantValue2 fty fexpr = \v1 v2 ->
   let ty = fty (valueConstantType v1) (valueConstantType v2)
       ex = fexpr <$> valueConstantExpr v1 <*> valueConstantExpr v2
-  in  value (Constant ty) (ValueConstant ex)
+      inhabited = constantValueIsInhabited v1
+      tyName = valueConstantTypeName v1
+  in  value (Constant ty) (ValueConstant inhabited tyName ex)
 
 interpC :: Repr.Interpret Object.Form ValueM Value
 interpC trep form = case form of
 
   -- TODO may be best to put explicit type casts on these.
-  Object.Integer_Literal_UInt8_f  w8  -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral w8)
-  Object.Integer_Literal_UInt16_f w16 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral w16)
-  Object.Integer_Literal_UInt32_f w32 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral w32)
-  Object.Integer_Literal_UInt64_f w64 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral w64)
+  Object.Integer_Literal_UInt8_f  w8  -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral w8)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_UInt16_f w16 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral w16)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_UInt32_f w32 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral w32)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_UInt64_f w64 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral w64)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
 
-  Object.Integer_Literal_Int8_f  i8  -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral i8)
-  Object.Integer_Literal_Int16_f i16 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral i16)
-  Object.Integer_Literal_Int32_f i32 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral i32)
-  Object.Integer_Literal_Int64_f i64 -> Repr.object . constantValue_ trep $
-    integerLiteralExpr (typeNameMeta trep) (fromIntegral i64)
+  Object.Integer_Literal_Int8_f  i8  -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral i8)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_Int16_f i16 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral i16)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_Int32_f i32 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral i32)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
+  Object.Integer_Literal_Int64_f i64 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    integerLiteralExpr tyName (fromIntegral i64)
+    where
+    Obj (Constant irep) = trep
+    tyName = typeNameInteger irep
 
-  Object.Bytes_Literal_8_f  w8  -> Repr.object . constantValue_ trep $
-    bytesLiteralExpr (typeNameMeta trep) (fromIntegral w8)
-  Object.Bytes_Literal_16_f w16 -> Repr.object . constantValue_ trep $
-    bytesLiteralExpr (typeNameMeta trep) (fromIntegral w16)
-  Object.Bytes_Literal_32_f w32 -> Repr.object . constantValue_ trep $
-    bytesLiteralExpr (typeNameMeta trep) (fromIntegral w32)
-  Object.Bytes_Literal_64_f w64 -> Repr.object . constantValue_ trep $
-    bytesLiteralExpr (typeNameMeta trep) (fromIntegral w64)
+  Object.Bytes_Literal_8_f  w8  -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    bytesLiteralExpr (typeNameBytes brep) (fromIntegral w8)
+    where
+    Obj (Constant brep) = trep
+    tyName = typeNameBytes brep
+  Object.Bytes_Literal_16_f w16 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    bytesLiteralExpr (typeNameBytes brep) (fromIntegral w16)
+    where
+    Obj (Constant brep) = trep
+    tyName = typeNameBytes brep
+  Object.Bytes_Literal_32_f w32 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    bytesLiteralExpr (typeNameBytes brep) (fromIntegral w32)
+    where
+    Obj (Constant brep) = trep
+    tyName = typeNameBytes brep
+  Object.Bytes_Literal_64_f w64 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    bytesLiteralExpr tyName (fromIntegral w64)
+    where
+    Obj (Constant brep) = trep
+    tyName = typeNameBytes brep
 
   Object.Integer_Add_f -> Repr.fun $ \x -> Repr.fun $ \y ->
     Repr.repr (overObject2 addValue <$> Repr.getRepr x <*> Repr.getRepr y)
@@ -1366,8 +2708,9 @@ interpC trep form = case form of
   Object.Bytes_Shiftr_f -> Repr.fun $ \x -> Repr.fun $ \y ->
     Repr.repr (overObject2 shiftrValue <$> Repr.getRepr x <*> Repr.getRepr y)
 
-  Object.Cast_f cast -> Repr.fun $ \x ->
-    Repr.repr (overObject1 (castValue trep cast) <$> Repr.getRepr x)
+  Object.Cast_f cast -> Repr.fun $ \x -> Repr.objectf $ do
+    vx <- Repr.getRepr x
+    castValue trep cast (Repr.fromObject vx)
 
   Object.Stream_Shift_f -> Repr.fun $ \x ->
     Repr.repr (overObject1 shiftVaryingValue <$> Repr.getRepr x)
@@ -1379,84 +2722,9 @@ interpC trep form = case form of
   -- The composite type intro/elim forms may introduce new required type
   -- declarations.
 
-  Object.Product_Intro_f _ -> error "Product_Intro_f not defined"
-  Object.Sum_Intro_f _ -> error "Sum_Intro_f not defined"
-  Object.Product_Elim_f _ -> error "Product_Elim_f not defined"
-  -- This one is not so obvious.
-  -- If the result were always an object, it'd be fine, but if it's a product
-  -- or a function, then what? We always want to express the same structure
-  -- of course:
-  --
-  --   switch (sum.tag) {
-  --     case tag_0: {
-  --       ...
-  --       break;
-  --     }
-  --     ...
-  --   }
-  --
-  -- If the result is an object, then in each variant we would set a value
-  --
-  --   resultType r;
-  --   switch (sum.tag) {
-  --     case tag_0: {
-  --       ...
-  --       r = x;
-  --       break;
-  --     }
-  --     ...
-  --   }
-  --   // now r can be used
-  --
-  -- If the result is a product? 
-  --
-  -- If the result is a function, then when that function is applied, the whole
-  -- elimination construction comes out. Think of it like floating the function
-  -- abstraction out front.
-  --
-  --   \arg -> case s of
-  --     A -> X
-  --     B -> Y
-  --
-  -- is the same as
-  --
-  --   case s of
-  --     A -> \arg -> X
-  --     B -> \arg -> Y
-  --
-  -- and what about for products?
-  --
-  --   case s of
-  --     A -> (X1, X2)
-  --     B -> (Y1, Y2)
-  --
-  -- is the same as
-  --
-  --   (case s of { A -> X1; B -> Y1 }, case s of { A -> X2, B -> Y2 })
-  --
-  -- So there you have it...
-  -- If the result of the sum elimination is
-  --
-  --   - Terminal, then the whole thing is terminal
-  --   - A function, then we float it out
-  --   - A product, then we float it out
-  --   - An object, then we make an uninitialized variable and assign it at
-  --     the end of each branch
-  --
-  -- To do this, I think we just have to match on the TypeRep? Yeah, we should
-  -- be able to recursively pull out all of the products and functions until
-  -- we have a Sum_Elim_f where the Cases r type is Obj.
-  --
-  -- The same story will happen for Product_Elim_f, since the selector can
-  -- also give a function.
-  --
-  -- What about
-  --
-  --   let x = (let y = z in q) in r
-  --   _____________________________
-  --   let y = z in (let x = q in r)
-  --
-  -- The intro forms are simple though.
+  Object.Product_Intro_f fields   -> Repr.fun $ interpProductIntro trep fields
+  Object.Product_Elim_f  selector -> Repr.fun $ interpProductElim  trep selector
+  Object.Sum_Intro_f variant -> Repr.fun $ interpSumIntro trep variant
   Object.Sum_Elim_f _ -> error "Sum_Elim_f not defined"
 
   -- The knot form will introduce static declarations for stream memory.
@@ -1471,6 +2739,7 @@ interpC trep form = case form of
   -- with that name, rather than the whole expression.
   Object.Let_f -> Repr.fun $ \x -> Repr.fun $ \k -> interpLet trep x k
 
+
 -- | A new name is generated, the object is evaluated here (i.e. in the
 -- LocalM monad, possibly generating statements like assignments and
 -- switch/cases), and the resulting expression is bound to the new name. The
@@ -1484,16 +2753,73 @@ interpLet
   -> Repr.Repr ValueM Value t
 interpLet (Obj (Constant srep) :-> _) x k = Repr.valuef $ do
   constObj <- Repr.fromObject <$> Repr.getRepr x
-  -- Evaluting constObj here in ValueM does not elaborate any block items,
-  -- but it does make binding identifiers for other let bindings.
-  --
-  -- The 'valueConstantExpr' is the 'LocalM' which _will_ elaborate block
-  -- items, including initializer declarations for let bindings, in an
-  -- idempotent fashion.
-  let cexprM :: LocalM C.Expr
-      cexprM = valueConstantExpr constObj
-  boundValue <- makeIdempotent srep cexprM
-  Repr.getRepr (k Repr.<@> Repr.object boundValue)
+  case valueDefn constObj of
+    ValueConstant inhabited _ exprM -> do
+      boundValue <- makeIdempotent srep inhabited exprM
+      Repr.getRepr (k Repr.<@> Repr.object boundValue)
+
+
+interpProductIntro
+  :: forall r fields .
+     Meta.TypeRep Object.TypeRep (r :-> Obj (Constant ('Object.Point.Product_t fields)))
+  -> Object.Fields r fields
+  -> Repr.Repr ValueM Value r
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Product_t fields)))
+
+interpProductIntro (rrep :-> Obj (Constant prep)) fields rval = Repr.objectf $ do
+  (allInhabited, allArguments) <- takeFieldArguments fields rval
+  let inhabited = productIsInhabited allInhabited
+      Object.Point.Product_r fieldReps = prep
+  pr <- productRepresentation inhabited fieldReps
+  productIntroduction pr fields allArguments
+
+  where
+
+  takeFieldArguments
+    :: forall r fields .
+       Object.Fields r fields
+    -> Repr.Repr ValueM Value r
+    -> ValueM (All Inhabited fields, All (Compose Value Constant) fields)
+  takeFieldArguments Object.F_All rval = do
+    _ <- Repr.getRepr rval
+    pure (All, All)
+  takeFieldArguments (Object.F_And fields) rval = do
+    (l, r) <- Repr.fromProduct <$> Repr.getRepr rval
+    lval <- Repr.fromObject <$> Repr.getRepr l
+    let inhabited = constantValueIsInhabited lval
+    (allInhabited, allValues) <- takeFieldArguments fields r
+    pure (And inhabited allInhabited, And (Compose lval) allValues)
+
+
+interpProductElim
+  :: forall fields field .
+     Meta.TypeRep Object.TypeRep (Obj (Constant ('Object.Point.Product_t fields)) :-> Obj (Constant field))
+  -> Object.Selector fields field
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Product_t fields)))
+  -> Repr.Repr ValueM Value (Obj (Constant field))
+
+interpProductElim (Obj (Constant prep) :-> Obj (Constant trep)) selector valRepr = Repr.objectf $ do
+  val <- Repr.fromObject <$> Repr.getRepr valRepr
+  let inhabited = constantValueIsInhabited val
+      Object.Point.Product_r fieldReps = constantValueType val
+  pr <- productRepresentation inhabited fieldReps
+  productElimination pr trep selector val
+
+
+interpSumIntro
+  :: forall r variants .
+     Meta.TypeRep Object.TypeRep (r :-> Obj (Constant ('Object.Point.Sum_t variants)))
+  -> Object.Variant r variants
+  -> Repr.Repr ValueM Value r
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Sum_t variants)))
+interpSumIntro (rrep :-> Obj (Constant srep)) variant rval = Repr.objectf $ do
+  undefined
+  {-(someInhabited, someArgument) <- takeVariantArgument variants rval
+  let inhabited = sumIsInhabited someInhabited
+      Object.Point.Sum_r variantReps = srep
+  sr <- sumRepresentation inhabited variantReps
+  let val = sumIntroduction sr fields someArgument
+  pure val-}
 
 
 -- | This will use the ProgramM representation to come up with all the
@@ -1502,6 +2828,8 @@ interpLet (Obj (Constant srep) :-> _) x k = Repr.valuef $ do
 --
 --   VCons (name[i]) (VCons (name[(i+1)%size]) ...)
 --
+-- If any of the point types involved is uninhabited, then the entire knot
+-- is ... 
 interpKnot
   :: forall s t i r .
      Meta.TypeRep Object.TypeRep ((s :-> t) :-> (i :-> Obj (Program r)))
@@ -1521,17 +2849,19 @@ interpKnot ((srep :-> trep) :-> (irep :-> Obj (Program rrep))) knotSig =
     -- until we generate the translation unit. They are stored in the state as
     -- a DeferredKnot value.
 
-    names <- genStaticVaryingNames rrep knotSig
+    -- Here we need to evaluate in ValueM, to get the LocalMs for all of the
+    -- updates (`t`s) and inits (`i`s), then put those LocalMs into the
+    -- state so they can be elaborated later on when we make a translation unit.
+    inits <- valueMInProgramM $ staticVaryingInits knotSig i
+    -- We need the inits because they contain proofs that each stream is
+    -- inhabited.
+    names <- genStaticVaryingNames rrep knotSig inits
     let r :: Repr.Repr ValueM Value r
         r = staticVaryingValues names
         s :: Repr.Repr ValueM Value s
         s = shiftedStaticVaryingValues knotSig names
         t :: Repr.Repr ValueM Value t
         t = recDef Repr.<@> s
-    -- Here we need to evaluate in ValueM, to get the LocalMs for all of the
-    -- updates (`t`s) and inits (`i`s), then put those LocalMs into the
-    -- state so they can be elaborated later on when we make a translation unit.
-    inits <- valueMInProgramM $ staticVaryingInits knotSig i
     nexts <- valueMInProgramM $ staticVaryingNexts knotSig t
     let deferredKnot :: DeferredKnot
         deferredKnot = DeferredKnot
@@ -1596,28 +2926,35 @@ interpMap
   -> Object.MapImage n s q
   -> Object.MapImage n t r
   -> Repr.Repr ValueM Value ((s :-> t) :-> (q :-> r))
-interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage = Repr.fun $ \preimage -> Repr.fun $ \q -> Repr.valuef $ do
-  rolled  <- zipVarying srep nrep limage q
-  f <- Repr.getRepr preimage
-  let applied = applyVarying f rolled
-  Repr.getRepr (unzipVarying rrep nrep rimage applied)
+interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage =
+  Repr.fun $ \preimage -> Repr.fun $ \q -> Repr.valuef $ do
+    rolled  <- zipVarying srep nrep limage q
+    f <- Repr.getRepr preimage
+    let applied = applyVarying f rolled
+    Repr.getRepr (unzipVarying rrep nrep rimage applied)
 
   where
 
   zipVarying
-    :: forall n t r .
-       Meta.TypeRep Object.TypeRep t
+    :: forall n s q .
+       Meta.TypeRep Object.TypeRep s
     -> NatRep n
-    -> Object.MapImage n t r
-    -> Repr.Repr ValueM Value r
-    -> ValueM (Vec ('S n) (Repr.Repr ValueM Value t))
+    -> Object.MapImage n s q
+    -> Repr.Repr ValueM Value q
+    -> ValueM (Vec ('S n) (Repr.Repr ValueM Value s))
 
-  zipVarying _              nrep Object.MapTerminal      _ = pure $ vecReplicate (S_Rep nrep) Repr.terminal
+  zipVarying _              nrep Object.MapTerminal      _ = pure $
+    vecReplicate (S_Rep nrep) Repr.terminal
 
   zipVarying trep           nrep Object.MapObject        v = do
     it <- Repr.getRepr v
+    -- If the varying given is over an uninhabited constant type, then this
+    -- corresponds to that same uninhabited type, and we can pass that
+    -- through to the mapped arrow.
     case valueDefn (Repr.fromObject it) of
-      ValueVarying exprs -> pure $ vecMap (\expr -> Repr.object (constantValue trep expr)) exprs
+      ValueVarying inhabited tyName exprs -> pure $ vecMap
+        (\expr -> Repr.object (constantValue trep inhabited tyName expr))
+        exprs
 
   zipVarying (lrep :* rrep) nrep (Object.MapProduct l r) v = do
     it <- Repr.getRepr v
@@ -1641,11 +2978,12 @@ interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage = Repr.fun $ \preim
     -> Vec ('S n) (Repr.Repr ValueM Value t)
     -> Repr.Repr ValueM Value r
 
-  unzipVarying _              nrep Object.MapTerminal      _   = Repr.terminal
+  unzipVarying _              nrep Object.MapTerminal      _ = Repr.terminal
 
   unzipVarying (Obj trep)     nrep Object.MapObject        v = Repr.objectf $ do
-    w <- vecTraverse (fmap constantValueToExpr . Repr.getRepr) v
-    pure $ value trep (ValueVarying w)
+    w <- vecTraverse Repr.getRepr v
+    let (inhabited, tyName, cexprs) = mkConstantExprs w
+    pure $ varyingValue (Obj trep) inhabited tyName cexprs
 
   unzipVarying (lrep :* rrep) nrep (Object.MapProduct l r) v = Repr.valuef $ do
     w <- vecTraverse Repr.getRepr v
@@ -1654,21 +2992,47 @@ interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage = Repr.fun $ \preim
         b = unzipVarying rrep nrep r rw
     pure $ Repr.Product (a, b)
 
+  -- Use the first element's inhabited proof, required in order to take the
+  -- rest of the expressions.
+  mkConstantExprs :: forall x n .
+       Vec ('S n) (Repr.Val ValueM Value (Obj (Constant x)))
+    -> (Inhabited x, C.TypeName, Vec ('S n) (LocalM C.Expr))
+  mkConstantExprs vs@(VCons constObj _) = case valueDefn (Repr.fromObject constObj) of
+    ValueConstant inhabited tyName _ ->
+      (inhabited, tyName, vecMap constantValueToExpr vs)
+
 -- | We don't even need to do any checking here, GHC should ensure that all of
 -- our casts are safe (assuming the EDSL types are set up correctly).
+--
+-- It's in ValueM because it uses the Maybe type, a composite, which requires
+-- some context (sum types are monomorphized and require unique names).
 castValue
   :: forall a b .
      Meta.TypeRep Object.TypeRep (Obj (Constant a) :-> Obj (Constant b))
   -> Object.Cast a b
   -> Value (Constant a)
-  -> Value (Constant b)
-castValue (_ :-> Obj brep@(Constant rep)) cast =
-  overConstantValue1 castTypeRep (castExpr (typeName brep))
+  -> ValueM (Value (Constant b))
+castValue (_ :-> Obj (Constant brep)) cast valueA = case cast of
+
+  Object.UpCastInteger _ -> pure $ overConstantValue1Heterogeneous
+    integerIsInhabited (typeNameInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
+
+  Object.UpCastBytes _ -> pure $ overConstantValue1Heterogeneous
+    bytesIsInhabited (typeNameBytes brep) castTypeRep (castExpr (typeNameBytes brep)) valueA
+
+  Object.UpCastToSigned _ -> pure $ overConstantValue1Heterogeneous
+    integerIsInhabited (typeNameInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
+
+  -- TODO implement this. It's not a simple C cast. It'll be a ternary
+  -- expression
+  --
+  --   (i > MAX_VALUE) ? <intro nothing> : <intro just (<cast> i)>
+  Object.CastToSigned -> error "CastToSigned not implemented"
 
   where
 
   castTypeRep :: Object.Point.TypeRep a -> Object.Point.TypeRep b
-  castTypeRep _ = rep
+  castTypeRep _ = brep
 
 castExpr :: C.TypeName -> C.Expr -> C.Expr
 castExpr tyName expr = C.castExprIsExpr $ C.Cast tyName (C.exprIsCastExpr expr)
@@ -1750,12 +3114,13 @@ negateExpr x = C.unaryExprIsExpr $ C.UnaryOp C.UOMin $
 absValue
   :: Value (Constant ('Object.Point.Integer_t 'Object.Point.Signed_t   width))
   -> Value (Constant ('Object.Point.Integer_t 'Object.Point.Unsigned_t width))
-absValue v = overConstantValue1 castf (absExpr tyName) v
+absValue v = overConstantValue1Integer castf (absExpr tyName) v
   where
   castf :: Object.Point.TypeRep ('Object.Point.Integer_t 'Object.Point.Signed_t   width)
         -> Object.Point.TypeRep ('Object.Point.Integer_t 'Object.Point.Unsigned_t width)
   castf (Object.Point.Integer_r _ wrep) = Object.Point.Integer_r Object.Point.Unsigned_r wrep
-  tyName = typeName (valueType v)
+  Constant trep = valueType v
+  tyName = typeNameInteger trep
 
 -- | The TypeName will be put around the 0 literal. It must be the same type
 -- as that of the expression.
@@ -1857,25 +3222,273 @@ integerLiteralExpr tyName n = C.castExprIsExpr $ C.Cast tyName (C.exprIsCastExpr
 bytesLiteralExpr :: C.TypeName -> Integer -> C.Expr
 bytesLiteralExpr = integerLiteralExpr
 
-typeNameMeta :: Meta.TypeRep Object.TypeRep (Obj (Constant t)) -> C.TypeName
-typeNameMeta (Obj (Constant trep)) = typeNameConstant trep
+{-
+-- We can indeed use anonymous unions for sum types
+-- Can even use anonymous enums!
+--
+--   struct <sum_name> {
+--     enum { ... } tag;
+--     union { ... } variant;
+--   }
+--
+-- however, anonymous enum names must be globally unique... so we'll say
+--
+--   <sum_name>_tag_<n>
+--
+taggedSumAnonymousUnion :: C.Decln
+taggedSumAnonymousUnion = C.Decln (C.DeclnSpecsType tyspec Nothing) Nothing
+  where
+  tyspec = C.TStructOrUnion $ C.StructOrUnionDecln
+    C.Struct (Just structIdent) structDecln
 
-typeName :: Object.TypeRep (Constant t) -> C.TypeName
-typeName (Constant   t) = typeNameConstant t
+  structDecln = C.StructDeclnCons
+    (C.StructDeclnBase tagDecln)
+    unionDecln
 
--- TODO products and sums.
-typeNameConstant :: Object.Point.TypeRep t -> C.TypeName
-typeNameConstant (Object.Point.Integer_r srep wrep) = typeNameInteger srep wrep
-typeNameConstant (Object.Point.Bytes_r   wrep     ) = typeNameBytes        wrep
+  -- Just int because I don't want to write out the enum at the moment.
+  tagDecln :: C.StructDecln
+  tagDecln = C.StructDecln tagSpecQual $ C.StructDeclrBase $ C.StructDeclr $
+    C.Declr Nothing (C.DirectDeclrIdent tagIdent)
 
-typeNameInteger
-  :: Object.Point.SignednessRep s
-  -> Object.Point.WidthRep w
-  -> C.TypeName
-typeNameInteger s w = C.TypeName (C.SpecQualType (C.TTypedef (C.TypedefName (integerTypeIdent s w))) Nothing) Nothing
+  tagSpecQual :: C.SpecQualList
+  tagSpecQual = C.specQualConst (C.specQualType C.TInt)
 
-typeNameBytes :: Object.Point.WidthRep w -> C.TypeName
-typeNameBytes = typeNameInteger Object.Point.Unsigned_r
+  unionDecln :: C.StructDecln
+  unionDecln = C.StructDecln unionSpecQual $ C.StructDeclrBase $ C.StructDeclr $
+    C.Declr Nothing (C.DirectDeclrIdent variantIdent)
+
+  unionSpecQual :: C.SpecQualList
+  unionSpecQual = flip C.SpecQualType Nothing $ C.TStructOrUnion $ C.StructOrUnionDecln
+    C.Union Nothing $ C.StructDeclnCons
+      (C.StructDeclnBase variantDecln1)
+      variantDecln2
+
+  variantDecln1 :: C.StructDecln
+  variantDecln1 = C.StructDecln (C.specQualConst (C.specQualType C.TInt)) $ C.StructDeclrBase
+    (C.StructDeclr $ C.Declr Nothing $ C.DirectDeclrIdent variantIdent1)
+
+  variantDecln2 :: C.StructDecln
+  variantDecln2 = C.StructDecln (C.specQualConst (C.specQualType C.TInt)) $ C.StructDeclrBase
+    (C.StructDeclr $ C.Declr Nothing $ C.DirectDeclrIdent variantIdent2)
+
+  structIdent = assertValidStringIdentifier "sum"
+  tagIdent = assertValidStringIdentifier "tag"
+  variantIdent = assertValidStringIdentifier "variant"
+  variantIdent1 = assertValidStringIdentifier "variant_1"
+  variantIdent2 = assertValidStringIdentifier "variant_2"
+-}
+
+-- Want: a term proving that some type is inhabited. That's more complicated
+-- than Not (t :~: Void), because, for instance, a product featuring an
+-- uninhabited type is also uninhabited.
+-- So it's a conjunction of
+--
+--   - t is not the empty sum
+--   - if t is a product then all of its fields are inhabited
+--   - if t is a sum then one of its variants is inhabited
+
+-- TODO move this stuff about Inhabited into a separate module. It's not
+-- C-specific at all.
+
+-- | Only inhabited types have a C representation. This includes the empty
+-- product (unit type), which is represented by NULL.
+data Inhabited t = Inhabited
+  { notEmptySum          :: Not (t :~: Object.Point.Sum '[])
+  , someInhabitedVariant :: forall vs . (t :~: Object.Point.Sum vs)     -> Some Inhabited vs
+  , allInhabitedFields   :: forall fs . (t :~: Object.Point.Product fs) -> All Inhabited fs
+  }
+
+integerIsInhabited :: Inhabited ('Object.Point.Integer_t sign width)
+integerIsInhabited = Inhabited
+  { notEmptySum = \refl -> case refl of {}
+  , someInhabitedVariant = \refl -> case refl of {}
+  , allInhabitedFields = \refl -> case refl of {}
+  }
+
+bytesIsInhabited :: Inhabited ('Object.Point.Bytes_t width)
+bytesIsInhabited = Inhabited
+  { notEmptySum = \refl -> case refl of {}
+  , someInhabitedVariant = \refl -> case refl of {}
+  , allInhabitedFields = \refl -> case refl of {}
+  }
+
+unitIsInhabited :: Inhabited Object.Point.Unit
+unitIsInhabited = Inhabited
+  { notEmptySum = \refl -> case refl of {}
+  , someInhabitedVariant = \refl -> case refl of {}
+  , allInhabitedFields = \refl -> case refl of
+      Refl -> All
+  }
+
+voidIsUninhabited :: Not (Inhabited Object.Point.Void)
+voidIsUninhabited inhabited = notEmptySum inhabited isEmptySum
+  where
+  isEmptySum :: Object.Point.Void :~: Object.Point.Sum '[]
+  isEmptySum = Refl
+
+productIsInhabited :: All Inhabited fields -> Inhabited (Object.Point.Product fields)
+productIsInhabited allFieldsInhabited = Inhabited
+  { notEmptySum = \refl -> case refl of {}
+  , someInhabitedVariant = \refl -> case refl of {}
+  , allInhabitedFields = \refl -> case refl of Refl -> allFieldsInhabited
+  }
+
+productStillInhabited
+  :: Inhabited t
+  -> Inhabited (Object.Point.Product       ts)
+  -> Inhabited (Object.Point.Product (t ': ts))
+productStillInhabited inhabitedT inhabitedTS = productIsInhabited
+  (And inhabitedT (allInhabitedFields inhabitedTS Refl))
+
+newtype Uninhabited t = Uninhabited { isUninhabited :: Not (Inhabited t) }
+
+productIsUninhabited
+  :: Some Uninhabited fields
+  -> Uninhabited (Object.Point.Product fields)
+productIsUninhabited (Some (Uninhabited uninhabited)) = Uninhabited $ \inhabited ->
+  case allInhabitedFields inhabited Refl of
+    And inhabited _ -> uninhabited inhabited
+productIsUninhabited (Or uninhabited) = Uninhabited $ 
+  productStillUninhabited (isUninhabited (productIsUninhabited uninhabited))
+
+productStillUninhabited
+  :: Not (Inhabited (Object.Point.Product       ts))
+  -> Not (Inhabited (Object.Point.Product (t ': ts)))
+productStillUninhabited uninhabitedTS = \inhabited -> case counterexample inhabited of
+  (_, inhabitedTS) -> uninhabitedTS inhabitedTS
+  where
+  counterexample
+    :: forall t ts .
+       Inhabited (Object.Point.Product (t ': ts))
+    -> (Inhabited t, Inhabited (Object.Point.Product ts))
+  counterexample inhabited = case allInhabitedFields inhabited Refl of
+    And here there -> (here, productIsInhabited there)
+
+sumIsInhabited :: Some Inhabited variants -> Inhabited (Object.Point.Sum variants)
+sumIsInhabited someVariantInhabited = Inhabited
+  { notEmptySum = \refl -> case someVariantInhabited of
+      Some _ -> case refl of {}
+      Or   _ -> case refl of {}
+  , someInhabitedVariant = \refl -> case refl of Refl -> someVariantInhabited
+  , allInhabitedFields = \refl -> case refl of {}
+  }
+
+sumStillUninhabited
+  :: Not (Inhabited t)
+  -> Not (Inhabited (Object.Point.Sum       ts))
+  -> Not (Inhabited (Object.Point.Sum (t ': ts)))
+sumStillUninhabited uninhabitedT uninhabitedTS = \inhabited -> case counterexample inhabited of
+  Left  l -> uninhabitedT l
+  Right r -> uninhabitedTS r
+  where
+  counterexample
+    :: forall t ts .
+       Inhabited (Object.Point.Sum (t ': ts))
+    -> Either (Inhabited t) (Inhabited (Object.Point.Sum ts))
+  counterexample inhabited = case someInhabitedVariant inhabited Refl of
+    Some here -> Left  here
+    Or  there -> Right (sumIsInhabited there)
+
+sumStillInhabited
+  :: Inhabited (Object.Point.Sum       ts)
+  -> Inhabited (Object.Point.Sum (t ': ts))
+sumStillInhabited inhabitedTS = case someInhabitedVariant inhabitedTS Refl of
+  it -> sumIsInhabited (Or it)
+
+maybeIsInhabited :: Inhabited (Object.Point.Maybe t)
+maybeIsInhabited = sumIsInhabited (Some unitIsInhabited)
+
+-- | If you select a field from an inhabited product, then that field must be
+-- inhabited.
+selectorPreservesInhabitedness
+  :: Inhabited (Object.Point.Product_t fields)
+  -> Object.Selector fields field
+  -> Inhabited field
+selectorPreservesInhabitedness inh = go (allInhabitedFields inh Refl)
+  where
+  go :: All Inhabited fields -> Object.Selector fields field -> Inhabited field
+  go All sel = case sel of {}
+  go (And _ all) (Object.S_There sel) = go all sel
+  go (And inh _)  Object.S_Here       = inh
+
+
+
+typeNameMeta
+  :: Inhabited t
+  -> Meta.TypeRep Object.TypeRep (Obj (Constant t))
+  -> ValueM C.TypeName
+typeNameMeta inhabited (Obj (Constant trep)) = typeNamePoint inhabited trep
+
+typeName
+  :: Inhabited t
+  -> Object.TypeRep (Constant t)
+  -> ValueM C.TypeName
+typeName inhabited (Constant t) = typeNamePoint inhabited t
+
+-- | The C TypeName for a point type.
+typeNamePoint :: Inhabited t -> Object.Point.TypeRep t -> ValueM C.TypeName
+typeNamePoint inhabited trep =
+  ctypeInfoToTypeName <$> ctypeInfoPoint inhabited trep
+
+-- | Determines the C representation: a type specifier, and whether it should
+-- be a pointer to that spec.
+data CTypeInfo = CTypeInfo
+  { ctypeSpec :: !C.TypeSpec
+  , cPointer  :: !(Maybe C.Ptr)
+  }
+
+-- | Always uses a const qualifier.
+ctypeInfoToTypeName :: CTypeInfo -> C.TypeName
+ctypeInfoToTypeName ctinfo = C.TypeName
+  (ctypeInfoSpecQualList ctinfo)
+  (fmap C.AbstractDeclr (cPointer ctinfo))
+
+ctypeInfoSpecQualList :: CTypeInfo -> C.SpecQualList
+ctypeInfoSpecQualList = C.specQualConst . C.specQualType . ctypeSpec
+
+ctypeInfoToPtr :: CTypeInfo -> Maybe C.Ptr
+ctypeInfoToPtr = cPointer
+
+
+ctypeInfoPoint :: Inhabited t -> Object.Point.TypeRep t -> ValueM CTypeInfo
+
+-- Integers are non-pointers to the canonical integer types uint8_t, int16_t,
+-- etc.
+ctypeInfoPoint _ it@(Object.Point.Integer_r _ _) = pure $ ctypeInfoInteger it
+
+ctypeInfoPoint _ it@(Object.Point.Bytes_r _) = pure $ ctypeInfoBytes it
+
+ctypeInfoPoint inhabited (Object.Point.Product_r fields)   = ctypeInfoProduct inhabited fields
+ctypeInfoPoint inhabited (Object.Point.Sum_r     variants) = ctypeInfoSum     inhabited variants
+
+
+ctypeInfoInteger :: Object.Point.TypeRep ('Object.Point.Integer_t s w) -> CTypeInfo
+ctypeInfoInteger it = CTypeInfo
+  { ctypeSpec = typeSpecInteger it
+  , cPointer  = Nothing
+  }
+
+
+ctypeInfoBytes :: Object.Point.TypeRep ('Object.Point.Bytes_t w) -> CTypeInfo
+ctypeInfoBytes it = CTypeInfo
+  { ctypeSpec = typeSpecBytes it
+  , cPointer  = Nothing
+  }
+
+
+typeSpecInteger :: Object.Point.TypeRep ('Object.Point.Integer_t s w) -> C.TypeSpec
+typeSpecInteger (Object.Point.Integer_r s w) = C.TTypedef
+  (C.TypedefName (integerTypeIdent s w))
+
+typeNameInteger :: Object.Point.TypeRep ('Object.Point.Integer_t s w) -> C.TypeName
+typeNameInteger = ctypeInfoToTypeName . ctypeInfoInteger
+
+typeSpecBytes :: Object.Point.TypeRep ('Object.Point.Bytes_t w) -> C.TypeSpec
+typeSpecBytes (Object.Point.Bytes_r w) = typeSpecInteger
+  (Object.Point.Integer_r Object.Point.Unsigned_r w)
+
+typeNameBytes :: Object.Point.TypeRep ('Object.Point.Bytes_t w) -> C.TypeName
+typeNameBytes = ctypeInfoToTypeName . ctypeInfoBytes
 
 integerTypeIdent
   :: Object.Point.SignednessRep s
@@ -1892,3 +3505,507 @@ integerTypeIdent Object.Point.Unsigned_r Object.Point.W_Eight_r = ident_uint64_t
 
 bytesTypeIdent :: Object.Point.WidthRep w -> C.Ident
 bytesTypeIdent = integerTypeIdent Object.Point.Unsigned_r
+
+
+-- | All we need to know about a product's C representation.
+data ProductRepresentation (fields :: [Object.Point.Type]) = ProductRepresentation
+  { productCTypeInfo :: !CTypeInfo
+  , productIntroduction
+      :: forall r .
+         Object.Fields r fields
+      -> All (Compose Value Constant) fields
+      -> ValueM (Value (Constant ('Object.Point.Product_t fields)))
+  , productElimination
+      :: forall field .
+         Object.Point.TypeRep field
+      -> Object.Selector fields field
+      -> Value (Constant ('Object.Point.Product_t fields))
+      -> ValueM (Value (Constant field))
+  }
+
+data SumRepresentation (variants :: [Object.Point.Type]) = SumRepresentation
+  { sumCTypeInfo :: !CTypeInfo
+  , sumIntroduction
+      :: forall r .
+         Object.Variant r variants
+      -> Some (Compose Value Constant) variants
+      -> ValueM (Value (Constant ('Object.Point.Sum_t variants)))
+  , sumElimination
+      :: forall r .
+         Object.Cases variants r
+      -> Value (Constant ('Object.Point.Sum_t variants))
+      -> ValueM (Repr.Val ValueM Value r)
+  }
+
+
+ctypeInfoProduct
+  :: Inhabited (Object.Point.Product fields)
+  -> All Object.Point.TypeRep fields
+  -> ValueM CTypeInfo
+ctypeInfoProduct inhabited fields =
+  productCTypeInfo <$> productRepresentation inhabited fields
+
+
+-- | If you select any of the fields of a product which normalizes to unit,
+-- then the thing selected also normalizes to unit.
+selectingFromUnitIsUnit
+  :: NonUnitFields fields '[]
+  -> Object.Selector fields r
+  -> NormalizedType r ('Object.Point.Product_t '[])
+selectingFromUnitIsUnit NonUnitNil sel = case sel of {}
+selectingFromUnitIsUnit (NonUnitAbsorb _ _ rec) (Object.S_There sel) =
+  selectingFromUnitIsUnit rec sel
+selectingFromUnitIsUnit (NonUnitAbsorb nty isUnit _) Object.S_Here = case isUnit of
+  Refl -> nty
+
+
+-- | A non-normalized value can be made into a normalized value without
+-- actually changing the C representation, because we _always_ represent them
+-- in normalized form. All we do here is change the type rep (the C.TypeName
+-- in the value is always for the normalized form).
+--
+-- This is just an axiom, GHC can't know anything substantial about it because
+-- the C representations do not have rich type information.
+toNormalRepresentation
+  :: NormalizedType a b
+  -> Value (Constant a)
+  -> Value (Constant b)
+toNormalRepresentation nty v = value (Constant ty) defn
+  where
+  Constant trep = valueType v
+  ty = normalizedTypeRep nty trep
+  defn = case valueDefn v of
+    ValueConstant inhabited tyName expr -> ValueConstant
+      (normalizationPreservesInhabitedness nty inhabited)
+      tyName
+      expr
+
+-- | See 'toNormalRepresentation'. Values are always represented in their
+-- normalized form.
+fromNormalRepresentation
+  :: NormalizedType a b
+  -> Value (Constant b)
+  -> Value (Constant a)
+fromNormalRepresentation nty v = value (Constant ty) defn
+  where
+  Constant trep = valueType v
+  ty = typeRepFromNormalized nty trep
+  defn = case valueDefn v of
+    ValueConstant inhabited tyName expr -> ValueConstant
+      (inhabitedFromNormalized nty inhabited)
+      tyName
+      expr
+
+
+-- | This is intended to completely encapsulate the representation of products.
+--
+-- In here there are definitions which aren't kept in check by GHC, because we
+-- drop down to the C representation, which is of course not annotated with
+-- our type domain.
+productRepresentation
+  :: forall fields .
+     Inhabited (Object.Point.Product fields)
+  -> All Object.Point.TypeRep fields
+  -> ValueM (ProductRepresentation fields)
+
+productRepresentation inhabited fields = case normalizedType trep of
+
+  Of nty -> case nty of
+
+    NormalizedProduct nonUnitFields normP -> case normP of
+
+      -- The unit (empty product) is represented by (void *const restrict) NULL.
+      UnitIsNormal -> pure $ ProductRepresentation
+        { productCTypeInfo = unitCTypeInfo
+
+          -- Introduction of the empty product is the literal NULL.
+        , productIntroduction = \_ _ -> pure $ unitRepresentation trep nty
+
+          -- This is a weird one. While you cannot select from an empty product,
+          -- you _can_ of course select from a product which normalizes to the
+          -- empty product. But, it's guaranteed that you'll get another
+          -- empty product... and so... we can simply give back this
+          -- representation.
+          --
+          -- What we know is that whatever you select, it _normalizes_ to
+          -- unit. So we can use the selector to find the thing, and also
+          -- obtain proof that it normalizes to unit. And then, since
+          -- normalization does not change representation, we can just "cast"
+          -- to/from.
+          --
+        , productElimination = \_ selector value -> pure $
+            let rNormalizesToUnit = selectingFromUnitIsUnit nonUnitFields selector
+            in  fromNormalRepresentation rNormalizesToUnit (toNormalRepresentation nty value)
+        }
+
+      -- A product which normalizes to a single non-unit thing is represented
+      -- by that thing's representation.
+      NormalizedProductSingleton -> do
+        let ntyRep = normalizedTypeRep nty trep
+        -- TODO should have a function that we can call to get the type info
+        -- of an already normalized type, so we don't have to renormalize it
+        -- (we have an idempotency proof anyway so it's fine for correctness).
+        ctypeInfo <- ctypeInfoPoint (normalizationPreservesInhabitedness nty inhabited) ntyRep
+        pure $ ProductRepresentation
+          { productCTypeInfo = ctypeInfo
+
+            -- For introduction, pick out the 1 and only 1 field which has the
+            -- same representation as the product.
+          , productIntroduction = \fields vals -> pure $
+              fromNormalRepresentation nty (introProductSingleton nonUnitFields fields vals)
+
+            -- For elimination, only the selector which hits the 1 and only 1
+            -- non unit field will give a non unit.
+          , productElimination = \trepResult selector value -> pure $
+              elimProductSingleton nonUnitFields trepResult selector
+                (toNormalRepresentation nty value)
+
+          }
+
+      -- Here we take all of the components (There are at least 2) and
+      -- we use ctypeInfoPoint on each of them to come up with type names,
+      -- required in order to make the struct declaration.
+      -- We also generate a new identifier for this product.
+      NormalizedProductProper -> do
+        let ntyRep = normalizedTypeRep nty trep
+        -- Important to do this here before withCompositeTypeId, for we require
+        -- that if a product A contains another product B, then B has a lower
+        -- serial number than A. This property is used to ensure that the
+        -- type declarations in the C translation unit are properly ordered.
+        components <- properProductComponents
+          nonUnitFields
+          fields
+          (allInhabitedFields inhabited Refl)
+        -- Check whether the _normalized_ type rep of this product has already
+        -- been seen. If not, we give its representation, so that it can be
+        -- recovered from the ValueM state and made into a declaration in the
+        -- translation unit.
+        --
+        -- NB: this part is idempotent, we'll always get the same compId for
+        -- any two types which have the same normalized type.
+        compId <- withCompositeTypeId (Object.Point.SomeTypeRep ntyRep) $ \compId -> do
+          let !decln = properProductStructDecln compId components
+          pure $ decln NE.:| []
+        let ctypeInfo = properProductCTypeInfo compId
+        pure $ ProductRepresentation
+          { productCTypeInfo = ctypeInfo
+
+            -- Makes a struct initializer using the (normal) representations
+            -- of the non-unit fields given.
+          , productIntroduction = \fields vals -> pure $
+              introProductProper trep inhabited nonUnitFields ntyRep ctypeInfo fields vals
+
+            -- Here we use the selector to get the CTypeInfo and inhabitedness
+            -- proof for the resulting field.
+          , productElimination = \trepResult selector value -> do
+              let inh = selectorPreservesInhabitedness inhabited selector
+              ctypeInfoField <- ctypeInfoPoint inh trepResult
+              pure $ elimProductProper trepResult inh ctypeInfoField nonUnitFields selector value
+          }
+
+  where
+ 
+  trep = Object.Point.Product_r fields
+
+  unitRepresentation
+    :: Object.Point.TypeRep t
+    -> NormalizedType t ('Object.Point.Product_t '[])
+    -> Value (Constant t)
+  unitRepresentation trep nty = constantValue_
+    (Obj (Constant trep))
+    (inhabitedFromNormalized nty unitIsInhabited)
+    (ctypeInfoToTypeName unitCTypeInfo)
+    (C.identIsExpr C.ident_NULL)
+
+
+  unitCTypeInfo = CTypeInfo
+    { ctypeSpec = C.TVoid
+    , cPointer  = Just $ C.PtrBase $ Just $ C.TypeQualCons
+        (C.TypeQualBase C.QConst)
+        C.QRestrict
+    }
+
+
+  -- C type information for a proper product: it's a struct, named using the
+  -- given CompositeTypeId.
+  properProductCTypeInfo
+    :: CompositeTypeId
+    -> CTypeInfo
+  properProductCTypeInfo compId = CTypeInfo
+    { ctypeSpec = C.TStructOrUnion $ C.StructOrUnionForwDecln C.Struct
+        (properProductStructIdentifier compId)
+    , cPointer = Nothing
+    }
+
+
+  -- TODO define this. We'll have to include it into the ValueM state so that
+  -- it gets declared when the translation unit is written out.
+  properProductStructDecln
+    :: CompositeTypeId
+    -> NonEmpty CTypeInfo -- The fields
+    -> C.Decln
+  properProductStructDecln compId typeInfos = flip C.Decln Nothing $ C.DeclnSpecsType specs Nothing
+    where
+    specs = C.TStructOrUnion (C.StructOrUnionDecln C.Struct (Just ident) structDeclnList)
+    ident = properProductStructIdentifier compId
+    structDeclnList = structFields (NE.zip structFieldNames typeInfos)
+
+  structFields :: NonEmpty (C.Ident, CTypeInfo) -> C.StructDeclnList
+  structFields ((ident, info) NE.:| []) = C.StructDeclnBase
+    (C.StructDecln (ctypeInfoSpecQualList info) (C.StructDeclrBase (C.StructDeclr (C.Declr (ctypeInfoToPtr info) (C.DirectDeclrIdent ident)))))
+  structFields ((ident, info) NE.:| (x:xs)) = C.StructDeclnCons
+    (structFields (x NE.:| xs))
+    (C.StructDecln (ctypeInfoSpecQualList info) (C.StructDeclrBase (C.StructDeclr (C.Declr (ctypeInfoToPtr info) (C.DirectDeclrIdent ident)))))
+
+  properProductStructIdentifier :: CompositeTypeId -> C.Ident
+  properProductStructIdentifier = assertValidStringIdentifier . ("field_" ++) . show . getCompositeTypeId
+
+  -- | Field names for a struct which represents a proper product. They are
+  -- field_<n> where n increases from 0 as the product components go from left
+  -- to right.
+  structFieldNames :: NonEmpty C.Ident
+  structFieldNames = NE.fromList $
+    (assertValidStringIdentifier . ("field_" ++) . show) <$> ([0..] :: [Integer])
+
+
+  introProductSingleton
+    :: forall r fields nonUnit .
+       NonUnitFields fields '[nonUnit]
+    -> Object.Fields r fields
+    -> All (Compose Value Constant) fields
+    -> Value (Constant nonUnit)
+  introProductSingleton nu Object.F_All          _              = case nu of {}
+  introProductSingleton nu (Object.F_And fields) (And val vals) = case nu of
+    -- The value is unit so we just ignore it.
+    NonUnitAbsorb _ _ rec -> introProductSingleton rec fields vals
+    NonUnitCons nty _ _ -> toNormalRepresentation nty (getCompose val)
+ 
+  -- The selector picks out units for everything which is the not the sole
+  -- non-unit field.
+  elimProductSingleton
+    :: forall field fields nonUnit .
+       NonUnitFields fields '[nonUnit]
+    -> Object.Point.TypeRep field
+    -> Object.Selector fields field
+    -> Value (Constant nonUnit) -- ^ Has the same representation as a product of the
+                                -- fields, because those fields normalize to a singleton.
+    -> Value (Constant field)
+
+  elimProductSingleton (NonUnitAbsorb nty isUnit _) trep Object.S_Here _ = case isUnit of
+    Refl -> unitRepresentation trep nty
+  elimProductSingleton nu@(NonUnitCons nty _ _)     trep Object.S_Here val =
+    fromNormalRepresentation nty val
+  elimProductSingleton (NonUnitAbsorb _ _ rec) trep (Object.S_There sel) val =
+    elimProductSingleton rec trep sel val
+  -- We pass the only non-unit, so it's unit
+  elimProductSingleton (NonUnitCons _ _ rec) trep (Object.S_There sel) val =
+    mustBeUnit rec sel trep
+
+    where
+
+    mustBeUnit
+      :: forall field fields .
+         NonUnitFields fields '[]
+      -> Object.Selector fields field
+      -> Object.Point.TypeRep field
+      -> Value (Constant field)
+    mustBeUnit NonUnitNil it _ = case it of {}
+    mustBeUnit (NonUnitAbsorb _ _ rec) (Object.S_There sel) trep = 
+      mustBeUnit rec sel trep
+    mustBeUnit (NonUnitAbsorb nty isUnit _) Object.S_Here trep = case isUnit of
+      Refl -> unitRepresentation trep nty
+
+
+  -- Creates a struct literal with the given TypeName.
+  introProductProper
+    :: forall r fields a b c .
+       Object.Point.TypeRep ('Object.Point.Product_t fields)
+    -> Inhabited ('Object.Point.Product_t fields)
+    -> NonUnitFields fields (a ': b ': c)
+    -> Object.Point.TypeRep ('Object.Point.Product_t (a ': b ': c))
+    -> CTypeInfo
+    -> Object.Fields r fields
+    -> All (Compose Value Constant) fields
+    -> Value (Constant ('Object.Point.Product_t fields))
+  introProductProper trep inh nonUnitFields ntyRep ctypeInfo _ values = constantValue
+    (Obj (Constant trep))
+    inh
+    (ctypeInfoToTypeName ctypeInfo)
+    (properProductStructInitializer (ctypeInfoToTypeName ctypeInfo)
+      (NE.zip structFieldNames (properProductInits nonUnitFields values))
+    )
+
+
+  elimProductProper
+    :: forall fields field a b c .
+       Object.Point.TypeRep field
+    -> Inhabited field
+    -> CTypeInfo -- ^ For the field
+    -> NonUnitFields fields (a ': b ': c)
+    -> Object.Selector fields field
+    -> Value (Constant ('Object.Point.Product_t fields))
+    -> Value (Constant field)
+  elimProductProper trep inh ctypeInfo nonUnitFields selector val =
+    selectProperProductField
+      nonUnitFields trep inh ctypeInfo selector
+      (valueConstantExpr val) structFieldNames
+
+  -- Selects the field according to the selector. We need the TypeRep, Inhabited
+  -- proof, and CTypeInfo for the field, since if it's a non unit then we have
+  -- to construct a value for it. If it's unit then we already have this
+  -- information.
+  selectProperProductField
+    :: forall fields field nonUnits .
+       NonUnitFields fields nonUnits
+    -> Object.Point.TypeRep field
+    -> Inhabited field
+    -> CTypeInfo -- ^ For `field`
+    -> Object.Selector fields field
+    -> LocalM C.Expr    -- ^ Value to select from
+    -> NonEmpty C.Ident -- ^ Field names. Is infinite length.
+    -> Value (Constant field)
+
+  selectProperProductField _ _ _ _ _ _ (_ NE.:| []) = error "selectProperProductField: impossible case"
+
+  -- A product elimination always selects _some_ field.
+  selectProperProductField NonUnitNil _ _ _ sel _ _ = case sel of {}
+
+  -- Cases which do not recurse: either it's a unit (selected and absorb)
+  -- or it's a non unit and we have to do a struct field access.
+
+  selectProperProductField (NonUnitAbsorb nty isUnit _) trep _ _ Object.S_Here _   _ =
+    case isUnit of
+      Refl -> unitRepresentation trep nty
+
+  selectProperProductField (NonUnitCons   nty _      _) trep inh ctypeInfo Object.S_Here val (ident NE.:| _) =
+    constantValue
+      (Obj (Constant trep))
+      inh
+      (ctypeInfoToTypeName ctypeInfo)
+      (properProductStructFieldSelector val ident)
+
+  -- Recursive cases: skip over non-selected fields, advancing the field
+  -- identifier only if that field is not unit.
+
+  selectProperProductField (NonUnitCons   _ _ rec) trep inh ctypeInfo (Object.S_There sel) val (_ NE.:| (x:xs)) =
+    selectProperProductField rec trep inh ctypeInfo sel val (x NE.:| xs)
+
+  selectProperProductField (NonUnitAbsorb _ _ rec) trep inh ctypeInfo (Object.S_There sel) val idents =
+    selectProperProductField rec trep inh ctypeInfo sel val idents
+
+
+  -- Since we represent proper products by structs, and they are _not_
+  -- represented by pointers, we use the postfix dot accessor.
+  properProductStructFieldSelector :: LocalM C.Expr -> C.Ident -> LocalM C.Expr
+  properProductStructFieldSelector exprM ident = do
+    expr <- exprM
+    pure $ C.postfixExprIsExpr $ C.PostfixDot
+      (C.exprIsPostfixExpr expr)
+      ident
+
+
+  properProductStructInitializer
+    :: C.TypeName
+    -> NonEmpty (C.Ident, LocalM C.Expr)
+    -> LocalM C.Expr
+  properProductStructInitializer tyName inits = do
+    -- Traverse the identifier expression pairs to make them into things required
+    -- for the C.InitList
+    initItems :: NonEmpty (C.Design, C.Init) <- flip traverse inits $ \(ident, exprM) -> do
+      expr <- exprM
+      pure ( C.Design (C.DesigrBase (C.DesigrIdent ident))
+           , C.InitExpr (C.exprIsAssignExpr expr)
+           )
+    let initList = properProductStructInitList initItems
+    pure $ C.postfixExprIsExpr $ C.PostfixInits tyName initList
+
+  properProductStructInitList :: NonEmpty (C.Design, C.Init) -> C.InitList
+  properProductStructInitList ((design, init) NE.:| []) =
+    C.InitBase (Just design) init
+  properProductStructInitList ((design, init) NE.:| (x:xs)) =
+    C.InitCons (properProductStructInitList (x NE.:| xs)) (Just design) init
+
+  -- Takes just the non unit expressions.
+  properProductInits
+    :: forall fields a b .
+       NonUnitFields fields (a ': b)
+    -> All (Compose Value Constant) fields
+    -> NonEmpty (LocalM C.Expr)
+  properProductInits (NonUnitAbsorb _ _ rec) (And _ all) =
+    properProductInits rec all
+  properProductInits (NonUnitCons _ _ rec) (And val all) =
+    valueConstantExpr (getCompose val) NE.:| properProductInits_ rec all
+
+  properProductInits_
+    :: forall fields anything .
+       NonUnitFields fields anything
+    -> All (Compose Value Constant) fields
+    -> [LocalM C.Expr]
+  properProductInits_ NonUnitNil All = []
+  properProductInits_ (NonUnitAbsorb _ _ rec) (And _   all) =
+    properProductInits_ rec all
+  properProductInits_ (NonUnitCons _ _ rec)   (And val all) =
+    valueConstantExpr (getCompose val) : properProductInits_ rec all
+
+
+  -- Compute the CTypeInfo for each of the non unit fields.
+  properProductComponents
+    :: forall fields a b .
+       NonUnitFields fields (a ': b)
+    -> All Object.Point.TypeRep fields
+    -> All Inhabited fields
+    -> ValueM (NonEmpty CTypeInfo)
+
+  properProductComponents
+      (NonUnitAbsorb _ _ rec)
+      (And _ fields)
+      (And _ inhs) =
+    properProductComponents rec fields inhs
+
+  properProductComponents
+      (NonUnitCons nty isNotUnit rec)
+      (And trep treps)
+      (And inh inhs) = do
+    let ntyRep = normalizedTypeRep nty trep
+    info <- ctypeInfoPoint (normalizationPreservesInhabitedness nty inh) ntyRep
+    infos <- properProductComponents_ rec treps inhs
+    pure $ info NE.:| infos
+
+
+  properProductComponents_
+    :: forall fields a .
+       NonUnitFields fields a
+    -> All Object.Point.TypeRep fields
+    -> All Inhabited fields
+    -> ValueM [CTypeInfo]
+
+  properProductComponents_ NonUnitNil All All = pure []
+
+  properProductComponents_
+      (NonUnitAbsorb _ _ rec)
+      (And _ fields)
+      (And _ inhs) =
+    properProductComponents_ rec fields inhs
+
+  properProductComponents_
+      (NonUnitCons nty isNotUnit rec)
+      (And trep treps)
+      (And inh inhs) = do
+    let ntyRep = normalizedTypeRep nty trep
+    info <- ctypeInfoPoint (normalizationPreservesInhabitedness nty inh) ntyRep
+    infos <- properProductComponents_ rec treps inhs
+    pure $ info : infos
+
+
+ctypeInfoSum
+  :: Inhabited (Object.Point.Sum variants)
+  -> All Object.Point.TypeRep variants
+  -> ValueM CTypeInfo
+ctypeInfoSum inhabited variants =
+  sumCTypeInfo <$> sumRepresentation inhabited variants
+
+sumRepresentation
+  :: Inhabited (Object.Point.Sum variants)
+  -> All Object.Point.TypeRep variants
+  -> ValueM (SumRepresentation variants)
+sumRepresentation inhabited variants = undefined

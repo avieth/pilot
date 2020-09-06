@@ -41,8 +41,6 @@ module Language.Pilot
 
   , Repr.product
   , Repr.terminal
-  , Repr.fst
-  , Repr.snd
   , (Repr.<&)
   , (Repr.&>)
 
@@ -177,6 +175,10 @@ module Language.Pilot
   , Object.absurd
   , Object.pair
   , Object.pair_auto
+  , Object.fst
+  , Object.fst_auto
+  , Object.snd
+  , Object.snd_auto
   , Object.true
   , Object.false
   , Object.if_then_else

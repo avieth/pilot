@@ -81,6 +81,7 @@ module Language.Pilot.Examples.Copilot.Voting where
 
 import qualified Prelude
 import Language.Pilot
+import qualified Language.Pilot.Repr as Repr (fst, snd)
 import qualified Language.Pilot.Object as Object (pair_auto, fst_auto, snd_auto)
 
 -- To start, let's look at two different notions of foldr/foldl
@@ -135,7 +136,7 @@ foldr :: forall f val a b n . NatRep n -> E f val
 foldr nrep = fun $ \f -> fun $ \b -> fun $ \as -> case nrep of
   Z_Rep                -> b
   S_Rep Z_Rep          -> f <@> as <@> b
-  S_Rep nrep@(S_Rep _) -> f <@> fst as <@> (foldr nrep <@> f <@> b <@> snd as)
+  S_Rep nrep@(S_Rep _) -> f <@> Repr.fst as <@> (foldr nrep <@> f <@> b <@> Repr.snd as)
 
 foldl :: forall f val a b n . NatRep n -> E f val
   (   (b :-> a :-> b)
@@ -146,7 +147,7 @@ foldl :: forall f val a b n . NatRep n -> E f val
 foldl nrep = fun $ \f -> fun $ \b -> fun $ \as -> case nrep of
   Z_Rep                -> b
   S_Rep Z_Rep          -> f <@> b <@> as
-  S_Rep nrep@(S_Rep _) -> foldl nrep <@> f <@> (f <@> b <@> fst as) <@> snd as
+  S_Rep nrep@(S_Rep _) -> foldl nrep <@> f <@> (f <@> b <@> Repr.fst as) <@> Repr.snd as
 
 -- Here are uncurried versions, which can be used in a map from `Constant` to
 -- `Varying n`. Notice that the function argument is not put into the product.
@@ -161,14 +162,14 @@ foldr_ :: forall f val a b n . NatRep n -> E f val
   :-> (b :* Vector n a)
   :-> b
   )
-foldr_ nrep = fun $ \f -> fun $ \args -> foldr nrep <@> f <@> (fst args) <@> (snd args)
+foldr_ nrep = fun $ \f -> fun $ \args -> foldr nrep <@> f <@> (Repr.fst args) <@> (Repr.snd args)
 
 foldl_ :: forall f val a b n . NatRep n -> E f val
   (   (b :-> a :-> b)
   :-> (b :* Vector n a)
   :-> b
   )
-foldl_ nrep = fun $ \f -> fun $ \args -> foldl nrep <@> f <@> (fst args) <@> (snd args)
+foldl_ nrep = fun $ \f -> fun $ \args -> foldl nrep <@> f <@> (Repr.fst args) <@> (Repr.snd args)
 
 -- Let's move on to the Boyer-Moore voting algorithm, so that we have something
 -- to fold.

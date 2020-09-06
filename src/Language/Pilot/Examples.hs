@@ -77,8 +77,32 @@ example_0_5 =
     <& (Pilot.constant_auto Z_Rep <@> example_0_0)
     )
 
-example_1 :: E f val (Obj (Constant (Pair Pilot.Bool Pilot.Bool)))
-example_1 = pair_auto <@> true <@> false
+-- | Example of a simple product, whose normal form is the same as itself.
+example_1_0 :: E f val (Obj (Constant (Pair UInt8 Int16)))
+example_1_0 = pair_auto <@> u8 42 <@> i16 (-42)
+
+-- | Example of a product whose normal form is smaller than itself.
+example_1_1 :: E f val (Obj (Constant (Pair UInt8 (Pair Unit Int16))))
+example_1_1 = pair_auto <@> u8 42 <@> (pair_auto <@> unit <@> i16 (-42))
+
+-- | Example of a product which normalizes to a non-product.
+example_1_2 :: E f val (Obj (Constant (Pair Unit UInt8)))
+example_1_2 = pair_auto <@> unit <@> u8 42
+
+-- | Example of a product which normalizes to unit.
+example_1_3 :: E f val (Obj (Constant (Pair Unit (Pair Unit Unit))))
+example_1_3 = pair_auto <@> unit <@> (pair_auto <@> unit <@> unit)
+
+-- | Example of a product which remains nested when normalized.
+example_1_4 :: E f val (Obj (Constant (Pair UInt8 (Pair UInt16 UInt32))))
+example_1_4 = pair_auto <@> u8 0 <@> (pair_auto <@> u16 1 <@> u32 2)
+
+example_1_5 :: E f val (Obj (Constant UInt8))
+example_1_5 = Pilot.fst_auto <@> example_1_4
+
+example_1_6 :: E f val (Obj (Constant (Pair UInt16 UInt8)))
+example_1_6 = local_auto example_1_4 $ \it ->
+  pair_auto <@> ((Pilot.fst_auto <.> Pilot.snd_auto) <@> it) <@> (Pilot.fst_auto <@> it)
 
 example_2 :: E f val (Obj (Varying ('S 'Z) UInt8))
 example_2 = Pilot.constant_auto (S_Rep Z_Rep) <@> u8 42
@@ -146,7 +170,7 @@ example_6 = fun $ \c -> fun $ \f ->
   in  knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop <@> c
 
 example_6_c_0 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
-example_6_c_0 = C.externInput "blargh" uint8_t >>= \inp ->
+example_6_c_0 = C.externInput "blargh" uint8_t C.integerIsInhabited >>= \inp ->
   (example_6 <@> u8 0 <@> inp) >>= \result ->
     prog_pure auto <@> (drop_auto <@> result)
 

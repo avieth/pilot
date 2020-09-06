@@ -15,11 +15,16 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Language.Pilot.Object.Point
   ( Type (..)
   , TypeRep (..)
   , decEq
+
+  , SomeSignednessRep (..)
+  , SomeWidthRep (..)
+  , SomeTypeRep (..)
 
   , integer_t
   , bytes_t
@@ -79,6 +84,7 @@ module Language.Pilot.Object.Point
   ) where
 
 import Prelude hiding (Bool, Either, Maybe)
+import Data.List (intercalate)
 
 import Language.Pilot.Types
 
@@ -116,6 +122,28 @@ instance Known 'W_Four_t where
 instance Known 'W_Eight_t where
   known _ = W_Eight_r
 
+data SomeWidthRep where
+  SomeWidthRep :: WidthRep w -> SomeWidthRep
+
+-- | Useful for defining Eq and Ord instances on SomeWidthRep
+widthRepInt :: forall w . WidthRep w -> Prelude.Int
+widthRepInt W_One_r = 1
+widthRepInt W_Two_r = 2
+widthRepInt W_Four_r = 4
+widthRepInt W_Eight_r = 8
+
+instance Eq SomeWidthRep where
+  SomeWidthRep w1 == SomeWidthRep w2 = widthRepInt w1 == widthRepInt w2
+
+instance Ord SomeWidthRep where
+  SomeWidthRep w1 `compare` SomeWidthRep w2 = widthRepInt w1 `compare` widthRepInt w2
+
+instance Show SomeWidthRep where
+  show (SomeWidthRep W_One_r) = "1 byte"
+  show (SomeWidthRep W_Two_r) = "2 bytes"
+  show (SomeWidthRep W_Four_r) = "4 bytes"
+  show (SomeWidthRep W_Eight_r) = "8 bytes"
+
 data Signedness where
   Signed_t   :: Signedness
   Unsigned_t :: Signedness
@@ -143,6 +171,24 @@ instance Known 'Signed_t where
 
 instance Known 'Unsigned_t where
   known _ = Unsigned_r
+
+data SomeSignednessRep where
+  SomeSignednessRep :: SignednessRep s -> SomeSignednessRep
+
+instance Eq SomeSignednessRep where
+  SomeSignednessRep Unsigned_r == SomeSignednessRep Unsigned_r = True
+  SomeSignednessRep Signed_r   == SomeSignednessRep Signed_r   = True
+  SomeSignednessRep _          == SomeSignednessRep _          = False
+
+instance Ord SomeSignednessRep where
+  SomeSignednessRep Unsigned_r `compare` SomeSignednessRep Unsigned_r = EQ
+  SomeSignednessRep Signed_r   `compare` SomeSignednessRep Signed_r   = EQ
+  SomeSignednessRep Signed_r   `compare` SomeSignednessRep Unsigned_r = LT
+  SomeSignednessRep Unsigned_r `compare` SomeSignednessRep Signed_r   = GT
+
+instance Show SomeSignednessRep where
+  show (SomeSignednessRep Unsigned_r) = "unsigned"
+  show (SomeSignednessRep Signed_r)   = "signed"
 
 -- | This data kind gives all of the "point" types: finite sums and products,
 -- along with numeric and bitwise base types.
@@ -222,6 +268,87 @@ instance (Known t, Known ('Product_t ts)) => Known ('Product_t (t ': ts)) where
 instance (Known t, Known ('Sum_t ts)) => Known ('Sum_t (t ': ts)) where
   known _ = case known (Proxy :: Proxy ('Sum_t ts)) of
     Sum_r variants -> Sum_r (And (known (Proxy :: Proxy t)) variants)
+
+-- | This is useful because it has an Eq and Ord instance. Unlike `decEq` or
+-- `testEquality`, it won't actually give you any type-level information, but
+-- it allows you to, for instance, use a `TypeRep` as a key in a map or as an
+-- element of a set.
+data SomeTypeRep where
+  SomeTypeRep :: TypeRep t -> SomeTypeRep
+
+instance Eq SomeTypeRep where
+  SomeTypeRep a == SomeTypeRep b = Prelude.maybe False (const True) (decEq a b)
+
+instance Ord SomeTypeRep where
+
+  SomeTypeRep (Integer_r s1 w1) `compare` SomeTypeRep (Integer_r s2 w2) =
+    (SomeSignednessRep s1, SomeWidthRep w1) `compare` (SomeSignednessRep s2, SomeWidthRep w2)
+
+  SomeTypeRep (Bytes_r w1) `compare` SomeTypeRep (Bytes_r w2) =
+    SomeWidthRep w1 `compare` SomeWidthRep w2
+
+  -- Products and sums take their ordering from the ordering on the list of
+  -- their fields/variants, under SomeTypeRep.
+
+  SomeTypeRep (Product_r p1) `compare` SomeTypeRep (Product_r p2) =
+    allToList SomeTypeRep p1 `compare` allToList SomeTypeRep p2
+
+  SomeTypeRep (Sum_r s1) `compare` SomeTypeRep (Sum_r s2) =
+    allToList SomeTypeRep s1 `compare` allToList SomeTypeRep s2
+
+  -- Integer is lowest.
+  SomeTypeRep (Integer_r _ _) `compare` SomeTypeRep (Bytes_r _) = LT
+  SomeTypeRep (Integer_r _ _) `compare` SomeTypeRep (Product_r _) = LT
+  SomeTypeRep (Integer_r _ _) `compare` SomeTypeRep (Sum_r _) = LT
+
+  -- Followed by bytes
+  SomeTypeRep (Bytes_r _) `compare` SomeTypeRep (Integer_r _ _) = GT
+  SomeTypeRep (Bytes_r _) `compare` SomeTypeRep (Product_r _) = LT
+  SomeTypeRep (Bytes_r _) `compare` SomeTypeRep (Sum_r _) = LT
+
+  -- Then product
+  SomeTypeRep (Product_r _) `compare` SomeTypeRep (Integer_r _ _) = GT
+  SomeTypeRep (Product_r _) `compare` SomeTypeRep (Bytes_r _) = GT
+  SomeTypeRep (Product_r _) `compare` SomeTypeRep (Sum_r _) = LT
+
+  SomeTypeRep (Sum_r _) `compare` SomeTypeRep (Integer_r _ _) = GT
+  SomeTypeRep (Sum_r _) `compare` SomeTypeRep (Bytes_r _) = GT
+  SomeTypeRep (Sum_r _) `compare` SomeTypeRep (Product_r _) = GT
+
+instance Show SomeTypeRep where
+
+  show (SomeTypeRep (Integer_r Unsigned_r W_One_r))   = "uint8"
+  show (SomeTypeRep (Integer_r Unsigned_r W_Two_r))   = "uint16"
+  show (SomeTypeRep (Integer_r Unsigned_r W_Four_r))  = "uint32"
+  show (SomeTypeRep (Integer_r Unsigned_r W_Eight_r)) = "uint64"
+
+  show (SomeTypeRep (Integer_r Signed_r W_One_r))   = "int8"
+  show (SomeTypeRep (Integer_r Signed_r W_Two_r))   = "int16"
+  show (SomeTypeRep (Integer_r Signed_r W_Four_r))  = "int32"
+  show (SomeTypeRep (Integer_r Signed_r W_Eight_r)) = "int64"
+
+  show (SomeTypeRep (Bytes_r W_One_r))   = "word8"
+  show (SomeTypeRep (Bytes_r W_Two_r))   = "word16"
+  show (SomeTypeRep (Bytes_r W_Four_r))  = "word32"
+  show (SomeTypeRep (Bytes_r W_Eight_r)) = "word64"
+
+  show (SomeTypeRep (Product_r ps)) = mconcat
+    [ "P["
+    , intercalate "," (fmap show terms)
+    , "]"
+    ]
+    where
+    terms :: [SomeTypeRep]
+    terms = allToList SomeTypeRep ps
+
+  show (SomeTypeRep (Sum_r ss)) = mconcat
+    [ "S["
+    , intercalate "," (fmap show summands)
+    , "]"
+    ]
+    where
+    summands :: [SomeTypeRep]
+    summands = allToList SomeTypeRep ss
 
 type Product ts = 'Product_t ts
 type Sum ts = 'Sum_t ts

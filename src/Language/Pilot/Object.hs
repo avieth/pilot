@@ -583,7 +583,10 @@ data Cast (a :: Point.Type) (b :: Point.Type) where
   -- with possibility of failure if the unsigned number is too big.
   --
   -- The opposite direction is not here because it is done by absolute value.
-  CastToSigned :: Cast ('Integer_t 'Unsigned_t width) (Maybe ('Integer_t 'Signed_t width))
+  CastToSigned :: Cast
+    ('Integer_t 'Unsigned_t width)
+    (Maybe ('Integer_t 'Signed_t width))
+
   -- | An unsigned number may always be cast to a bigger signed number.
   UpCastToSigned
     :: Wider width' width

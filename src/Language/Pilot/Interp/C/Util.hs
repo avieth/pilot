@@ -57,6 +57,16 @@ hexConst = hexConstNE . hexDigits
       15 -> C.HexF
       _ -> error "hexDigits impossible case"
 
+-- | Adds a const out front of a type name.
+typeNameConst :: C.TypeName -> C.TypeName
+typeNameConst (C.TypeName sql mAbsDeclr) = C.TypeName (specQualConst sql) mAbsDeclr
+
+specQualConst :: C.SpecQualList -> C.SpecQualList
+specQualConst = C.SpecQualQual C.QConst . Just
+
+specQualType :: C.TypeSpec -> C.SpecQualList
+specQualType ts = C.SpecQualType ts Nothing
+
 blockItemInitialize :: C.TypeName -> C.Ident -> C.Expr -> C.BlockItem
 blockItemInitialize tyName name expr = C.BlockItemDecln $
   declnInitialize tyName name expr
@@ -419,6 +429,12 @@ cNULL :: C.CondExpr
 cNULL = C.CondLOr $ C.LOrAnd $ C.LAndOr $ C.OrXOr $ C.XOrAnd $ C.AndEq $
   C.EqRel $ C.RelShift $ C.ShiftAdd $ C.AddMult $ C.MultCast $ C.CastUnary $
   C.UnaryPostfix $ C.PostfixPrim $ C.PrimIdent ident_NULL
+
+voidPtrTypeName :: C.TypeName
+voidPtrTypeName = C.TypeName specs (Just ptr)
+  where
+  specs = C.SpecQualType C.TVoid Nothing
+  ptr = C.AbstractDeclr (C.PtrBase Nothing)
 
 -- | NULL casted and dereferenced. Used whenever we have unreachable code.
 cVOID :: C.TypeName -> C.UnaryExpr
