@@ -12,23 +12,37 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Language.Pilot.Types.Logic
-  ( Any (..)
+  ( Some (..)
   , All (..)
+  , forAll
+  , allToList
+  , Not
   ) where
 
 import Data.Kind (Type)
 
 import Language.Pilot.Types.Represented
 
-data Any (f :: k -> Type) (ts :: [k]) where
-  Any :: f t -> Any f (t ': ts)
-  Or  :: Any f ts -> Any f (t ': ts)
+type Not t = forall x . t -> x
+
+data Some (f :: k -> Type) (ts :: [k]) where
+  Some :: f t -> Some f (t ': ts)
+  Or   :: Some f ts -> Some f (t ': ts)
 
 data All (f :: k -> Type) (ts :: [k]) where
   All :: All f '[]
   And :: f t -> All f ts -> All f (t ': ts)
+
+forAll :: (forall x . f x -> g x) -> All f ts -> All g ts
+forAll k All          = All
+forAll k (And t alls) = And (k t) (forAll k alls)
+
+allToList :: (forall x . f x -> r) -> All f ts -> [r]
+allToList k All = []
+allToList k (And x all) = k x : allToList k all
 
 instance TestEquality k => TestEquality (All k) where
   testEquality All All = Just Refl

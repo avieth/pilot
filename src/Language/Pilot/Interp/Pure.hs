@@ -309,8 +309,8 @@ interp_sum_intro variant = fun $ \v -> objectf $
     :: forall r variants .
        Variant r variants
     -> Repr f Value r
-    -> f (Point.Any Point.Point variants)
-  inject V_This        v = fmap (Point.Any . fromConstant . fromObject) (getRepr v)
+    -> f (Point.Some Point.Point variants)
+  inject V_This        v = fmap (Point.Some . fromConstant . fromObject) (getRepr v)
   inject (V_That that) v = fmap Point.Or (inject that v)
 
 -- |
@@ -373,7 +373,7 @@ interp_sum_elim cases = fun $ \scrutinee -> valuef $ do
     -> Point (Sum (variant ': variants))
     -> Repr f Value ((Obj (Constant variant) :-> r) :* q)
     -> Repr f Value r
-  eliminate _ (Point.Sum_r (Point.Any it)) elims =
+  eliminate _ (Point.Sum_r (Point.Some it)) elims =
     app (Language.Pilot.Repr.fst elims) (object (fromConstantRep it))
   eliminate (C_Or cs) (Point.Sum_r (Point.Or sum)) elims =
     eliminate cs (Point.Sum_r sum) (Language.Pilot.Repr.snd elims)

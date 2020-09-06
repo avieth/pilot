@@ -18,7 +18,7 @@ module Language.Pilot.Interp.Pure.Point
   ( Point (..)
   , Integer (..)
   , Bytes (..)
-  , Any (..)
+  , Some (..)
   , All (..)
 
   , u8
@@ -80,8 +80,8 @@ data Bytes width where
 data Point (t :: Object.Point.Type) where
   Integer :: Integer signedness width -> Point (Object.Point.Integer_t signedness width)
   Bytes   :: Bytes width -> Point (Object.Point.Bytes_t width)
-  Sum_r     :: Any Point types -> Point (Object.Sum types)
-  Product_r :: All Point types -> Point (Object.Product types)
+  Sum_r     :: Some Point types -> Point (Object.Sum types)
+  Product_r :: All  Point types -> Point (Object.Product types)
 
 prettyPrint :: Point t -> String
 prettyPrint (Integer i) = prettyPrintInteger i
@@ -151,16 +151,16 @@ prettyPrintInteger (Int16 i) = show i ++ "i16"
 prettyPrintInteger (Int32 i) = show i ++ "i32"
 prettyPrintInteger (Int64 i) = show i ++ "i64"
 
-prettyPrintSum :: Any Point types -> String
+prettyPrintSum :: Some Point types -> String
 prettyPrintSum v = mconcat
   [ "S["
   , prettyPrintVariant 0 v
   , "]"
   ]
   where
-  prettyPrintVariant :: forall types . Int -> Any Point types -> String
+  prettyPrintVariant :: forall types . Int -> Some Point types -> String
   prettyPrintVariant n (Or any) = prettyPrintVariant (n+1) any
-  prettyPrintVariant n (Any p)  = mconcat
+  prettyPrintVariant n (Some p)  = mconcat
     [ show n
     , " "
     , prettyPrint p
@@ -264,9 +264,9 @@ compare (Integer (Int64 x)) (Integer (Int64 y)) = compare_ x y
 
 compare_ :: Ord n => n -> n -> Point Object.Cmp
 compare_ x y = case Ord.compare x y of
-  LT -> Sum_r (Any (Product_r All))
-  EQ -> Sum_r (Or (Any (Product_r All)))
-  GT -> Sum_r (Or (Or (Any (Product_r All))))
+  LT -> Sum_r (Some (Product_r All))
+  EQ -> Sum_r (Or (Some (Product_r All)))
+  GT -> Sum_r (Or (Or (Some (Product_r All))))
 
 bits_f
   :: (forall b . Bits.Bits b => b -> b -> b)
