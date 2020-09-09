@@ -2725,7 +2725,7 @@ interpC trep form = case form of
   Object.Product_Intro_f fields   -> Repr.fun $ interpProductIntro trep fields
   Object.Product_Elim_f  selector -> Repr.fun $ interpProductElim  trep selector
   Object.Sum_Intro_f variant -> Repr.fun $ interpSumIntro trep variant
-  Object.Sum_Elim_f _ -> error "Sum_Elim_f not defined"
+  Object.Sum_Elim_f  cases   -> Repr.fun $ interpSumElim  trep cases
 
   -- The knot form will introduce static declarations for stream memory.
   Object.Stream_Knot_f kn -> interpKnot trep kn
@@ -2813,13 +2813,42 @@ interpSumIntro
   -> Repr.Repr ValueM Value r
   -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Sum_t variants)))
 interpSumIntro (rrep :-> Obj (Constant srep)) variant rval = Repr.objectf $ do
-  undefined
-  {-(someInhabited, someArgument) <- takeVariantArgument variants rval
+  (someInhabited, someArgument) <- takeVariantArgument variant rval
   let inhabited = sumIsInhabited someInhabited
       Object.Point.Sum_r variantReps = srep
   sr <- sumRepresentation inhabited variantReps
-  let val = sumIntroduction sr fields someArgument
-  pure val-}
+  sumIntroduction sr variant someArgument
+
+  where
+
+  takeVariantArgument
+    :: forall r variants .
+       Object.Variant r variants
+    -> Repr.Repr ValueM Value r
+    -> ValueM (Some Inhabited variants, Some (Compose Value Constant) variants)
+
+  takeVariantArgument (Object.V_That variants) rval = do
+    (inhabited, variant) <- takeVariantArgument variants rval
+    pure (Or inhabited, Or variant)
+
+  takeVariantArgument Object.V_This rval = do
+    obj <- Repr.fromObject <$> Repr.getRepr rval
+    let inhabited = constantValueIsInhabited obj
+    pure (Some inhabited, Some (Compose obj))
+
+
+interpSumElim
+  :: forall variants r .
+     Meta.TypeRep Object.TypeRep (Obj (Constant ('Object.Point.Sum_t variants)) :-> r)
+  -> Object.Cases variants r
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Sum_t variants)))
+  -> Repr.Repr ValueM Value r
+interpSumElim (Obj (Constant srep) :-> rrep) cases valRepr = Repr.valuef $ do
+  val <- Repr.fromObject <$> Repr.getRepr valRepr
+  let inhabited = constantValueIsInhabited val
+      Object.Point.Sum_r variantReps = constantValueType val
+  sr <- sumRepresentation inhabited variantReps
+  sumElimination sr cases val
 
 
 -- | This will use the ProgramM representation to come up with all the

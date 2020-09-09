@@ -501,8 +501,8 @@ data Selector (fields :: [Point.Type]) (r :: Point.Type) where
 --
 -- The type that's returned must be a constant object type.
 data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
-  C_Any :: Cases                   '[] (                                           Terminal  :-> Obj (Constant r))
-  C_Or  :: Cases             variants  (                                                  q  :-> Obj (Constant r))
+  C_Any :: Cases '[] (Terminal  :-> Obj (Constant r))
+  C_Or  :: Cases variants (q  :-> Obj (Constant r))
         -> Cases (variant ': variants) (((Obj (Constant variant) :-> Obj (Constant r)) :* q) :-> Obj (Constant r))
 
 -- |
