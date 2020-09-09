@@ -240,19 +240,19 @@ interp_cast c = fun $ \a -> object $ constant $ case (c, fromConstant (fromObjec
 
   (CastToSigned, Point.Integer (Point.UInt8 w)) -> fromConstant . fromObject . runIdentity . getRepr $
     if w Prelude.<= (2^7 Prelude.- 1)
-    then just (object (constant (Point.Integer (Point.Int8 (fromIntegral w)))))
+    then just <@> (object (constant (Point.Integer (Point.Int8 (fromIntegral w)))))
     else nothing
   (CastToSigned, Point.Integer (Point.UInt16 w)) -> fromConstant . fromObject . runIdentity . getRepr $
     if w Prelude.<= (2^15 Prelude.- 1)
-    then just (object (constant (Point.Integer (Point.Int16 (fromIntegral w)))))
+    then just <@> (object (constant (Point.Integer (Point.Int16 (fromIntegral w)))))
     else nothing
   (CastToSigned, Point.Integer (Point.UInt32 w)) -> fromConstant . fromObject . runIdentity . getRepr $
     if w Prelude.<= (2^31 Prelude.- 1)
-    then just (object (constant (Point.Integer (Point.Int32 (fromIntegral w)))))
+    then just <@> (object (constant (Point.Integer (Point.Int32 (fromIntegral w)))))
     else nothing
   (CastToSigned, Point.Integer (Point.UInt64 w)) -> fromConstant . fromObject . runIdentity . getRepr $
     if w Prelude.<= (2^63 Prelude.- 1)
-    then just (object (constant (Point.Integer (Point.Int64 (fromIntegral w)))))
+    then just <@> (object (constant (Point.Integer (Point.Int64 (fromIntegral w)))))
     else nothing
 
   (UpCastToSigned TwoWiderOne, Point.Integer (Point.UInt8 w)) -> Point.Integer (Point.Int16 (fromIntegral w))

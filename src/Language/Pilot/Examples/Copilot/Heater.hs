@@ -56,12 +56,12 @@ low_threshold = u8 64
 -- value) some value has exceeded the high threshold.
 above :: E f val (Obj (Constant UInt8) :-> Obj (Constant (Maybe UInt8)))
 above = fun $ \i -> if_then_else (i > high_threshold)
-  (just (i - high_threshold))
+  (just <@> (i - high_threshold))
   nothing
 
 below :: E f val (Obj (Constant UInt8) :-> Obj (Constant (Maybe UInt8)))
 below = fun $ \i -> if_then_else (i < low_threshold)
-  (just (low_threshold - i))
+  (just <@> (low_threshold - i))
   nothing
 -- Could use rebindable syntax, but there's a bug in released versions causing
 -- a core lint error.

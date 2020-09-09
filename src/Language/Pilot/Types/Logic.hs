@@ -23,6 +23,9 @@ module Language.Pilot.Types.Logic
   , allToNonEmpty
   , Not
   , Decision (..)
+  , allContradictsSome
+  , Mono (..)
+  , getMono
   ) where
 
 import Data.Kind (Type)
@@ -32,6 +35,14 @@ import qualified Data.List.NonEmpty as NE
 import Language.Pilot.Types.Represented
 
 type Not t = forall x . t -> x
+
+allContradictsSome
+  :: All  f xs
+  -> Some g xs
+  -> (forall x impossible . f x -> g x -> impossible)
+  -> impossible
+allContradictsSome (And f _ ) (Some g) absurd = absurd f g
+allContradictsSome (And _ fs) (Or  gs) absurd = allContradictsSome fs gs absurd
 
 data Decision (f :: Type) where
   Yes ::     f -> Decision f
@@ -70,3 +81,9 @@ instance TestEquality k => TestEquality (All k) where
       Just Refl -> Just Refl
   testEquality (And _ _) All = Nothing
   testEquality All (And _ _) = Nothing
+
+data Mono (t :: Type) (x :: k) where
+  Mono :: t -> Mono t x
+
+getMono :: Mono t x -> t
+getMono (Mono t) = t

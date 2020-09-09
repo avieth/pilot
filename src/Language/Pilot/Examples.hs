@@ -114,6 +114,17 @@ example_2_0 = local_auto example_0_3 $ \x ->
 example_2_1 :: E f val (Obj (Varying ('S 'Z) UInt8))
 example_2_1 = Pilot.constant_auto (S_Rep Z_Rep) <@> u8 42
 
+example_3_0 :: E f val (Obj (Constant (Maybe UInt8)))
+example_3_0 = just <@> (u8 42)
+
+example_3_1 :: E f val (Obj (Constant (Maybe (Maybe UInt8))))
+example_3_1 = just <@> nothing
+
+example_3_2 :: E f val (Obj (Constant UInt8))
+example_3_2 = maybe <@> u8 0 <@> identity <@> example_3_0
+
+-- |  Example using a sum type.
+
 -- This is like
 --
 --   (\x y -> flip maybe ((+) 1) <$> x <*> y) :: Stream Int -> Stream (Maybe Int) -> Stream Int

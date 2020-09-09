@@ -497,13 +497,7 @@ data Selector (fields :: [Point.Type]) (r :: Point.Type) where
   S_There :: Selector           fields  r
           -> Selector (field ': fields) r
 
--- | `Cases repr variants q r` means that given a sum of `variants`, you can
--- get something of type `r`. It is defined in such a way that `r` is always a
--- function from a product of case eliminators for each variant, returning a
--- common type--except when the variants is '[], in which case you can get any
--- type.
---
--- The type that's returned must be a constant object type.
+-- | TODO explain
 data Cases (variants :: [Point.Type]) (r :: Meta.Type Type) where
   C_Any :: Cases '[] (Terminal  :-> Obj (Constant r))
   C_Or  :: Cases variants (q  :-> Obj (Constant r))
@@ -1043,9 +1037,8 @@ constant_auto nrep = constant nrep auto
 -- maybe eliminator?
 
 just :: Known a
-     => E Form f val (Obj (Constant a))
-     -> E Form f val (Obj (Constant (Maybe a)))
-just a = formal_auto (Sum_Intro_f (V_That V_This)) <@> a
+     => E Form f val (Obj (Constant a) :-> Obj (Constant (Maybe a)))
+just = formal_auto (Sum_Intro_f (V_That V_This))
 
 nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
 nothing = formal_auto (Sum_Intro_f V_This) <@> unit

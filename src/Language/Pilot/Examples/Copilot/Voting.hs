@@ -216,7 +216,7 @@ boyerMoore numElements = fun $ \elements ->
   local_auto (foldl_ numElements <@> boyerMooreCandidateStep <@> ((Object.pair_auto <@> u8 0 <@> u8 0) <& elements)) $ \result ->
     local_auto (foldl_ numElements <@> (boyerMooreCountStep <@> (Object.fst_auto <@> result)) <@> (u8 0 <& elements)) $ \totalCount ->
       -- Would check for overflow or use a wider integer type.
-      ifThenElse ((u8 2 * totalCount) > listSize) (just (Object.fst_auto <@> result)) nothing
+      ifThenElse ((u8 2 * totalCount) > listSize) (just <@> (Object.fst_auto <@> result)) nothing
   where
   listSize = u8 (natToIntegral numElements)
 

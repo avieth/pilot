@@ -135,7 +135,16 @@ transUnitFromDeclns (d:ds) = case transUnitFromDeclns ds of
   Nothing -> Just (C.TransUnitBase (C.ExtDecln d))
   Just tu -> Just (C.TransUnitCons tu (C.ExtDecln d))
 
+-- | Puts them in the proper order (left is first).
+blockItemsToCompoundStmt :: [C.BlockItem] -> C.CompoundStmt
+blockItemsToCompoundStmt = C.Compound . outer . reverse
+  where
+  outer []     = Nothing
+  outer (x:xs) = Just (inner x xs)
 
+  inner :: C.BlockItem -> [C.BlockItem] -> C.BlockItemList
+  inner bi [] = C.BlockItemBase bi
+  inner bi (bi':bis) = C.BlockItemCons (inner bi' bis) bi
 
 appendBlockItemList :: C.BlockItemList -> C.BlockItemList -> C.BlockItemList
 appendBlockItemList bl (C.BlockItemBase bi) = C.BlockItemCons bl bi
@@ -331,6 +340,9 @@ unaryExprIsCondExpr = C.CondLOr . C.LOrAnd . C.LAndOr . C.OrXOr . C.XOrAnd .
 
 unaryExprIsExpr :: C.UnaryExpr -> C.Expr
 unaryExprIsExpr = C.ExprAssign . C.AssignCond . unaryExprIsCondExpr
+
+exprIsConstExpr :: C.Expr -> C.ConstExpr
+exprIsConstExpr = C.Const . exprIsCondExpr
 
 exprIsAddExpr :: C.Expr -> C.AddExpr
 exprIsAddExpr = C.AddMult . exprIsMultExpr
