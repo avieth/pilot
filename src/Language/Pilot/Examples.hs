@@ -104,8 +104,15 @@ example_1_6 :: E f val (Obj (Constant (Pair UInt16 UInt8)))
 example_1_6 = local_auto example_1_4 $ \it ->
   pair_auto <@> ((Pilot.fst_auto <.> Pilot.snd_auto) <@> it) <@> (Pilot.fst_auto <@> it)
 
-example_2 :: E f val (Obj (Varying ('S 'Z) UInt8))
-example_2 = Pilot.constant_auto (S_Rep Z_Rep) <@> u8 42
+-- | Example using compare, which is our first example where the C interpreter
+-- must do nontrivial things with compound statements.
+example_2_0 :: E f val (Obj (Constant Int8))
+example_2_0 = local_auto example_0_3 $ \x ->
+  local_auto example_0_4 $ \y ->
+    compare_auto <@> i8 (-1) <@> i8 0 <@> i8 1 <@> (cast (UpCastInteger TwoWiderOne) <@> x) <@> y
+
+example_2_1 :: E f val (Obj (Varying ('S 'Z) UInt8))
+example_2_1 = Pilot.constant_auto (S_Rep Z_Rep) <@> u8 42
 
 -- This is like
 --

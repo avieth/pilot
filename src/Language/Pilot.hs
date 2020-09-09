@@ -124,6 +124,7 @@ module Language.Pilot
   , Object.negate
   , Object.neg
   , Object.abs
+  , Object.compare_auto
   , Object.cmp
   , Object.and
   , Object.or

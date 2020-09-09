@@ -111,7 +111,8 @@ liftPoint2 :: (Point a -> Point b -> Point c)
            -> Val f Value (Obj (Constant a))
            -> Val f Value (Obj (Constant b))
            -> Val f Value (Obj (Constant c))
-liftPoint2 f (Object (Constant a)) (Object (Constant b)) = Object (Constant (f a b))
+liftPoint2 f (Object (Constant a)) (Object (Constant b)) =
+  Object (Constant (f a b))
 
 interpPure :: Interpret Object.Form Identity Value
 interpPure trep form = case form of
@@ -148,8 +149,13 @@ interpPure trep form = case form of
     repr (liftPoint Point.negate <$> getRepr x)
   Integer_Abs_f -> fun $ \x ->
     repr (liftPoint Point.abs <$> getRepr x)
-  Integer_Compare_f -> fun $ \x -> fun $ \y ->
-    repr (liftPoint2 Point.compare <$> getRepr x <*> getRepr y)
+
+  Integer_Compare_f -> fun $ \ifLt -> fun $ \ifEq -> fun $ \ifGt -> fun $ \x -> fun $ \y ->
+    let lt = fromConstant . fromObject <$> getRepr ifLt
+        eq = fromConstant . fromObject <$> getRepr ifEq
+        gt = fromConstant . fromObject <$> getRepr ifGt
+        cmp = \x' y' -> runIdentity (Point.compare <$> lt <*> eq <*> gt <*> pure x' <*> pure y')
+    in  repr (liftPoint2 cmp <$> getRepr x <*> getRepr y)
 
   Bytes_And_f -> fun $ \x -> fun $ \y ->
     repr (liftPoint2 Point.and <$> getRepr x <*> getRepr y)

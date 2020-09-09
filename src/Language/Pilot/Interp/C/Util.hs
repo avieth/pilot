@@ -71,10 +71,21 @@ blockItemInitialize :: C.TypeName -> C.Ident -> C.Expr -> C.BlockItem
 blockItemInitialize tyName name expr = C.BlockItemDecln $
   declnInitialize tyName name expr
 
+blockItemDeclareUninitialized :: C.TypeName -> C.Ident -> C.BlockItem
+blockItemDeclareUninitialized tyName name = C.BlockItemDecln $
+  declnUninitialized tyName name
+
 declnInitialize :: C.TypeName -> C.Ident -> C.Expr -> C.Decln
 declnInitialize tyName@(C.TypeName specQualList mAbsDeclr) name expr = C.Decln
   (specQualListToDeclnSpecs specQualList)
   (Just (declnInitializer mAbsDeclr name expr))
+
+declnUninitialized :: C.TypeName -> C.Ident -> C.Decln
+declnUninitialized tyName@(C.TypeName specQualList mAbsDeclr) name = C.Decln
+  (specQualListToDeclnSpecs specQualList)
+  (Just (C.InitDeclrBase (C.InitDeclr (C.Declr mPtr (C.DirectDeclrIdent name)))))
+  where
+  mPtr = mAbstractDeclrToPtr mAbsDeclr
 
 specQualListToDeclnSpecs :: C.SpecQualList -> C.DeclnSpecs
 specQualListToDeclnSpecs (C.SpecQualType tySpec Nothing) =
@@ -389,6 +400,9 @@ relExprIsExpr = condExprIsExpr . relExprIsCondExpr
 
 castExprIsExpr :: C.CastExpr -> C.Expr
 castExprIsExpr = condExprIsExpr . castExprIsCondExpr
+
+eqExprIsExpr :: C.EqExpr -> C.Expr
+eqExprIsExpr = condExprIsExpr . eqExprIsCondExpr
 
 append_ident :: C.Ident -> C.Ident -> C.Ident
 append_ident lft (C.IdentBase idnd) = C.IdentConsNonDigit lft idnd

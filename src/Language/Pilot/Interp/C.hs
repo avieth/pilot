@@ -166,7 +166,7 @@ mkTransUnit progName pstate v = case mProgNameIdent of
   VCons varyingExpr _ = valueVaryingExprs v
 
   inhabited = varyingValueIsInhabited v
-  tyName = valueVaryingTypeName v
+  ctypeInfo = valueVaryingCTypeInfo v
 
   declns :: Maybe C.TransUnit
   declns =
@@ -234,7 +234,9 @@ mkTransUnit progName pstate v = case mProgNameIdent of
   -- all of the other stuff required for I/O and memory streams. See
   -- `varyingExprWithUpdates`
   stepFunDef :: C.FunDef
-  stepFunDef = elaborateToFunction identStep tyName (Just <$> varyingExprWithUpdates)
+  stepFunDef = elaborateToFunction identStep
+    (ctypeInfoToTypeName ctypeInfo)
+    (Just <$> varyingExprWithUpdates)
 
   -- We can use the LocalM monad to include the I/O and memory stream stuff.
   --
@@ -256,7 +258,7 @@ mkTransUnit progName pstate v = case mProgNameIdent of
     -- Now the program can be elaborated to get the return value, but we
     -- must assign it, because it may use values that are about to be updated.
     cexpr <- varyingExpr
-    retIdent <- makeBinding trep inhabited tyName cexpr
+    retIdent <- makeBinding trep inhabited ctypeInfo cexpr
     -- Copy outputs to their extern locations.
     sequence copyExternOutputs
     -- The static array indices must advance now, so that on the next frame
@@ -404,8 +406,8 @@ makeIdempotent
   -> ValueM (Value (Constant t))
 makeIdempotent trep inhabited lm = do
   binderId <- genBinderId
-  tyName <- typeName inhabited (Constant trep)
-  pure $ constantValue (Obj (Constant trep)) inhabited tyName $ LocalM $ do
+  ctypeInfo <- ctypeInfoPoint inhabited trep
+  pure $ constantValue (Obj (Constant trep)) inhabited ctypeInfo $ LocalM $ do
     lst <- State.get
     case Map.lookup binderId (local_state_binders lst) of
       Just (Binding ident expr) -> pure (C.identIsExpr ident)
@@ -418,7 +420,7 @@ makeIdempotent trep inhabited lm = do
         case Map.lookup binderId binders of
           Just _  -> error "bug: binder id taken"
           Nothing -> do
-            ident <- unLocalM $ makeBinding trep inhabited tyName cexpr
+            ident <- unLocalM $ makeBinding trep inhabited ctypeInfo cexpr
             -- Even though makeBinding has added the block item, we must also
             -- update the BinderId map.
             unLocalM $ addBinding binderId ident cexpr
@@ -426,10 +428,30 @@ makeIdempotent trep inhabited lm = do
 
 -- | Makes an identifier for the binding and adds the block item to do the
 -- assignment. The binding is const.
-makeBinding :: Object.Point.TypeRep t -> Inhabited t -> C.TypeName -> C.Expr -> LocalM C.Ident
-makeBinding trep inhabited tyName cexpr = do
+makeBinding
+  :: Object.Point.TypeRep t
+  -> Inhabited t
+  -> CTypeInfo
+  -> C.Expr
+  -> LocalM C.Ident
+makeBinding trep inhabited ctypeInfo cexpr = do
   ident <- genFreshName
-  let !bm = C.blockItemInitialize tyName ident cexpr
+  let -- This makes a type name with const out front.
+      !tyName = ctypeInfoToTypeName ctypeInfo
+      !bm = C.blockItemInitialize tyName ident cexpr
+  addBlockItem bm
+  pure ident
+
+-- | Like 'makeBinding' but it's uninitialized.
+declareUninitialized
+  :: Object.Point.TypeRep t
+  -> Inhabited t
+  -> CTypeInfo
+  -> LocalM C.Ident
+declareUninitialized trep inhabited ctypeInfo = do
+  ident <- genFreshName
+  let tyName = ctypeInfoToTypeNameNonConst ctypeInfo
+      !bm = C.blockItemDeclareUninitialized tyName ident
   addBlockItem bm
   pure ident
 
@@ -475,6 +497,25 @@ addBlockItem bm = LocalM $ State.modify $ \ls ->
         Just bms -> Just (C.BlockItemCons bms bm)
       !ls' = ls { local_state_block_items = bms }
   in  ls'
+
+-- | Run it with the current local binders and binder identifier, but an
+-- empty block item list, then return those block items. The state is not
+-- changed. It's assumed that the block items returned, if used, will be put
+-- into a new C block scope, so that any bindings made in there go out of
+-- scope and the local binder state remains valid.
+withNewScope :: LocalM t -> LocalM (t, Maybe C.BlockItemList)
+withNewScope it = LocalM $ do
+  originalState <- State.get
+  let subState = originalState { local_state_block_items = Nothing }
+      (t, subState') = runIdentity $ runStateT (unLocalM it) subState
+      bms :: Maybe C.BlockItemList
+      bms = local_state_block_items subState'
+  pure (t, bms)
+
+
+withNewScopeCompoundStmt :: LocalM t -> LocalM (t, C.CompoundStmt)
+withNewScopeCompoundStmt = (fmap . fmap) C.Compound . withNewScope
+
 
 -- | Runs the LocalM with an empty binding context, creating a C function
 -- definition which takes no arguments and returns the given value's C
@@ -1778,7 +1819,7 @@ externInput name trep inhabited = Repr.object $ programValue vrep $ do
     let !identCopy = assertValidStringIdentifier fullNameCopy
     pure (ident, identCopy)
 
-  tyName <- valueMInProgramM $ typeName inhabited (Constant trep)
+  ctypeInfo <- valueMInProgramM $ ctypeInfoPoint inhabited trep
   
   let inputData :: ExternInputData
       inputData = ExternInputData identCopy
@@ -1789,7 +1830,8 @@ externInput name trep inhabited = Repr.object $ programValue vrep $ do
       externIO = ExternIO
         { extern_io_type  = trep
         , extern_io_inhabited = inhabited
-        , extern_io_type_name = tyName
+          -- TODO just hold the CTypeInfo and do this at write-out time.
+        , extern_io_type_name = ctypeInfoToTypeName ctypeInfo
         , extern_io_ident = ident
         , extern_io_defn  = defn
         }
@@ -1809,7 +1851,7 @@ externInput name trep inhabited = Repr.object $ programValue vrep $ do
   --  identifier.
   let vrep = Obj (Varying Z_Rep trep)
       cexpr = identIsExpr identCopy
-      value = varyingValue_ vrep inhabited tyName (VCons cexpr VNil)
+      value = varyingValue_ vrep inhabited ctypeInfo (VCons cexpr VNil)
 
   pure $ Repr.object value
 
@@ -1883,12 +1925,12 @@ deferredKnotStaticDeclarations (DeferredKnot _ names _ _) = go names
   -- There are no declarations required for varyings over uninhabited types.
 
   go :: StaticVaryingNames r -> [C.Decln]
-  go (StaticVaryingNamesTied nrep trep inhabited tyName names) =
-    [ arrayDeclaration (static_array_name names) nrep trep tyName
+  go (StaticVaryingNamesTied nrep trep inhabited ctypeInfo names) =
+    [ arrayDeclaration (static_array_name names) nrep trep ctypeInfo
     , indexDeclaration (static_array_index_name names)
     ]
-  go (StaticVaryingNamesTie nrep trep inhabited tyName names rec) =
-    [ arrayDeclaration (static_array_name names) nrep trep tyName
+  go (StaticVaryingNamesTie nrep trep inhabited ctypeInfo names rec) =
+    [ arrayDeclaration (static_array_name names) nrep trep ctypeInfo
     , indexDeclaration (static_array_index_name names)
     ] ++ go rec
 
@@ -1896,10 +1938,11 @@ deferredKnotStaticDeclarations (DeferredKnot _ names _ _) = go names
     :: C.Ident
     -> NatRep ('S n)
     -> Object.Point.TypeRep t
-    -> C.TypeName
+    -> CTypeInfo
     -> C.Decln
-  arrayDeclaration ident sizeLessOne trep (C.TypeName specQualList mAbsDeclr) =
-    let specs = C.specQualListToDeclnSpecs specQualList
+  arrayDeclaration ident sizeLessOne trep ctypeInfo =
+    let (C.TypeName specQualList mAbsDeclr) = ctypeInfoToTypeName ctypeInfo
+        specs = C.specQualListToDeclnSpecs specQualList
 
         mPtr = C.mAbstractDeclrToPtr mAbsDeclr
 
@@ -2108,20 +2151,20 @@ staticVaryingInitVector
      Object.Point.TypeRep a
   -> NatRep ('S n)
   -> Repr.Repr ValueM Value (Object.Vector ('S n) (Obj (Constant a)))
-  -> ValueM (Inhabited a, C.TypeName, Vec ('S n) (LocalM C.Expr))
+  -> ValueM (Inhabited a, CTypeInfo, Vec ('S n) (LocalM C.Expr))
 
 staticVaryingInitVector arep (S_Rep Z_Rep) repr = do
   v <- Repr.fromObject <$> Repr.getRepr repr
   pure $ case valueDefn v of
-    ValueConstant inhabited tyName expr -> (inhabited, tyName, VCons expr VNil)
+    ValueConstant inhabited ctypeInfo expr -> (inhabited, ctypeInfo , VCons expr VNil)
 
 staticVaryingInitVector arep (S_Rep nrep@(S_Rep _)) repr = do
   (l, r) <- Repr.fromProduct <$> Repr.getRepr repr
   v <- Repr.fromObject <$> Repr.getRepr l
   case valueDefn v of
-    ValueConstant inhabited tyName expr -> do
+    ValueConstant inhabited ctypeInfo expr -> do
       (_inhabited, _, vec) <- staticVaryingInitVector arep nrep r
-      pure $ (inhabited, tyName, VCons expr vec)
+      pure $ (inhabited, ctypeInfo, VCons expr vec)
 
 staticVaryingNexts
   :: forall s t i r .
@@ -2144,12 +2187,12 @@ staticVaryingNext
   :: forall a .
      Object.Point.TypeRep a
   -> Repr.Repr ValueM Value (Obj (Varying Z a))
-  -> ValueM (Inhabited a, C.TypeName, LocalM C.Expr)
+  -> ValueM (Inhabited a, CTypeInfo, LocalM C.Expr)
 
 staticVaryingNext arep repr = do
   v <- Repr.fromObject <$> Repr.getRepr repr
   pure $ case valueDefn v of
-    ValueVarying inhabited tyName (VCons it VNil) -> (inhabited, tyName, it)
+    ValueVarying inhabited ctypeInfo (VCons it VNil) -> (inhabited, ctypeInfo, it)
 
 
 data StaticVaryingNexts (t :: Meta.Type Object.Type) where
@@ -2236,7 +2279,7 @@ data StaticVaryingNames (r :: Meta.Type Object.Type) where
     :: NatRep ('S n)
     -> Object.Point.TypeRep a
     -> Inhabited a
-    -> C.TypeName
+    -> CTypeInfo
     -> StaticArrayNames
     -> StaticVaryingNames (Obj (Varying ('S n) a))
 
@@ -2244,7 +2287,7 @@ data StaticVaryingNames (r :: Meta.Type Object.Type) where
     :: NatRep ('S n)
     -> Object.Point.TypeRep a
     -> Inhabited a
-    -> C.TypeName
+    -> CTypeInfo
     -> StaticArrayNames
     -> StaticVaryingNames r
     -> StaticVaryingNames (Obj (Varying ('S n) a) :* r)
@@ -2309,14 +2352,14 @@ genStaticVaryingNames
 
 genStaticVaryingNames (Obj (Varying _ arep)) (Object.Tied nrep _) (StaticVaryingInitsTied _ inhabited _) = do
   names <- genStaticArrayNames
-  tyName <- valueMInProgramM $ typeName inhabited (Constant arep)
-  pure $ StaticVaryingNamesTied nrep arep inhabited tyName names
+  ctypeInfo <- valueMInProgramM $ ctypeInfoPoint inhabited arep
+  pure $ StaticVaryingNamesTied nrep arep inhabited ctypeInfo names
 
 genStaticVaryingNames (Obj (Varying _ arep) :* rs) (Object.Tie nrep _ kn) (StaticVaryingInitsTie _ inhabited _ recInits) = do
   names <- genStaticArrayNames
-  tyName <- valueMInProgramM $ typeName inhabited (Constant arep)
+  ctypeInfo <- valueMInProgramM $ ctypeInfoPoint inhabited arep
   rec <- genStaticVaryingNames rs kn recInits
-  pure $ StaticVaryingNamesTie nrep arep inhabited tyName names rec
+  pure $ StaticVaryingNamesTie nrep arep inhabited ctypeInfo names rec
 
 -- TODO FIXME why can't GHC figure out that the above 2 clauses are an
 -- exhaustive match? Should not have to give all of the following explicit
@@ -2360,13 +2403,13 @@ shiftedStaticVaryingValues
   :: Object.Knot s t i r
   -> StaticVaryingNames r
   -> Repr.Repr ValueM Value s
-shiftedStaticVaryingValues (Object.Tied _ _)   (StaticVaryingNamesTied (S_Rep nrep) trep inhabited tyName names)     = Repr.object $
-  varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep)
+shiftedStaticVaryingValues (Object.Tied _ _)   (StaticVaryingNamesTied (S_Rep nrep) trep inhabited ctypeInfo names)     = Repr.object $
+  varyingValue_ (Obj (Varying nrep trep)) inhabited ctypeInfo (staticArrayIndexExprs names arraySize nrep)
   where
   arraySize = natToIntegral nrep + 2
 
-shiftedStaticVaryingValues (Object.Tie _ _ kn) (StaticVaryingNamesTie  (S_Rep nrep) trep inhabited tyName names rec) = Repr.product
-  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) inhabited tyName (staticArrayIndexExprs names arraySize nrep))
+shiftedStaticVaryingValues (Object.Tie _ _ kn) (StaticVaryingNamesTie  (S_Rep nrep) trep inhabited ctypeInfo names rec) = Repr.product
+  ( Repr.object (varyingValue_ (Obj (Varying nrep trep)) inhabited ctypeInfo (staticArrayIndexExprs names arraySize nrep))
   , shiftedStaticVaryingValues kn rec
   )
   where
@@ -2402,10 +2445,10 @@ data Value (t :: Object.Type) = Value
 -- Types which are not inhabited do not get a C representation, which should
 -- in theory make it easier to define a correct interpretation.
 data ValueDefn (t :: Object.Type) where
-  ValueConstant :: Inhabited t -> !C.TypeName ->             LocalM C.Expr  -> ValueDefn (Constant   t)
+  ValueConstant :: Inhabited t -> !CTypeInfo ->             LocalM C.Expr  -> ValueDefn (Constant   t)
   -- | A varying of prefix size 0 has 1 expression (the current, first/oldest
   -- value).
-  ValueVarying  :: Inhabited t -> !C.TypeName -> Vec ('S n) (LocalM C.Expr) -> ValueDefn (Varying  n t)
+  ValueVarying  :: Inhabited t -> !CTypeInfo -> Vec ('S n) (LocalM C.Expr) -> ValueDefn (Varying  n t)
   ValueProgram  :: ProgramM (Repr.Repr ValueM Value t) -> ValueDefn (Program    t)
 
 -- | Change the type of a constant value without changing its C representation.
@@ -2464,14 +2507,21 @@ valueProgramRepr :: Value (Program t) -> ProgramM (Repr.Repr ValueM Value t)
 valueProgramRepr v = case valueDefn v of
   ValueProgram it -> it
 
+valueConstantCTypeInfo :: Value (Constant t) -> CTypeInfo
+valueConstantCTypeInfo v = case valueDefn v of
+  ValueConstant _ ctypeInfo _ -> ctypeInfo
+
+-- | Is const
 valueConstantTypeName :: Value (Constant t) -> C.TypeName
-valueConstantTypeName v = case valueDefn v of
-  ValueConstant _ tyName _ -> tyName
+valueConstantTypeName = ctypeInfoToTypeName . valueConstantCTypeInfo
 
+valueVaryingCTypeInfo :: Value (Varying n t) -> CTypeInfo
+valueVaryingCTypeInfo v = case valueDefn v of
+  ValueVarying _ ctypeInfo _ -> ctypeInfo
+
+-- | Is const
 valueVaryingTypeName :: Value (Varying n t) -> C.TypeName
-valueVaryingTypeName v = case valueDefn v of
-  ValueVarying _ tyName _ -> tyName
-
+valueVaryingTypeName = ctypeInfoToTypeName . valueVaryingCTypeInfo
 
 constantValueToExpr
   :: Repr.Val ValueM Value (Obj (Constant t))
@@ -2515,36 +2565,36 @@ constantValueType v = case valueType v of
 constantValue
   :: Meta.TypeRep Object.TypeRep (Obj (Constant t))
   -> Inhabited t
-  -> C.TypeName
+  -> CTypeInfo
   -> LocalM C.Expr
   -> Value (Constant t)
-constantValue (Obj trep) inhabited tyName expr = value trep
-  (ValueConstant inhabited tyName expr)
+constantValue (Obj trep) inhabited ctypeInfo expr = value trep
+  (ValueConstant inhabited ctypeInfo expr)
 
 constantValue_
   :: Meta.TypeRep Object.TypeRep (Obj (Constant t))
   -> Inhabited t
-  -> C.TypeName
+  -> CTypeInfo
   -> C.Expr
   -> Value (Constant t)
-constantValue_ trep inhabited tyName cexpr = constantValue trep inhabited tyName (pure cexpr)
+constantValue_ trep inhabited ctypeInfo cexpr = constantValue trep inhabited ctypeInfo (pure cexpr)
 
 -- | Make an _inhabited_ varying value.
 varyingValue
   :: Meta.TypeRep Object.TypeRep (Obj (Varying n t))
   -> Inhabited t
-  -> C.TypeName
+  -> CTypeInfo
   -> Vec (S n) (LocalM C.Expr)
   -> Value (Varying n t)
-varyingValue (Obj trep) inhabited tyName exprs = value trep (ValueVarying inhabited tyName exprs)
+varyingValue (Obj trep) inhabited ctypeInfo exprs = value trep (ValueVarying inhabited ctypeInfo exprs)
 
 varyingValue_
   :: Meta.TypeRep Object.TypeRep (Obj (Varying n t))
   -> Inhabited t
-  -> C.TypeName
+  -> CTypeInfo
   -> Vec (S n) C.Expr
   -> Value (Varying n t)
-varyingValue_ trep inhabited tyName exprs = varyingValue trep inhabited tyName (vecMap pure exprs)
+varyingValue_ trep inhabited ctypeInfo exprs = varyingValue trep inhabited ctypeInfo (vecMap pure exprs)
 
 programValue
   :: Meta.TypeRep Object.TypeRep t
@@ -2571,8 +2621,8 @@ overConstantValue1 fty fexpr = \v ->
   let ty = fty (valueConstantType v)
       ex = fexpr <$> valueConstantExpr v
       inhabited = constantValueIsInhabited v
-      tyName = valueConstantTypeName v
-  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+      ctypeInfo = valueConstantCTypeInfo v
+  in  value (Constant ty) (ValueConstant inhabited ctypeInfo ex)
 
 -- | Specialization of 'overConstantValue1' for integers, possible because we
 -- know that integer types are always inhabited, and we can get their type names
@@ -2585,19 +2635,19 @@ overConstantValue1Integer fty fexpr = \v ->
   let ty = fty (valueConstantType v)
       ex = fexpr <$> valueConstantExpr v
       inhabited = integerIsInhabited
-      tyName = typeNameInteger ty
-  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+      ctypeInfo = ctypeInfoInteger ty
+  in  value (Constant ty) (ValueConstant inhabited ctypeInfo ex)
 
 overConstantValue1Heterogeneous
   :: Inhabited t
-  -> C.TypeName -- ^ of t
+  -> CTypeInfo -- ^ of t
   -> (Object.Point.TypeRep s -> Object.Point.TypeRep t)
   -> (C.Expr -> C.Expr)
   -> (Value (Constant s) -> Value (Constant t))
-overConstantValue1Heterogeneous inhabited tyName fty fexpr = \v ->
+overConstantValue1Heterogeneous inhabited ctypeInfo fty fexpr = \v ->
   let ty = fty (valueConstantType v)
       ex = fexpr <$> valueConstantExpr v
-  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+  in  value (Constant ty) (ValueConstant inhabited ctypeInfo ex)
 
 -- | Map a 2-arguemtn C expression level function over inhabited values.
 overConstantValue2
@@ -2608,75 +2658,87 @@ overConstantValue2 fty fexpr = \v1 v2 ->
   let ty = fty (valueConstantType v1) (valueConstantType v2)
       ex = fexpr <$> valueConstantExpr v1 <*> valueConstantExpr v2
       inhabited = constantValueIsInhabited v1
-      tyName = valueConstantTypeName v1
-  in  value (Constant ty) (ValueConstant inhabited tyName ex)
+      ctypeInfo = valueConstantCTypeInfo v1
+  in  value (Constant ty) (ValueConstant inhabited ctypeInfo ex)
 
 interpC :: Repr.Interpret Object.Form ValueM Value
 interpC trep form = case form of
 
   -- TODO may be best to put explicit type casts on these.
-  Object.Integer_Literal_UInt8_f  w8  -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+  Object.Integer_Literal_UInt8_f  w8  -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral w8)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_UInt16_f w16 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_UInt16_f w16 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral w16)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_UInt32_f w32 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_UInt32_f w32 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral w32)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_UInt64_f w64 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_UInt64_f w64 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral w64)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
 
-  Object.Integer_Literal_Int8_f  i8  -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+  Object.Integer_Literal_Int8_f  i8  -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral i8)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_Int16_f i16 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_Int16_f i16 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral i16)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_Int32_f i32 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_Int32_f i32 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral i32)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
-  Object.Integer_Literal_Int64_f i64 -> Repr.object . constantValue_ trep integerIsInhabited tyName $
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Integer_Literal_Int64_f i64 -> Repr.object . constantValue_ trep integerIsInhabited ctypeInfo $
     integerLiteralExpr tyName (fromIntegral i64)
     where
     Obj (Constant irep) = trep
-    tyName = typeNameInteger irep
+    ctypeInfo = ctypeInfoInteger irep
+    tyName = ctypeInfoToTypeName ctypeInfo
 
-  Object.Bytes_Literal_8_f  w8  -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+  Object.Bytes_Literal_8_f  w8  -> Repr.object . constantValue_ trep bytesIsInhabited ctypeInfo $
     bytesLiteralExpr (typeNameBytes brep) (fromIntegral w8)
     where
     Obj (Constant brep) = trep
-    tyName = typeNameBytes brep
-  Object.Bytes_Literal_16_f w16 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    ctypeInfo = ctypeInfoBytes brep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Bytes_Literal_16_f w16 -> Repr.object . constantValue_ trep bytesIsInhabited ctypeInfo $
     bytesLiteralExpr (typeNameBytes brep) (fromIntegral w16)
     where
     Obj (Constant brep) = trep
-    tyName = typeNameBytes brep
-  Object.Bytes_Literal_32_f w32 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    ctypeInfo = ctypeInfoBytes brep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Bytes_Literal_32_f w32 -> Repr.object . constantValue_ trep bytesIsInhabited ctypeInfo $
     bytesLiteralExpr (typeNameBytes brep) (fromIntegral w32)
     where
     Obj (Constant brep) = trep
-    tyName = typeNameBytes brep
-  Object.Bytes_Literal_64_f w64 -> Repr.object . constantValue_ trep bytesIsInhabited tyName $
+    ctypeInfo = ctypeInfoBytes brep
+    tyName = ctypeInfoToTypeName ctypeInfo
+  Object.Bytes_Literal_64_f w64 -> Repr.object . constantValue_ trep bytesIsInhabited ctypeInfo $
     bytesLiteralExpr tyName (fromIntegral w64)
     where
     Obj (Constant brep) = trep
-    tyName = typeNameBytes brep
+    ctypeInfo = ctypeInfoBytes brep
+    tyName = ctypeInfoToTypeName ctypeInfo
 
   Object.Integer_Add_f -> Repr.fun $ \x -> Repr.fun $ \y ->
     Repr.repr (overObject2 addValue <$> Repr.getRepr x <*> Repr.getRepr y)
@@ -2693,7 +2755,10 @@ interpC trep form = case form of
   Object.Integer_Abs_f -> Repr.fun $ \x ->
     Repr.repr (overObject1 absValue <$> Repr.getRepr x)
 
-  Object.Integer_Compare_f -> error "TODO integer compare"
+  -- FIXME implement this finally.
+  Object.Integer_Compare_f -> Repr.fun $ \ifLt -> Repr.fun $ \ifEq -> Repr.fun $ \ifGt ->
+    Repr.fun $ \xval -> Repr.fun $ \yval ->
+      interpIntegerCompare ifLt ifEq ifGt xval yval
 
   Object.Bytes_And_f -> Repr.fun $ \x -> Repr.fun $ \y ->
     Repr.repr (overObject2 andValue <$> Repr.getRepr x <*> Repr.getRepr y)
@@ -3011,8 +3076,8 @@ interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage =
 
   unzipVarying (Obj trep)     nrep Object.MapObject        v = Repr.objectf $ do
     w <- vecTraverse Repr.getRepr v
-    let (inhabited, tyName, cexprs) = mkConstantExprs w
-    pure $ varyingValue (Obj trep) inhabited tyName cexprs
+    let (inhabited, ctypeInfo, cexprs) = mkConstantExprs w
+    pure $ varyingValue (Obj trep) inhabited ctypeInfo cexprs
 
   unzipVarying (lrep :* rrep) nrep (Object.MapProduct l r) v = Repr.valuef $ do
     w <- vecTraverse Repr.getRepr v
@@ -3025,10 +3090,104 @@ interpMap ((srep :-> _) :-> (_ :-> rrep)) nrep limage rimage =
   -- rest of the expressions.
   mkConstantExprs :: forall x n .
        Vec ('S n) (Repr.Val ValueM Value (Obj (Constant x)))
-    -> (Inhabited x, C.TypeName, Vec ('S n) (LocalM C.Expr))
+    -> (Inhabited x, CTypeInfo, Vec ('S n) (LocalM C.Expr))
   mkConstantExprs vs@(VCons constObj _) = case valueDefn (Repr.fromObject constObj) of
-    ValueConstant inhabited tyName _ ->
-      (inhabited, tyName, vecMap constantValueToExpr vs)
+    ValueConstant inhabited ctypeInfo _ ->
+      (inhabited, ctypeInfo, vecMap constantValueToExpr vs)
+
+
+-- | Integer comparison elaborates to C by making a new scope for each of
+-- the cases, and elaborating each of them into one branch of an if/elseif/else.
+--
+-- An uninitialized variable is declared outside of the if/elseif/else, and it
+-- is assigned as the last statement in each block. The resulting expression is
+-- this name, after the if/elseif/else block.
+--
+--   r_t r;
+--   if (x < y) {
+--     ...
+--     r = z;
+--   } else if (x > y) {
+--     ...
+--     r = z;
+--   } else {
+--     ...
+--     r = z;
+--   }
+--   z;
+--
+interpIntegerCompare
+  :: Repr.Repr ValueM Value (Obj (Constant r)) -- ^ If x < y
+  -> Repr.Repr ValueM Value (Obj (Constant r)) -- ^ If x = y
+  -> Repr.Repr ValueM Value (Obj (Constant r)) -- ^ If x > y
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Integer_t s w))) -- ^ x
+  -> Repr.Repr ValueM Value (Obj (Constant ('Object.Point.Integer_t s w))) -- ^ y
+  -> Repr.Repr ValueM Value (Obj (Constant r))
+interpIntegerCompare ifLt ifEq ifGt xval yval = Repr.objectf $ do
+  x <- Repr.fromObject <$> Repr.getRepr xval
+  y <- Repr.fromObject <$> Repr.getRepr yval
+  lt <- Repr.fromObject <$> Repr.getRepr ifLt
+  eq <- Repr.fromObject <$> Repr.getRepr ifEq
+  gt <- Repr.fromObject <$> Repr.getRepr ifGt
+  let rrep       = valueConstantType lt
+      rtyInfo    = valueConstantCTypeInfo lt
+      rinhabited = constantValueIsInhabited lt
+      exprM :: LocalM C.Expr
+      exprM = do
+
+        -- Arbitrarily elaborate x first. Shouldn't matter the order...
+        xexpr <- valueConstantExpr x
+        yexpr <- valueConstantExpr y
+
+        -- Allocate for the result, uninitialized.
+        ident <- C.identIsExpr <$> declareUninitialized rrep rinhabited rtyInfo
+
+        -- Make LocalM terms for each case: evaluate the argument, assign its
+        -- result to the ident. We run them in new scopes to get their compound
+        -- statements.
+        ((), ltstmt) <- withNewScopeCompoundStmt $ do
+          rexpr <- valueConstantExpr lt
+          let !assignExpr = C.ExprAssign $ C.Assign
+                (C.exprIsUnaryExpr ident)
+                C.AEq
+                (C.exprIsAssignExpr rexpr)
+              !bm = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $ assignExpr
+          addBlockItem bm
+
+        ((), eqstmt) <- withNewScopeCompoundStmt $ do
+          rexpr <- valueConstantExpr eq
+          let !assignExpr = C.ExprAssign $ C.Assign
+                (C.exprIsUnaryExpr ident)
+                C.AEq
+                (C.exprIsAssignExpr rexpr)
+              !bm = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $ assignExpr
+          addBlockItem bm
+
+        ((), gtstmt) <- withNewScopeCompoundStmt $ do
+          rexpr <- valueConstantExpr gt
+          let !assignExpr = C.ExprAssign $ C.Assign
+                (C.exprIsUnaryExpr ident)
+                C.AEq
+                (C.exprIsAssignExpr rexpr)
+              !bm = C.BlockItemStmt $ C.StmtExpr $ C.ExprStmt $ Just $ assignExpr
+          addBlockItem bm
+
+        let stmt :: C.Stmt
+            stmt =
+              C.StmtSelect $ C.SelectIfElse (ltExpr xexpr yexpr)
+                (C.StmtCompound ltstmt)
+                (C.StmtSelect $ C.SelectIfElse (gtExpr xexpr yexpr)
+                  (C.StmtCompound gtstmt)
+                  (C.StmtCompound eqstmt)
+                )
+
+        addBlockItem (C.BlockItemStmt stmt)
+        -- The whole expression gives that thing which was declared
+        -- uninitialized, and which is assigned by one of the if/then/else
+        -- branches
+        pure ident
+
+  pure $ constantValue (Obj (Constant rrep)) rinhabited rtyInfo exprM
 
 -- | We don't even need to do any checking here, GHC should ensure that all of
 -- our casts are safe (assuming the EDSL types are set up correctly).
@@ -3044,13 +3203,13 @@ castValue
 castValue (_ :-> Obj (Constant brep)) cast valueA = case cast of
 
   Object.UpCastInteger _ -> pure $ overConstantValue1Heterogeneous
-    integerIsInhabited (typeNameInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
+    integerIsInhabited (ctypeInfoInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
 
   Object.UpCastBytes _ -> pure $ overConstantValue1Heterogeneous
-    bytesIsInhabited (typeNameBytes brep) castTypeRep (castExpr (typeNameBytes brep)) valueA
+    bytesIsInhabited (ctypeInfoBytes brep) castTypeRep (castExpr (typeNameBytes brep)) valueA
 
   Object.UpCastToSigned _ -> pure $ overConstantValue1Heterogeneous
-    integerIsInhabited (typeNameInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
+    integerIsInhabited (ctypeInfoInteger brep) castTypeRep (castExpr (typeNameInteger brep)) valueA
 
   -- TODO implement this. It's not a simple C cast. It'll be a ternary
   -- expression
@@ -3160,6 +3319,14 @@ absExpr tyName x = ternaryCondExpr
   (gtExpr x (integerLiteralExpr tyName 0))
   (x)
   (negateExpr x)
+
+-- | first < second
+ltExpr :: C.Expr -> C.Expr -> C.Expr
+ltExpr l r = C.relExprIsExpr $ C.RelLT (C.exprIsRelExpr l) (C.exprIsShiftExpr r)
+
+-- | first == second
+eqExpr :: C.Expr -> C.Expr -> C.Expr
+eqExpr l r = C.eqExprIsExpr $ C.EqEq (C.exprIsEqExpr l) (C.exprIsRelExpr r)
 
 -- | first > second
 gtExpr :: C.Expr -> C.Expr -> C.Expr
@@ -3466,6 +3633,11 @@ data CTypeInfo = CTypeInfo
   , cPointer  :: !(Maybe C.Ptr)
   }
 
+ctypeInfoToTypeNameNonConst :: CTypeInfo -> C.TypeName
+ctypeInfoToTypeNameNonConst ctinfo = C.TypeName
+  (ctypeInfoSpecQualListNonConst ctinfo)
+  (fmap C.AbstractDeclr (cPointer ctinfo))
+
 -- | Always uses a const qualifier.
 ctypeInfoToTypeName :: CTypeInfo -> C.TypeName
 ctypeInfoToTypeName ctinfo = C.TypeName
@@ -3474,6 +3646,9 @@ ctypeInfoToTypeName ctinfo = C.TypeName
 
 ctypeInfoSpecQualList :: CTypeInfo -> C.SpecQualList
 ctypeInfoSpecQualList = C.specQualConst . C.specQualType . ctypeSpec
+
+ctypeInfoSpecQualListNonConst :: CTypeInfo -> C.SpecQualList
+ctypeInfoSpecQualListNonConst = C.specQualType . ctypeSpec
 
 ctypeInfoToPtr :: CTypeInfo -> Maybe C.Ptr
 ctypeInfoToPtr = cPointer
@@ -3743,7 +3918,7 @@ productRepresentation inhabited fields = case normalizedType trep of
   unitRepresentation trep nty = constantValue_
     (Obj (Constant trep))
     (inhabitedFromNormalized nty unitIsInhabited)
-    (ctypeInfoToTypeName unitCTypeInfo)
+    unitCTypeInfo
     (C.identIsExpr C.ident_NULL)
 
 
@@ -3859,7 +4034,7 @@ productRepresentation inhabited fields = case normalizedType trep of
   introProductProper trep inh nonUnitFields ntyRep ctypeInfo _ values = constantValue
     (Obj (Constant trep))
     inh
-    (ctypeInfoToTypeName ctypeInfo)
+    ctypeInfo
     (properProductStructInitializer (ctypeInfoToTypeName ctypeInfo)
       (NE.zip structFieldNames (properProductInits nonUnitFields values))
     )
@@ -3910,7 +4085,7 @@ productRepresentation inhabited fields = case normalizedType trep of
     constantValue
       (Obj (Constant trep))
       inh
-      (ctypeInfoToTypeName ctypeInfo)
+      ctypeInfo
       (properProductStructFieldSelector val ident)
 
   -- Recursive cases: skip over non-selected fields, advancing the field
@@ -4025,7 +4200,6 @@ productRepresentation inhabited fields = case normalizedType trep of
     infos <- properProductComponents_ rec treps inhs
     pure $ info : infos
 
-
 ctypeInfoSum
   :: Inhabited (Object.Point.Sum variants)
   -> All Object.Point.TypeRep variants
@@ -4037,4 +4211,14 @@ sumRepresentation
   :: Inhabited (Object.Point.Sum variants)
   -> All Object.Point.TypeRep variants
   -> ValueM (SumRepresentation variants)
-sumRepresentation inhabited variants = undefined
+sumRepresentation inhabited variants = case normalizedType trep of
+
+  Of nty -> case nty of
+
+    NormalizedSum nonVoidVariants normS -> case normS of
+
+      VoidIsNormal -> notEmptySum (normalizationPreservesInhabitedness nty inhabited) Refl
+
+  where
+
+  trep = Object.Point.Sum_r variants

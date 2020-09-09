@@ -118,6 +118,7 @@ module Language.Pilot.Object
   , negate
   , neg
   , abs
+  , compare_auto
   , cmp
 
   , and
@@ -325,9 +326,12 @@ data Form (t :: Meta.Type Type) where
     :-> Obj (Constant ('Integer_t 'Unsigned_t width))
     )
   Integer_Compare_f :: Form
-    (   Obj (Constant ('Integer_t sign width))
-    :-> Obj (Constant ('Integer_t sign width))
-    :-> Obj (Constant Cmp)
+    (   Obj (Constant r) -- ^ If x < y
+    :-> Obj (Constant r) -- ^ If x = y
+    :-> Obj (Constant r) -- ^ If x > y
+    :-> Obj (Constant ('Integer_t sign width)) -- ^ x
+    :-> Obj (Constant ('Integer_t sign width)) -- ^ y
+    :-> Obj (Constant r)
     )
 
   Bytes_And_f :: Form
@@ -583,6 +587,9 @@ data Cast (a :: Point.Type) (b :: Point.Type) where
   -- with possibility of failure if the unsigned number is too big.
   --
   -- The opposite direction is not here because it is done by absolute value.
+  --
+  -- TODO don't give a Maybe; instead take two terms, one in case it's nothing
+  -- and one in case it's properly casted.
   CastToSigned :: Cast
     ('Integer_t 'Unsigned_t width)
     (Maybe ('Integer_t 'Signed_t width))
@@ -742,12 +749,22 @@ abs :: Known width => E Form f val
   )
 abs = formal_auto Integer_Abs_f
 
+compare_auto :: (Known sign, Known width, Known r) => E Form f val
+  (   Obj (Constant r) -- lt
+  :-> Obj (Constant r) -- eq
+  :-> Obj (Constant r) -- gt
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant ('Integer_t sign width))
+  :-> Obj (Constant r)
+  )
+compare_auto = formal_auto Integer_Compare_f
+
 cmp :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Cmp)
   )
-cmp = formal_auto Integer_Compare_f
+cmp = formal_auto Integer_Compare_f <@> lt <@> eq <@> gt
 
 and :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
@@ -901,6 +918,15 @@ infixr 1 ==>
       -> E Form f val (Obj (Constant Bool))
       -> E Form f val (Obj (Constant Bool))
 x ==> y = implies <@> x <@> y
+
+lt :: E Form f val (Obj (Constant Cmp))
+lt = choose V_This <@> unit
+
+eq :: E Form f val (Obj (Constant Cmp))
+eq = choose (V_That V_This) <@> unit
+
+gt :: E Form f val (Obj (Constant Cmp))
+gt = choose (V_That (V_That V_This)) <@> unit
 
 is_lt :: E Form f val (Obj (Constant Cmp) :-> Obj (Constant Bool))
 is_lt = fun $ \x -> match (C_Or (C_Or (C_Or (C_Any)))) <@> x <@> cases

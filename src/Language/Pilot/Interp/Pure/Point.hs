@@ -250,23 +250,26 @@ abs (Integer (Int16 i16)) = Integer $ UInt16 (fromIntegral i16)
 abs (Integer (Int32 i32)) = Integer $ UInt32 (fromIntegral i32)
 abs (Integer (Int64 i64)) = Integer $ UInt64 (fromIntegral i64)
 
-compare :: Point ('Object.Point.Integer_t s w)
+compare :: Point r
+        -> Point r
+        -> Point r
         -> Point ('Object.Point.Integer_t s w)
-        -> Point Object.Cmp
-compare (Integer (UInt8 x))  (Integer (UInt8 y))  = compare_ x y
-compare (Integer (UInt16 x)) (Integer (UInt16 y)) = compare_ x y
-compare (Integer (UInt32 x)) (Integer (UInt32 y)) = compare_ x y
-compare (Integer (UInt64 x)) (Integer (UInt64 y)) = compare_ x y
-compare (Integer (Int8 x))  (Integer (Int8 y))  = compare_ x y
-compare (Integer (Int16 x)) (Integer (Int16 y)) = compare_ x y
-compare (Integer (Int32 x)) (Integer (Int32 y)) = compare_ x y
-compare (Integer (Int64 x)) (Integer (Int64 y)) = compare_ x y
+        -> Point ('Object.Point.Integer_t s w)
+        -> Point r
+compare lt eq gt (Integer (UInt8 x))  (Integer (UInt8 y))  = compare_ lt eq gt x y
+compare lt eq gt (Integer (UInt16 x)) (Integer (UInt16 y)) = compare_ lt eq gt x y
+compare lt eq gt (Integer (UInt32 x)) (Integer (UInt32 y)) = compare_ lt eq gt x y
+compare lt eq gt (Integer (UInt64 x)) (Integer (UInt64 y)) = compare_ lt eq gt x y
+compare lt eq gt (Integer (Int8 x))  (Integer (Int8 y))  = compare_ lt eq gt x y
+compare lt eq gt (Integer (Int16 x)) (Integer (Int16 y)) = compare_ lt eq gt x y
+compare lt eq gt (Integer (Int32 x)) (Integer (Int32 y)) = compare_ lt eq gt x y
+compare lt eq gt (Integer (Int64 x)) (Integer (Int64 y)) = compare_ lt eq gt x y
 
-compare_ :: Ord n => n -> n -> Point Object.Cmp
-compare_ x y = case Ord.compare x y of
-  LT -> Sum_r (Some (Product_r All))
-  EQ -> Sum_r (Or (Some (Product_r All)))
-  GT -> Sum_r (Or (Or (Some (Product_r All))))
+compare_ :: Ord n => r -> r -> r -> n -> n -> r
+compare_ lt eq gt x y = case Ord.compare x y of
+  LT -> lt
+  EQ -> eq
+  GT -> gt
 
 bits_f
   :: (forall b . Bits.Bits b => b -> b -> b)
