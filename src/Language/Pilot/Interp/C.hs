@@ -3860,7 +3860,7 @@ productRepresentation inhabited fields = case normalizedType trep of
       NormalizedProductAnnihilated _ -> 
         notEmptySum (normalizationPreservesInhabitedness nty inhabited) Refl
 
-      -- The unit (empty product) is represented by (void *const restrict) NULL.
+      -- The unit (empty product) is represented by (void *) NULL.
       UnitIsNormal -> pure $ ProductRepresentation
         { productCTypeInfo = unitCTypeInfo
 
@@ -3968,9 +3968,7 @@ productRepresentation inhabited fields = case normalizedType trep of
 
   unitCTypeInfo = CTypeInfo
     { ctypeSpec = C.TVoid
-    , cPointer  = Just $ C.PtrBase $ Just $ C.TypeQualCons
-        (C.TypeQualBase C.QConst)
-        C.QRestrict
+    , cPointer  = Just (C.PtrBase Nothing)
     }
 
 
