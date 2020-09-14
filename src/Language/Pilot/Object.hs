@@ -275,6 +275,9 @@ instance Known t => Known ('Constant_t t) where
 instance (Known n, Known t) => Known ('Varying_t n t) where
   known _ = Varying_r (known (Proxy :: Proxy n)) (known (Proxy :: Proxy t))
 
+instance Known t => Known ('Program_t t) where
+  known _ = Program_r (known (Proxy :: Proxy t))
+
 data Form (t :: Meta.Type Type) where
 
   Integer_Literal_UInt8_f  :: Haskell.Word8  -> Form (Obj (Constant UInt8))
