@@ -407,11 +407,11 @@ makeIdempotent
   :: Object.Point.TypeRep t
   -> Inhabited t
   -> LocalM C.Expr
-  -> ValueM (Value (Constant t))
+  -> ValueM (LocalM C.Expr)
 makeIdempotent trep inhabited lm = do
   binderId <- genBinderId
   ctypeInfo <- ctypeInfoPoint inhabited trep
-  pure $ constantValue (Obj (Constant trep)) inhabited ctypeInfo $ LocalM $ do
+  pure $ LocalM $ do
     lst <- State.get
     case Map.lookup binderId (local_state_binders lst) of
       Just (Binding ident expr) -> pure (C.identIsExpr ident)
@@ -2902,16 +2902,30 @@ interpC trep form = case form of
 -- return the binder name.
 interpLet
   :: forall s t .
-     Meta.TypeRep Object.TypeRep (Obj (Constant s) :-> (Obj (Constant s) :-> t) :-> t)
-  -> Repr.Repr ValueM Value (Obj (Constant s))
-  -> Repr.Repr ValueM Value (Obj (Constant s) :-> t)
+     Meta.TypeRep Object.TypeRep (Obj s :-> (Obj s :-> t) :-> t)
+  -> Repr.Repr ValueM Value (Obj s)
+  -> Repr.Repr ValueM Value (Obj s :-> t)
   -> Repr.Repr ValueM Value t
-interpLet (Obj (Constant srep) :-> _) x k = Repr.valuef $ do
+interpLet (Obj srep :-> _) x k = Repr.valuef $ do
   constObj <- Repr.fromObject <$> Repr.getRepr x
   case valueDefn constObj of
-    ValueConstant inhabited _ exprM -> do
-      boundValue <- makeIdempotent srep inhabited exprM
-      Repr.getRepr (k Repr.<@> Repr.object boundValue)
+    -- let-binding a program doesn't introduce any sharing
+    ValueProgram _ -> Repr.getRepr (k Repr.<@> Repr.object constObj)
+    -- let-binding a constant replaces it with a value which will only be
+    -- evaluated at most once in C.
+    ValueConstant inhabited ctypeinfo exprM -> case srep of
+      Constant srep' -> do
+        boundExprM <- makeIdempotent srep' inhabited exprM
+        let boundValue = constantValue (Obj srep) inhabited ctypeinfo boundExprM
+        Repr.getRepr (k Repr.<@> Repr.object boundValue)
+    -- let-binding a varying means let-binding all of its points, so that for
+    -- example if a let-bound stream is dropped or shifted, the most recent
+    -- value is still let-bound and will only be evaluated at most once.
+    ValueVarying inhabited ctypeinfo exprsM -> case srep of
+      Varying nrep srep' -> do
+        boundExprsM <- vecTraverse (makeIdempotent srep' inhabited) exprsM
+        let boundValue = varyingValue (Obj srep) inhabited ctypeinfo boundExprsM
+        Repr.getRepr (k Repr.<@> Repr.object boundValue)
 
 
 interpProductIntro
