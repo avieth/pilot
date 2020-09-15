@@ -29,6 +29,7 @@ import Data.Functor.Identity
 import Data.Proxy
 import Language.Pilot as Pilot
 import Language.Pilot.Repr (evalObject, fromObject, getRepr)
+import qualified Language.Pilot.Repr as Meta (fst, snd)
 import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.C as C
 import qualified Language.Pilot.Interp.Pure.PrefixList as PrefixList
@@ -135,9 +136,9 @@ example_3_2 = maybe <@> u8 0 <@> identity <@> example_3_0
 --     where
 --     f = flip maybe ((+) 1)
 --
-example_3 :: forall f val n . ( Known n ) => E f val
+example_3_3 :: forall f val n . ( Known n ) => E f val
   (Obj (Varying n UInt8) :-> Obj (Varying n (Pilot.Maybe UInt8)) :-> Obj (Varying n UInt8))
-example_3 = fun $ \x -> fun $ \y ->
+example_3_3 = fun $ \x -> fun $ \y ->
   map_auto (known (Proxy :: Proxy n)) <@> (Pilot.uncurry <@> f) <@> (x <& y)
   where
   f = Pilot.flip <@> Pilot.maybe <@> (add <@> u8 1)
@@ -173,30 +174,51 @@ example_4 = fun $ \x -> fun $ \y -> fun $ \z ->
 -- as its current value, i.e. it's a constant stream. The argument is the
 -- initial value of this stream. So this is essentially the same thing as
 -- `lift` specialized to `'S 'Z` prefix size and `Constant UInt8` type.
-example_5 :: E f val
+example_5_0 :: E f val
   (Obj (Constant UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
-example_5 = knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop
+example_5_0 = knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop
   where
   loop :: E f val (Obj (Varying 'Z UInt8) :-> Obj (Varying 'Z UInt8))
   loop = Pilot.identity
 
 -- | Here's an integral.
-example_6 :: E f val
+example_5_1 :: E f val
   (Obj (Constant UInt8) :-> Obj (Varying 'Z UInt8) :-> Obj (Program (Obj (Varying ('S 'Z) UInt8))))
-example_6 = fun $ \c -> fun $ \f ->
+example_5_1 = fun $ \c -> fun $ \f ->
   let loop = fun $ \pre -> map_auto Z_Rep <@> (Pilot.uncurry <@> add) <@> (f <& pre)
   in  knot_auto (Tied (S_Rep Z_Rep) auto) <@> loop <@> c
 
-example_6_c_0 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
-example_6_c_0 = C.externInput "blargh" uint8_t C.integerIsInhabited >>= \inp ->
-  (example_6 <@> u8 0 <@> inp) >>= \result ->
+example_5_2 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
+example_5_2 = C.externInput "blargh" uint8_t C.integerIsInhabited >>= \inp ->
+  (example_5_1 <@> u8 0 <@> inp) >>= \result ->
     prog_pure auto <@> (drop_auto <@> result)
 
-example_6_c_1 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
-example_6_c_1 = example_6_c_0 >>= \stream ->
+example_5_3 :: E C.ValueM C.Value (Obj (Program (Obj (Varying 'Z UInt8))))
+example_5_3 = example_5_2 >>= \stream ->
   (C.externOutput "blorgh" uint8_t <@> stream) >>= \_ ->
     -- We have to give a stream in order to make a translation unit.
     prog_pure auto <@> (Pilot.constant_auto Z_Rep <@> u8 42)
+
+-- Sharing of values in the initializer, and composites in memory streams.
+example_6_0 :: E C.ValueM C.Value (Obj (Program (Obj (Varying ('S 'Z) (Maybe UInt8)))))
+example_6_0 = C.externInput "blargh" uint8_t C.integerIsInhabited >>= \inp ->
+  local_auto (add <@> u8 42 <@> u8 1) $ \x ->
+    -- TODO parens required here... make it so they aren't? >>= binds too tightly?
+    -- We want <@> to bind as tightly as possible.
+    (knot_auto (Tie One auto (Tied One auto)) <@> recdef <@> ((just <@> x) <& x)) >>= \streams ->
+      prog_pure auto <@> (constant_auto One <@> (just <@> x)) --prog_pure auto <@> Meta.fst streams
+  where
+  recdef :: E f val
+    (   (Obj (Varying 'Z (Maybe UInt8)) :* Obj (Varying 'Z UInt8))
+    :-> (Obj (Varying 'Z (Maybe UInt8)) :* Obj (Varying 'Z UInt8))
+    )
+  recdef = fun $ \streams ->
+    let s1 = Meta.fst streams
+        s2 = Meta.snd streams
+        f  = fun $ \a -> fun $ \b -> 
+               Pilot.maybe <@> b <@> (add <@> b) <@> a
+    in  local_auto (map_auto Zero <@> (Pilot.uncurry <@> f) <@> (s1 <& s2)) $ \r ->
+          s1 <& r
 
 -- | [42, 42 ..]
 example_7 :: E f val (Obj (Varying 'Z UInt8))
