@@ -28,7 +28,7 @@ import Prelude (String, Int)
 import Data.Functor.Identity
 import Data.Proxy
 import Language.Pilot as Pilot
-import Language.Pilot.Repr (evalObject, fromObject, getRepr)
+import Language.Pilot.Repr (fromObject, getRepr)
 import qualified Language.Pilot.Repr as Meta (fst, snd)
 import Language.Pilot.Interp.Pure as Pure
 import qualified Language.Pilot.Interp.C as C
@@ -38,19 +38,19 @@ import qualified Language.Pilot.Interp.Pure.Point as Point
 import Language.Pilot.Examples.Copilot as Examples
 
 showPureStream :: Prelude.Maybe Int -> E Identity Pure.Value (Obj (Varying n t)) -> String
-showPureStream n e = case runIdentity (evalObject e) of
+showPureStream n e = case fromObject (runIdentity (getRepr e)) of
   Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
 
 showPureStreamProgram
   :: Prelude.Maybe Int
   -> E Identity Pure.Value (Obj (Program (Obj (Varying n t))))
   -> String
-showPureStreamProgram n e = case runIdentity (evalObject e) of
-  Pure.Program p -> case runIdentity (evalObject p) of
+showPureStreamProgram n e = case fromObject (runIdentity (getRepr e)) of
+  Pure.Program p -> case fromObject (runIdentity (getRepr p)) of
     Pure.Varying pl -> PrefixList.prettyPrint n Point.prettyPrint pl
 
 showPurePoint :: E Identity Pure.Value (Obj (Constant t)) -> String
-showPurePoint e = case runIdentity (evalObject e) of
+showPurePoint e = case fromObject (runIdentity (getRepr e)) of
   Pure.Constant p -> Point.prettyPrint p
 
 example_0_0 :: E f val (Obj (Constant UInt8))
@@ -203,9 +203,7 @@ example_5_3 = example_5_2 >>= \stream ->
 example_6_0 :: E C.ValueM C.Value (Obj (Program (Obj (Varying ('S 'Z) (Maybe UInt8)))))
 example_6_0 = C.externInput "blargh" uint8_t C.integerIsInhabited >>= \inp ->
   local_auto (add <@> u8 42 <@> u8 1) $ \x ->
-    -- TODO parens required here... make it so they aren't? >>= binds too tightly?
-    -- We want <@> to bind as tightly as possible.
-    (knot_auto (Tie One auto (Tied One auto)) <@> recdef <@> ((just <@> x) <& x)) >>= \streams ->
+    knot_auto (Tie One auto (Tied One auto)) <@> recdef <@> ((just <@> x) <& x) >>= \streams ->
       prog_pure auto <@> (constant_auto One <@> (just <@> x)) --prog_pure auto <@> Meta.fst streams
   where
   recdef :: E f val

@@ -27,10 +27,10 @@ module Language.Pilot.Meta
 
   , TypeRep (..)
   , object_t
-  , to_object_t
   , arrow_t
   , product_t
   , terminal_t
+
   , (.->)
   , (.*)
   , pattern Obj
@@ -117,9 +117,6 @@ instance (Known a, Known b) => Known ('Product_t a b) where
 
 instance (Represented k) => Known ('Terminal_t :: Type k) where
   known _ = Terminal_r
-
-to_object_t :: TypeRep rep ('Object_t t) -> rep t
-to_object_t (Object_r orep) = orep
 
 object_t :: rep t -> TypeRep rep ('Object_t t)
 object_t orep = Object_r orep

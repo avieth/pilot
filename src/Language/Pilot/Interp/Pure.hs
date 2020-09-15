@@ -50,6 +50,21 @@ import Language.Pilot.Interp.Pure.PrefixList as PrefixList
 instance Interprets Object.Form Identity Value where
   interp = interpPure
 
+-- What we need is a nice interface on `Value` and on
+-- `Identity . Val Identity Value`
+--
+-- Yeah, things should go into
+--
+--   Repr Identity Value
+--
+-- since that's always what we work with.
+-- But then, why not just have
+-- 
+--   concrete :: f (val t) -> Repr f val (Obj t)
+--
+-- we have that, it's called `objectf`.
+--
+
 data Value (t :: Object.Type) where
   Constant :: Point t -> Value (Constant t)
   Varying  :: PrefixList n Point t -> Value (Varying n t)

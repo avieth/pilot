@@ -329,11 +329,11 @@ data Form (t :: Meta.Type Type) where
     :-> Obj (Constant ('Integer_t 'Unsigned_t width))
     )
   Integer_Compare_f :: Form
-    (   Obj (Constant r) -- ^ If x < y
-    :-> Obj (Constant r) -- ^ If x = y
-    :-> Obj (Constant r) -- ^ If x > y
-    :-> Obj (Constant ('Integer_t sign width)) -- ^ x
-    :-> Obj (Constant ('Integer_t sign width)) -- ^ y
+    (   Obj (Constant r) -- If x < y
+    :-> Obj (Constant r) -- If x = y
+    :-> Obj (Constant r) -- If x > y
+    :-> Obj (Constant ('Integer_t sign width)) -- x
+    :-> Obj (Constant ('Integer_t sign width)) -- y
     :-> Obj (Constant r)
     )
 
@@ -609,7 +609,7 @@ data Wider (w1 :: Width) (w2 :: Width) where
 let_ :: TypeRep a
      -> Meta.TypeRep TypeRep b
      -> E Form f val (Obj a :-> (Obj a :-> b) :-> b)
-let_ arep brep = formal Let_f rep
+let_ arep brep = formal rep Let_f
   where
   rep =    Meta.object_t arep
       .-> (Meta.object_t arep .-> brep)
@@ -636,35 +636,35 @@ local_auto
 local_auto = local auto auto
 
 u8 :: Haskell.Word8 -> E Form f val (Obj (Constant UInt8))
-u8 w = formal_auto $ Integer_Literal_UInt8_f w
+u8 w = formal auto $ Integer_Literal_UInt8_f w
 
 u16 :: Haskell.Word16 -> E Form f val (Obj (Constant UInt16))
-u16 w = formal_auto $ Integer_Literal_UInt16_f w
+u16 w = formal auto $ Integer_Literal_UInt16_f w
 
 u32 :: Haskell.Word32 -> E Form f val (Obj (Constant UInt32))
-u32 w = formal_auto $ Integer_Literal_UInt32_f w
+u32 w = formal auto $ Integer_Literal_UInt32_f w
 
 u64 :: Haskell.Word64 -> E Form f val (Obj (Constant UInt64))
-u64 w = formal_auto $ Integer_Literal_UInt64_f w
+u64 w = formal auto $ Integer_Literal_UInt64_f w
 
 i8 :: Haskell.Int8 -> E Form f val (Obj (Constant Int8))
-i8 i = formal_auto $ Integer_Literal_Int8_f i
+i8 i = formal auto $ Integer_Literal_Int8_f i
 
 i16 :: Haskell.Int16 -> E Form f val (Obj (Constant Int16))
-i16 i = formal_auto $ Integer_Literal_Int16_f i
+i16 i = formal auto $ Integer_Literal_Int16_f i
 
 i32 :: Haskell.Int32 -> E Form f val (Obj (Constant Int32))
-i32 i = formal_auto $ Integer_Literal_Int32_f i
+i32 i = formal auto $ Integer_Literal_Int32_f i
 
 i64 :: Haskell.Int64 -> E Form f val (Obj (Constant Int64))
-i64 i = formal_auto $ Integer_Literal_Int64_f i
+i64 i = formal auto $ Integer_Literal_Int64_f i
 
 add :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-add = formal_auto Integer_Add_f
+add = formal auto Integer_Add_f
 
 infixl 6 +
 (+) :: (Known sign, Known width)
@@ -678,7 +678,7 @@ subtract :: (Known sign, Known width) => E Form f val
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-subtract = formal_auto Integer_Subtract_f
+subtract = formal auto Integer_Subtract_f
 
 infixl 6 -
 (-) :: (Known sign, Known width)
@@ -692,7 +692,7 @@ multiply :: (Known sign, Known width) => E Form f val
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-multiply = formal_auto Integer_Multiply_f
+multiply = formal auto Integer_Multiply_f
 
 infixl 7 *
 (*) :: (Known sign, Known width)
@@ -706,7 +706,7 @@ divide :: (Known sign, Known width) => E Form f val
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-divide = formal_auto Integer_Divide_f
+divide = formal auto Integer_Divide_f
 
 div :: (Known sign, Known width)
     => E Form f val (Obj (Constant ('Integer_t sign width)))
@@ -719,7 +719,7 @@ modulo :: (Known sign, Known width) => E Form f val
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   )
-modulo = formal_auto Integer_Modulo_f
+modulo = formal auto Integer_Modulo_f
 
 mod :: (Known sign, Known width)
     => E Form f val (Obj (Constant ('Integer_t sign width)))
@@ -731,7 +731,7 @@ negate :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t width))
   :-> Obj (Constant ('Integer_t 'Signed_t width))
   )
-negate = formal_auto Integer_Negate_f
+negate = formal auto Integer_Negate_f
 
 neg :: (Known width)
     => E Form f val (Obj (Constant ('Integer_t 'Signed_t width)))
@@ -742,7 +742,7 @@ abs :: Known width => E Form f val
   (   Obj (Constant ('Integer_t 'Signed_t   width))
   :-> Obj (Constant ('Integer_t 'Unsigned_t width))
   )
-abs = formal_auto Integer_Abs_f
+abs = formal auto Integer_Abs_f
 
 compare_auto :: (Known sign, Known width, Known r) => E Form f val
   (   Obj (Constant r) -- lt
@@ -752,90 +752,90 @@ compare_auto :: (Known sign, Known width, Known r) => E Form f val
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant r)
   )
-compare_auto = formal_auto Integer_Compare_f
+compare_auto = formal auto Integer_Compare_f
 
 cmp :: (Known sign, Known width) => E Form f val
   (   Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant ('Integer_t sign width))
   :-> Obj (Constant Cmp)
   )
-cmp = formal_auto Integer_Compare_f <@> lt <@> eq <@> gt
+cmp = formal auto Integer_Compare_f <@> lt <@> eq <@> gt
 
 and :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
-and = formal_auto Bytes_And_f
+and = formal auto Bytes_And_f
 
 or :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
-or = formal_auto Bytes_Or_f
+or = formal auto Bytes_Or_f
 
 xor :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
-xor = formal_auto Bytes_Xor_f
+xor = formal auto Bytes_Xor_f
 
 complement :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t width))
   )
-complement = formal_auto Bytes_Complement_f
+complement = formal auto Bytes_Complement_f
 
 shiftl :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t 'W_One_t))
   :-> Obj (Constant ('Bytes_t width))
   )
-shiftl = formal_auto Bytes_Shiftl_f
+shiftl = formal auto Bytes_Shiftl_f
 
 shiftr :: Known width => E Form f val
   (   Obj (Constant ('Bytes_t width))
   :-> Obj (Constant ('Bytes_t 'W_One_t))
   :-> Obj (Constant ('Bytes_t width))
   )
-shiftr = formal_auto Bytes_Shiftr_f
+shiftr = formal auto Bytes_Shiftr_f
 
 cast :: (Known a, Known b) => Cast a b -> E Form f val
   (Obj (Constant a) :-> Obj (Constant b))
-cast c = formal_auto (Cast_f c)
+cast c = formal auto (Cast_f c)
 
 -- | Construct a product.
 bundle :: (Known ('Product_t fields), Known r) => Fields r fields -> E Form f val
   (r :-> Obj (Constant ('Product_t fields)))
-bundle fields = formal_auto (Product_Intro_f fields)
+bundle fields = formal auto (Product_Intro_f fields)
 
 -- | Construct a sum.
 choose :: (Known ('Sum_t variants), Known r) => Variant r variants -> E Form f val
   (r :-> Obj (Constant ('Sum_t variants)))
-choose variant = formal_auto (Sum_Intro_f variant)
+choose variant = formal auto (Sum_Intro_f variant)
 
 -- | Eliminate a product
 project :: (Known ('Product_t fields), Known field) => Selector fields field -> E Form f val
   (Obj (Constant ('Product_t fields)) :-> Obj (Constant field))
-project selector = formal_auto (Product_Elim_f selector)
+project selector = formal auto (Product_Elim_f selector)
 
 match :: (Known ('Sum_t variants), Known r) => Cases variants r -> E Form f val
   (Obj (Constant ('Sum_t variants)) :-> r)
-match cases = formal_auto (Sum_Elim_f cases)
+match cases = formal auto (Sum_Elim_f cases)
 
 -- | The formal product intro construction gives a function from a meta-language
 -- product--in this case the terminal object--to the object-language thing, so
 -- here we apply it to `specific terminal`
 unit :: E Form f val (Obj (Constant Unit))
-unit = formal_auto (Product_Intro_f F_All) <@> terminal
+unit = formal auto (Product_Intro_f F_All) <@> terminal
 
 -- | The formal sum elim constructor has a base case that works for any type.
 -- Since the empty sum requires only this base case, we don't even have to
 -- construct anything of this type, so we get the typical `absurd` type.
 absurd :: Known r => E Form f val (Obj (Constant Void) :-> Obj (Constant r))
-absurd = fun $ \impossible -> formal_auto (Sum_Elim_f C_Any) <@> impossible <@> terminal
+absurd = fun $ \impossible -> formal auto (Sum_Elim_f C_Any) <@> impossible <@> terminal
 
 -- NB: an empty product cannot be eliminated, and an empty sum cannot be
 -- introduced. The meta-language enforces this: there are no Selector or
@@ -846,10 +846,10 @@ absurd = fun $ \impossible -> formal_auto (Sum_Elim_f C_Any) <@> impossible <@> 
 -- variant to construct, and therefore what type is needed (in this case it's
 -- the object-language unit, so 'unit' is used).
 true :: E Form f val (Obj (Constant Bool))
-true = formal_auto (Sum_Intro_f (V_That V_This)) <@> unit
+true = formal auto (Sum_Intro_f (V_That V_This)) <@> unit
 
 false :: E Form f val (Obj (Constant Bool))
-false = formal_auto (Sum_Intro_f V_This) <@> unit
+false = formal auto (Sum_Intro_f V_This) <@> unit
 
 if_then_else_ :: Known r => E Form f val
   (   Obj (Constant Bool)
@@ -858,7 +858,7 @@ if_then_else_ :: Known r => E Form f val
   :-> Obj (Constant r)
   )
 if_then_else_ = fun $ \b -> fun $ \ifTrue -> fun $ \ifFalse ->
-  formal_auto (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifFalse) &> (const <@> ifTrue) &> terminal)
+  formal auto (Sum_Elim_f (C_Or (C_Or C_Any))) <@> b <@> ((const <@> ifFalse) &> (const <@> ifTrue) &> terminal)
 
 if_then_else
   :: Known r
@@ -866,7 +866,7 @@ if_then_else
   -> E Form f val (Obj (Constant r)) -- True case
   -> E Form f val (Obj (Constant r)) -- False case
   -> E Form f val (Obj (Constant r))
-if_then_else b ifTrue ifFalse = formal_auto (Sum_Elim_f (C_Or (C_Or C_Any)))
+if_then_else b ifTrue ifFalse = formal auto (Sum_Elim_f (C_Or (C_Or C_Any)))
   <@> b
   -- Note the order, w.r.t. the 'false' and 'true' functions: the first variant
   -- represents false.
@@ -985,7 +985,7 @@ map :: forall f val n s t q r .
     -> MapImage n s q
     -> MapImage n t r
     -> E Form f val ((s :-> t) :-> (q :-> r))
-map srep trep qrep rrep nrep limage rimage = formal (Stream_Map_f nrep limage rimage) rep
+map srep trep qrep rrep nrep limage rimage = formal rep (Stream_Map_f nrep limage rimage)
   where
   rep = (srep .-> trep) .-> (qrep .-> rrep)
 
@@ -1039,10 +1039,10 @@ constant_auto nrep = constant nrep auto
 
 just :: Known a
      => E Form f val (Obj (Constant a) :-> Obj (Constant (Maybe a)))
-just = formal_auto (Sum_Intro_f (V_That V_This))
+just = formal auto (Sum_Intro_f (V_That V_This))
 
 nothing :: Known s => E Form f val (Obj (Constant (Maybe s)))
-nothing = formal_auto (Sum_Intro_f V_This) <@> unit
+nothing = formal auto (Sum_Intro_f V_This) <@> unit
 
 maybe :: (Known s, Known r) => E Form f val
   (   Obj (Constant r)
@@ -1051,7 +1051,7 @@ maybe :: (Known s, Known r) => E Form f val
   :-> Obj (Constant r)
   )
 maybe = fun $ \ifNothing -> fun $ \ifJust -> fun $ \m ->
-  formal_auto (Sum_Elim_f (C_Or (C_Or C_Any)))
+  formal auto (Sum_Elim_f (C_Or (C_Or C_Any)))
     <@> m <@> ((fun $ \_ -> ifNothing) &> ifJust &> terminal)
 
 isJust :: Known a => E Form f val (Obj (Constant (Maybe a)) :-> Obj (Constant Bool))
@@ -1066,7 +1066,7 @@ isNothing = fun $ \m -> maybe <@> true <@> (const <@> false) <@> m
 pair :: Point.TypeRep a -> Point.TypeRep b -> E Form f val
   (Obj (Constant a) :-> Obj (Constant b) :-> Obj (Constant (Pair a b)))
 pair arep brep = fun $ \a -> fun $ \b ->
-  formal (Product_Intro_f (F_And (F_And F_All))) rep <@> (a &> b &> terminal)
+  formal rep (Product_Intro_f (F_And (F_And F_All))) <@> (a &> b &> terminal)
   where
   rep = (Meta.object_t (constant_t arep) .* Meta.object_t (constant_t brep) .* Meta.terminal_t) .-> Meta.object_t (constant_t (pair_t arep brep))
 
@@ -1076,14 +1076,14 @@ pair_auto = pair auto auto
 
 fst :: Point.TypeRep a -> Point.TypeRep b -> E Form f val
   (Obj (Constant (Pair a b)) :-> Obj (Constant a))
-fst arep brep = fun $ \p -> formal (Product_Elim_f S_Here) rep <@> p
+fst arep brep = fun $ \p -> formal rep (Product_Elim_f S_Here) <@> p
   where
   rep =      Meta.object_t (constant_t (Point.pair_t arep brep))
         .->  Meta.object_t (constant_t arep)
 
 snd :: Point.TypeRep a -> Point.TypeRep b -> E Form f val
   (Obj (Constant (Pair a b)) :-> Obj (Constant b))
-snd arep brep = fun $ \p -> formal (Product_Elim_f (S_There S_Here)) rep <@> p
+snd arep brep = fun $ \p -> formal rep (Product_Elim_f (S_There S_Here)) <@> p
   where
   rep =      Meta.object_t (constant_t (Point.pair_t arep brep))
         .->  Meta.object_t (constant_t brep)
@@ -1096,13 +1096,13 @@ snd_auto = snd auto auto
 
 drop :: NatRep n -> Point.TypeRep t -> E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
-drop nrep trep = formal Stream_Drop_f rep
+drop nrep trep = formal rep Stream_Drop_f
   where
   rep = (Meta.object_t (varying_t (S_Rep nrep) trep) .-> Meta.object_t (varying_t nrep trep))
 
 shift :: NatRep n -> Point.TypeRep t -> E Form f val
   (Obj (Varying ('S n) t) :-> Obj (Varying n t))
-shift nrep trep = formal Stream_Shift_f rep
+shift nrep trep = formal rep Stream_Shift_f
   where
   rep = (Meta.object_t (varying_t (S_Rep nrep) trep) .-> Meta.object_t (varying_t nrep trep))
 
@@ -1127,7 +1127,7 @@ knot :: Meta.TypeRep TypeRep s
      -> Meta.TypeRep TypeRep r
      -> Knot s t i r
      -> E Form f val ((s :-> t) :-> (i :-> Obj (Program r)))
-knot srep trep irep rrep sig = formal (Stream_Knot_f sig) rep
+knot srep trep irep rrep sig = formal rep (Stream_Knot_f sig)
   where
   rep = (srep .-> trep) .-> (irep .-> Meta.object_t (program_t rrep))
 
@@ -1145,14 +1145,14 @@ prog_map
   :: Meta.TypeRep TypeRep s
   -> Meta.TypeRep TypeRep t
   -> E Form f val ((s :-> t) :-> Obj (Program s) :-> Obj (Program t))
-prog_map srep trep = formal Program_Map_f rep
+prog_map srep trep = formal rep Program_Map_f
   where
   rep = (srep .-> trep) .-> (Meta.object_t (program_t srep) .-> Meta.object_t (program_t trep))
 
 prog_pure
   :: Meta.TypeRep TypeRep t
   -> E Form f val (t :-> Obj (Program t))
-prog_pure trep = formal Program_Pure_f rep
+prog_pure trep = formal rep Program_Pure_f
   where
   rep = trep .-> Meta.object_t (program_t trep)
 
@@ -1160,14 +1160,14 @@ prog_ap
   :: Meta.TypeRep TypeRep s
   -> Meta.TypeRep TypeRep t
   -> E Form f val (Obj (Program (s :-> t)) :-> Obj (Program s) :-> Obj (Program t))
-prog_ap srep trep = formal Program_Ap_f rep
+prog_ap srep trep = formal rep Program_Ap_f
   where
   rep = Meta.object_t (program_t (srep .-> trep)) .-> Meta.object_t (program_t srep) .-> Meta.object_t (program_t trep)
 
 prog_join
   :: Meta.TypeRep TypeRep t
   -> E Form f val (Obj (Program (Obj (Program t))) :-> Obj (Program t))
-prog_join trep = formal Program_Join_f rep
+prog_join trep = formal rep Program_Join_f
   where
   rep = Meta.object_t (program_t (Meta.object_t (program_t trep))) .-> Meta.object_t (program_t trep)
 

@@ -1,6 +1,6 @@
 {-|
 Module      : Language.Pilot.Repr
-Description : 
+Description : Meta-language functions and products over an arbitrary object-language representation.
 Copyright   : (c) Alexander Vieth, 2020
 Licence     : BSD3
 Maintainer  : aovieth@gmail.com
@@ -19,21 +19,23 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Language.Pilot.Repr
-  ( Repr (..)
+  (
+    -- * Representation types
+    Repr (..)
   , Val (..)
+
+  , fromObject
+  , fromArrow
+  , fromProduct
+  , fromTerminal
+
+    -- * Constructing representations
   , repr
   , valuef
   , value
   , objectf
   , object
   , formal
-  , formal_auto
-
-  , evalObject
-
-  , Interpret
-  , Interprets (..)
-  , E
 
   , fun
   , app
@@ -52,10 +54,10 @@ module Language.Pilot.Repr
   , fst
   , snd
 
-  , fromObject
-  , fromArrow
-  , fromProduct
-  , fromTerminal
+  -- * Interpretation
+  , Interpret
+  , Interprets (..)
+  , E
   ) where
 
 import Prelude hiding (id, const, curry, uncurry, product, fst, snd, flip)
@@ -93,9 +95,6 @@ fromProduct (Product p) = p
 fromTerminal :: Val f val Terminal -> ()
 fromTerminal Terminal = ()
 
-evalObject :: Functor f => Repr f val (Obj t) -> f (val t)
-evalObject = fmap fromObject . getRepr
-
 objectf :: Functor f => f (val t) -> Repr f val (Obj t)
 objectf it = Repr (fmap Object it)
 
@@ -125,7 +124,7 @@ app fr xr = Repr $ do
 (<@>):: Monad f => Repr f val (s :-> t) -> Repr f val s -> Repr f val t
 (<@>) = app
 
-infixl 4 <@>
+infixl 9 <@>
 
 identity :: Applicative f => Repr f val (s :-> s)
 identity = fun $ \a -> a
@@ -173,8 +172,6 @@ infixr 2 &>
 terminal :: Applicative f => Repr f val Terminal
 terminal = Repr (pure Terminal)
 
--- | Why does this need a Monad constraint? Because there is order involved:
--- you must "evaluate" the product before you can get its first component.
 fst :: Monad f => Repr f val (s :* t) -> Repr f val s
 fst r = Repr $ do
   it <- getRepr r
@@ -193,23 +190,10 @@ class Monad f => Interprets (form :: Meta.Type domain -> Hask) (f :: Hask -> Has
 formal
   :: forall domain form f val (t :: Meta.Type domain) .
      ( Interprets form f val )
-  => form t
-  -> Rep (Meta.Type domain) t
+  => Rep (Meta.Type domain) t
+  -> form t
   -> E form f val t
-formal frm trep = interp trep frm
-
--- | Like 'formal' except you give the representation of the type
--- explicitly.
---
--- This is often nice to have, but sometimes 'formal' is needed, for instance
--- when type families are involved, and it becomes difficult/impossible to
--- convince GHC that a given type is Known.
-formal_auto
-  :: forall form f val t .
-     (Known t, Interprets form f val)
-  => form t
-  -> E form f val t
-formal_auto frm = formal frm (known (Proxy :: Proxy t))
+formal trep frm = interp trep frm
 
 -- | This is the expression type over a given form, in the "tagless final" style
 -- using a typeclass, because it allows us to seamlessly include
@@ -267,8 +251,8 @@ data LetForm (x :: Meta.Type LetDomain) where
   Let :: LetForm (a :-> (a :-> b) :-> b)
 
 example_3 :: E LetForm f val (Obj 'LetType :* Obj 'LetType)
-example_3 = example_1 <@> formal      Datum (Meta.object_t lettype_t)
-                      <@> formal_auto Datum
+example_3 = example_1 <@> formal (Meta.object_t lettype_t) Datum
+                      <@> formal  auto                     Datum
 
 data DummyVal (t :: LetDomain) where
   DummyVal :: DummyVal 'LetType
